@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed Anthropic requests failing with HTTP 400 `At least one of the image dimensions exceed max allowed size: 8000 pixels` when a tall screenshot sat in history; every image now respects the host's per-side image limit instead of only requests carrying more than 20 images ([#10633](https://github.com/can1357/oh-my-pi/pull/10633) by [@aktanazat](https://github.com/aktanazat)).
+- Fixed Anthropic requests failing with HTTP 400 `image exceeds 10 MB maximum` when a dense screenshot sat in history; oversized image payloads are now re-encoded down to the host's byte limit, at full resolution when re-encoding alone is enough ([#10633](https://github.com/can1357/oh-my-pi/pull/10633) by [@aktanazat](https://github.com/aktanazat)).
 
 ## [18.4.2] - 2026-09-28
 
