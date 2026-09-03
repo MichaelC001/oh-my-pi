@@ -6,6 +6,10 @@
 
 - Reduced per-token CPU and allocations while streaming: the leaked-thinking scanner used for OpenAI-compatible and custom endpoints no longer allocates per character, chat-completions and Bedrock look up a delta's content block in constant time, Google, Gemini CLI, Codex, and chat-completions streams skip raw SSE line capture unless an `onSseEvent` listener is attached, and event streams drain backlogs without `Array#shift` ([#13650](https://github.com/can1357/oh-my-pi/pull/13650) by [@H4vC](https://github.com/H4vC)).
 
+### Fixed
+
+- Fixed Anthropic requests failing with HTTP 400 `At least one of the image dimensions exceed max allowed size: 8000 pixels` when a tall screenshot sat in history; every image now respects the host's per-side image limit instead of only requests carrying more than 20 images ([#10633](https://github.com/can1357/oh-my-pi/pull/10633) by [@aktanazat](https://github.com/aktanazat)).
+
 ## [18.4.2] - 2026-09-28
 
 ### Fixed
