@@ -524,13 +524,46 @@ function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
 	return state;
 }
 
+/**
+ * Stable per-instance identities for injected clients that publish no endpoint.
+ * A `WeakMap` keeps the id sticky for as long as the caller holds the client —
+ * so a rejection learned on one turn still seeds the next through the same
+ * client — and lets the entry die with it.
+ */
+const opaqueInjectedClientIds = new WeakMap<AnthropicMessagesClientLike, string>();
+let opaqueInjectedClientSeq = 0;
+
+/**
+ * Endpoint component of the provider-session key. Three cases, deliberately
+ * distinct:
+ * - no injected client: the model-resolved URL the request actually reaches;
+ * - injected client with a readable endpoint: that endpoint, so two clients
+ *   pointed at the same proxy share what one of them learned;
+ * - opaque injected client: that instance's own identity, never the
+ *   model-resolved URL. The client may target any transport, so attributing its
+ *   rejection to the model's endpoint would let an unknown proxy suppress
+ *   caching for the official endpoint, for a sibling client, or for a later
+ *   non-injected request. The `\u0001` prefix cannot occur in a URL, so an
+ *   identity can never collide with a real endpoint.
+ */
+function anthropicSessionEndpointKey(client: AnthropicMessagesClientLike | undefined, baseUrl: string): string {
+	if (client === undefined) return baseUrl;
+	const clientBaseUrl = injectedClientBaseUrl(client);
+	if (clientBaseUrl !== undefined) return clientBaseUrl;
+	const existing = opaqueInjectedClientIds.get(client);
+	if (existing !== undefined) return existing;
+	opaqueInjectedClientSeq++;
+	const created = `\u0001opaque-client-${opaqueInjectedClientSeq}`;
+	opaqueInjectedClientIds.set(client, created);
+	return created;
+}
 function getAnthropicProviderSessionState(
 	providerSessionState: Map<string, ProviderSessionState> | undefined,
-	baseUrl: string,
+	endpoint: string,
 	modelId: string,
 ): AnthropicProviderSessionState | undefined {
 	if (!providerSessionState) return undefined;
-	const key = anthropicProviderSessionStateKey(baseUrl, modelId);
+	const key = anthropicProviderSessionStateKey(endpoint, modelId);
 	const existing = providerSessionState.get(key) as AnthropicProviderSessionState | undefined;
 	if (existing) {
 		existing.prefixDroppedThinkingBlocks ??= new Set();
@@ -1631,6 +1664,7 @@ function parseAnthropicFallbackWireBlock(value: unknown): AnthropicFallbackConte
 	return { type: "fallback", from: { model: from }, to: { model: to } };
 }
 
+
 /**
  * Whether a persisted compaction summary replays as a native `compaction`
  * block: only the provider that produced it may replay it, and only on a
@@ -2066,7 +2100,7 @@ const streamAnthropicOnce = (
 				: supportsAnthropicCompaction(model, baseUrl);
 			const providerSessionState = getAnthropicProviderSessionState(
 				options?.providerSessionState,
-				options?.client !== undefined ? (injectedClientBaseUrl(options.client) ?? baseUrl) : baseUrl,
+				anthropicSessionEndpointKey(options?.client, baseUrl),
 				model.id,
 			);
 			let disableStrictTools =
