@@ -515,6 +515,7 @@ type AnthropicOutputConfig = NonNullable<MessageCreateParamsStreaming["output_co
 const ANTHROPIC_STOP_SEQUENCES_MAX = 4;
 let warnedStopSequencesTrim = false;
 
+const ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY = "anthropic-opaque-clients";
 type AnthropicProviderSessionState = ProviderSessionState & {
 	strictToolsDisabled: boolean;
 	fastModeDisabled: boolean;
@@ -566,17 +567,40 @@ function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
 }
 
 /**
- * Private state maps isolate injected clients with opaque endpoints. A client
- * retains its learned settings across turns without inserting synthetic
- * endpoint keys into the caller's map.
+ * Private per-client state maps for opaque injected clients, anchored in the
+ * caller's session. Closing the anchor resets all its clients without keeping
+ * those clients alive or leaking learned settings across sessions.
  */
-const opaqueInjectedClientStates = new WeakMap<AnthropicMessagesClientLike, Map<string, ProviderSessionState>>();
+type AnthropicOpaqueClientAnchor = ProviderSessionState & {
+	stores: WeakMap<AnthropicMessagesClientLike, Map<string, ProviderSessionState>>;
+};
 
-function opaqueInjectedClientStore(client: AnthropicMessagesClientLike): Map<string, ProviderSessionState> {
-	const existing = opaqueInjectedClientStates.get(client);
-	if (existing !== undefined) return existing;
+function isAnthropicOpaqueClientAnchor(state: ProviderSessionState | undefined): state is AnthropicOpaqueClientAnchor {
+	return state !== undefined && "stores" in state && state.stores instanceof WeakMap;
+}
+
+function opaqueInjectedClientStore(
+	providerSessionState: Map<string, ProviderSessionState>,
+	client: AnthropicMessagesClientLike,
+): Map<string, ProviderSessionState> {
+	const existing = providerSessionState.get(ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY);
+	let anchor: AnthropicOpaqueClientAnchor;
+	if (isAnthropicOpaqueClientAnchor(existing)) {
+		anchor = existing;
+	} else {
+		const freshAnchor: AnthropicOpaqueClientAnchor = {
+			stores: new WeakMap(),
+			close: () => {
+				freshAnchor.stores = new WeakMap();
+			},
+		};
+		providerSessionState.set(ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY, freshAnchor);
+		anchor = freshAnchor;
+	}
+	const store = anchor.stores.get(client);
+	if (store !== undefined) return store;
 	const created = new Map<string, ProviderSessionState>();
-	opaqueInjectedClientStates.set(client, created);
+	anchor.stores.set(client, created);
 	return created;
 }
 function getAnthropicProviderSessionState(
@@ -590,7 +614,9 @@ function getAnthropicProviderSessionState(
 	if (!providerSessionState) return undefined;
 	const clientBaseUrl = client !== undefined ? injectedClientBaseUrl(client) : undefined;
 	const store =
-		client !== undefined && clientBaseUrl === undefined ? opaqueInjectedClientStore(client) : providerSessionState;
+		client !== undefined && clientBaseUrl === undefined
+			? opaqueInjectedClientStore(providerSessionState, client)
+			: providerSessionState;
 	const key = anthropicProviderSessionStateKey(clientBaseUrl ?? baseUrl, modelId);
 	const existing = store.get(key) as AnthropicProviderSessionState | undefined;
 	if (existing) {
