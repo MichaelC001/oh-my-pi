@@ -157,6 +157,7 @@ import {
 } from "./anthropic-identity";
 import { fitBedrockAnthropicPayload } from "./bedrock-anthropic";
 import {
+	ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY,
 	anthropicProviderSessionStateKey,
 	clearAnthropicFastModeFallback,
 	isAnthropicFastModeFallbackDisabled,
@@ -515,10 +516,19 @@ type AnthropicOutputConfig = NonNullable<MessageCreateParamsStreaming["output_co
 const ANTHROPIC_STOP_SEQUENCES_MAX = 4;
 let warnedStopSequencesTrim = false;
 
-const ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY = "anthropic-opaque-clients";
 type AnthropicProviderSessionState = ProviderSessionState & {
 	strictToolsDisabled: boolean;
 	fastModeDisabled: boolean;
+	/**
+	 * Value of {@link AnthropicOpaqueClientAnchor.fastModeRearmGeneration} this
+	 * state last observed. Only anchored (opaque-client) states are stamped:
+	 * they are the ones {@link clearAnthropicFastModeFallback} cannot reach, so
+	 * a stamp that is not the anchor's current generation is how the next
+	 * request through that client learns a re-arm happened and lowers
+	 * `fastModeDisabled`. Endpoint-keyed states are cleared by the sweep itself
+	 * and never read it.
+	 */
+	fastModeRearmGeneration: number;
 	/**
 	 * Runtime-learned: this endpoint rejected a replayed unsigned thinking
 	 * block, so it must be treated as a signing proxy from now on. All
@@ -550,6 +560,7 @@ function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
 	const state: AnthropicProviderSessionState = {
 		strictToolsDisabled: false,
 		fastModeDisabled: false,
+		fastModeRearmGeneration: 0,
 		replayUnsignedThinkingDisabled: false,
 		thinkingReplayDisabled: false,
 		cacheControlUnsupported: false,
@@ -573,35 +584,65 @@ function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
  */
 type AnthropicOpaqueClientAnchor = ProviderSessionState & {
 	stores: WeakMap<AnthropicMessagesClientLike, Map<string, ProviderSessionState>>;
+	/**
+	 * Bumped once per `/fast on` re-arm. Anchored states carry the value they
+	 * last observed in `fastModeRearmGeneration`; a mismatch is a re-arm they
+	 * have not picked up yet. Never reset by `close()`: the sweep discards the
+	 * states themselves, so a monotone counter needs no second reset path.
+	 */
+	fastModeRearmGeneration: number;
 };
 
 function isAnthropicOpaqueClientAnchor(state: ProviderSessionState | undefined): state is AnthropicOpaqueClientAnchor {
-	return state !== undefined && "stores" in state && state.stores instanceof WeakMap;
+	if (state === undefined) return false;
+	return (
+		"stores" in state &&
+		state.stores instanceof WeakMap &&
+		"fastModeRearmGeneration" in state &&
+		typeof state.fastModeRearmGeneration === "number"
+	);
+}
+
+function anthropicOpaqueClientAnchor(
+	providerSessionState: Map<string, ProviderSessionState>,
+): AnthropicOpaqueClientAnchor {
+	const existing = providerSessionState.get(ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY);
+	if (isAnthropicOpaqueClientAnchor(existing)) return existing;
+	const freshAnchor: AnthropicOpaqueClientAnchor = {
+		stores: new WeakMap(),
+		fastModeRearmGeneration: 0,
+		close: () => {
+			freshAnchor.stores = new WeakMap();
+		},
+	};
+	providerSessionState.set(ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY, freshAnchor);
+	return freshAnchor;
 }
 
 function opaqueInjectedClientStore(
-	providerSessionState: Map<string, ProviderSessionState>,
+	anchor: AnthropicOpaqueClientAnchor,
 	client: AnthropicMessagesClientLike,
 ): Map<string, ProviderSessionState> {
-	const existing = providerSessionState.get(ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY);
-	let anchor: AnthropicOpaqueClientAnchor;
-	if (isAnthropicOpaqueClientAnchor(existing)) {
-		anchor = existing;
-	} else {
-		const freshAnchor: AnthropicOpaqueClientAnchor = {
-			stores: new WeakMap(),
-			close: () => {
-				freshAnchor.stores = new WeakMap();
-			},
-		};
-		providerSessionState.set(ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY, freshAnchor);
-		anchor = freshAnchor;
-	}
 	const store = anchor.stores.get(client);
 	if (store !== undefined) return store;
 	const created = new Map<string, ProviderSessionState>();
 	anchor.stores.set(client, created);
 	return created;
+}
+
+/**
+ * Picks up a fast-mode re-arm the anchored state could not be swept by. A stamp
+ * other than the anchor's current generation means a re-arm landed since this
+ * state was last resolved, so the sticky fast-mode fallback is lowered — and
+ * nothing else, so the client keeps the rest of what it learned. The comparison
+ * is for inequality rather than ordering: the stamp claims only "this state has
+ * observed that generation", which needs no assumption about how the counter
+ * moved.
+ */
+function observeAnthropicFastModeRearm(state: AnthropicProviderSessionState, generation: number): void {
+	if (state.fastModeRearmGeneration === generation) return;
+	state.fastModeRearmGeneration = generation;
+	state.fastModeDisabled = false;
 }
 function getAnthropicProviderSessionState(
 	providerSessionState: Map<string, ProviderSessionState> | undefined,
@@ -613,21 +654,28 @@ function getAnthropicProviderSessionState(
 	// client does not opt back in on their behalf.
 	if (!providerSessionState) return undefined;
 	const clientBaseUrl = client !== undefined ? injectedClientBaseUrl(client) : undefined;
-	const store =
-		client !== undefined && clientBaseUrl === undefined
-			? opaqueInjectedClientStore(providerSessionState, client)
-			: providerSessionState;
+	let store = providerSessionState;
+	let anchor: AnthropicOpaqueClientAnchor | undefined;
+	if (client !== undefined && clientBaseUrl === undefined) {
+		anchor = anthropicOpaqueClientAnchor(providerSessionState);
+		store = opaqueInjectedClientStore(anchor, client);
+	}
 	const key = anthropicProviderSessionStateKey(clientBaseUrl ?? baseUrl, modelId);
 	const existing = store.get(key) as AnthropicProviderSessionState | undefined;
+	const state = existing ?? createAnthropicProviderSessionState();
 	if (existing) {
 		existing.prefixDroppedThinkingBlocks ??= new Set();
 		existing.cacheControlUnsupported ??= false;
-		return existing;
+	} else {
+		store.set(key, state);
 	}
-	const created = createAnthropicProviderSessionState();
-	store.set(key, created);
-	return created;
+	// Every request for an opaque client resolves its state here and nowhere
+	// else, so this is where the re-arm it cannot be swept by has to land. A
+	// fresh state has nothing to lower and only takes the stamp.
+	if (anchor !== undefined) observeAnthropicFastModeRearm(state, anchor.fastModeRearmGeneration);
+	return state;
 }
+
 
 function hasStrictAnthropicTools(params: MessageCreateParamsStreaming): boolean {
 	return params.tools?.some(tool => tool.strict === true) ?? false;
@@ -1717,6 +1765,7 @@ function parseAnthropicFallbackWireBlock(value: unknown): AnthropicFallbackConte
 	if (!from?.trim() || !to?.trim()) return undefined;
 	return { type: "fallback", from: { model: from }, to: { model: to } };
 }
+
 
 
 
