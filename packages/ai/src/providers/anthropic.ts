@@ -566,53 +566,40 @@ function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
 }
 
 /**
- * Stable per-instance identities for injected clients that publish no endpoint.
- * A `WeakMap` keeps the id sticky for as long as the caller holds the client —
- * so a rejection learned on one turn still seeds the next through the same
- * client — and lets the entry die with it.
+ * Private state maps isolate injected clients with opaque endpoints. A client
+ * retains its learned settings across turns without inserting synthetic
+ * endpoint keys into the caller's map.
  */
-const opaqueInjectedClientIds = new WeakMap<AnthropicMessagesClientLike, string>();
-let opaqueInjectedClientSeq = 0;
+const opaqueInjectedClientStates = new WeakMap<AnthropicMessagesClientLike, Map<string, ProviderSessionState>>();
 
-/**
- * Endpoint component of the provider-session key. Three cases, deliberately
- * distinct:
- * - no injected client: the model-resolved URL the request actually reaches;
- * - injected client with a readable endpoint: that endpoint, so two clients
- *   pointed at the same proxy share what one of them learned;
- * - opaque injected client: that instance's own identity, never the
- *   model-resolved URL. The client may target any transport, so attributing its
- *   rejection to the model's endpoint would let an unknown proxy suppress
- *   caching for the official endpoint, for a sibling client, or for a later
- *   non-injected request. The `\u0001` prefix cannot occur in a URL, so an
- *   identity can never collide with a real endpoint.
- */
-function anthropicSessionEndpointKey(client: AnthropicMessagesClientLike | undefined, baseUrl: string): string {
-	if (client === undefined) return baseUrl;
-	const clientBaseUrl = injectedClientBaseUrl(client);
-	if (clientBaseUrl !== undefined) return clientBaseUrl;
-	const existing = opaqueInjectedClientIds.get(client);
+function opaqueInjectedClientStore(client: AnthropicMessagesClientLike): Map<string, ProviderSessionState> {
+	const existing = opaqueInjectedClientStates.get(client);
 	if (existing !== undefined) return existing;
-	opaqueInjectedClientSeq++;
-	const created = `\u0001opaque-client-${opaqueInjectedClientSeq}`;
-	opaqueInjectedClientIds.set(client, created);
+	const created = new Map<string, ProviderSessionState>();
+	opaqueInjectedClientStates.set(client, created);
 	return created;
 }
 function getAnthropicProviderSessionState(
 	providerSessionState: Map<string, ProviderSessionState> | undefined,
-	endpoint: string,
+	client: AnthropicMessagesClientLike | undefined,
+	baseUrl: string,
 	modelId: string,
 ): AnthropicProviderSessionState | undefined {
+	// No map means the caller opted out of session state entirely — an injected
+	// client does not opt back in on their behalf.
 	if (!providerSessionState) return undefined;
-	const key = anthropicProviderSessionStateKey(endpoint, modelId);
-	const existing = providerSessionState.get(key) as AnthropicProviderSessionState | undefined;
+	const clientBaseUrl = client !== undefined ? injectedClientBaseUrl(client) : undefined;
+	const store =
+		client !== undefined && clientBaseUrl === undefined ? opaqueInjectedClientStore(client) : providerSessionState;
+	const key = anthropicProviderSessionStateKey(clientBaseUrl ?? baseUrl, modelId);
+	const existing = store.get(key) as AnthropicProviderSessionState | undefined;
 	if (existing) {
 		existing.prefixDroppedThinkingBlocks ??= new Set();
 		existing.cacheControlUnsupported ??= false;
 		return existing;
 	}
 	const created = createAnthropicProviderSessionState();
-	providerSessionState.set(key, created);
+	store.set(key, created);
 	return created;
 }
 
@@ -1706,6 +1693,7 @@ function parseAnthropicFallbackWireBlock(value: unknown): AnthropicFallbackConte
 }
 
 
+
 /**
  * Whether a persisted compaction summary replays as a native `compaction`
  * block: only the provider that produced it may replay it, and only on a
@@ -2141,7 +2129,8 @@ const streamAnthropicOnce = (
 				: supportsAnthropicCompaction(model, baseUrl);
 			const providerSessionState = getAnthropicProviderSessionState(
 				options?.providerSessionState,
-				anthropicSessionEndpointKey(options?.client, baseUrl),
+				options?.client,
+				baseUrl,
 				model.id,
 			);
 			let disableStrictTools =
