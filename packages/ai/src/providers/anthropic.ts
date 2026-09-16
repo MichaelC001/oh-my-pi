@@ -689,7 +689,6 @@ function getAnthropicProviderSessionState(
 	return state;
 }
 
-
 function hasStrictAnthropicTools(params: MessageCreateParamsStreaming): boolean {
 	return params.tools?.some(tool => tool.strict === true) ?? false;
 }
@@ -1783,9 +1782,6 @@ function parseAnthropicFallbackWireBlock(value: unknown): AnthropicFallbackConte
 	if (!from?.trim() || !to?.trim()) return undefined;
 	return { type: "fallback", from: { model: from }, to: { model: to } };
 }
-
-
-
 
 /**
  * Whether a persisted compaction summary replays as a native `compaction`
