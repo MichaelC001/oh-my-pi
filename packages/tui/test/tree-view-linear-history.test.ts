@@ -1,7 +1,14 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
+import { getThemeByName, type Theme } from "../src/theme";
 import { TreeView } from "../src/components/tree-view";
-import type { Theme } from "../src/theme/theme-class";
 
+let darkTheme: Theme;
+
+beforeAll(async () => {
+	const loaded = await getThemeByName("dark");
+	if (!loaded) throw new Error("dark theme unavailable");
+	darkTheme = loaded;
+});
 interface Node {
 	id: string;
 	children: Node[];
@@ -26,7 +33,7 @@ describe("TreeView", () => {
 			getChildren: node => node.children,
 			getChildDepth: (_node, row) => row.depth,
 			compactSameDepthAncestors: true,
-			theme: {} as Theme,
+			theme: darkTheme,
 			renderRow: node => node.id,
 		});
 
@@ -45,7 +52,7 @@ describe("TreeView", () => {
 			getChildren: node => node.children,
 			getChildDepth: (_node, row, children) => (children.length > 1 ? row.depth + 1 : row.depth),
 			compactSameDepthAncestors: true,
-			theme: {} as Theme,
+			theme: darkTheme,
 			renderRow: node => node.id,
 		});
 

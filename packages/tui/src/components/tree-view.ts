@@ -44,8 +44,10 @@ export interface FlattenTreeOptions<T, K extends TreeKey> {
 	/** Override the display depth inherited by direct children. */
 	getChildDepth?: (item: T, row: TreeRow<T, K>, children: readonly T[]) => number;
 	/**
-	 * Reuse the parent ancestor list when a sole child keeps the same display
-	 * depth. Sibling positions remain retained for connector rendering.
+	 * Reuse the parent ancestor list when a child keeps the same display depth
+	 * and the current item has no siblings (`siblingCount === 1`). Otherwise
+	 * retain the current item as an ancestor so connector gutters remain
+	 * accurate, including when the item has multiple children.
 	 */
 	compactSameDepthAncestors?: boolean;
 	/** Stop projection after this many structural items. Omit for no traversal cap. */
