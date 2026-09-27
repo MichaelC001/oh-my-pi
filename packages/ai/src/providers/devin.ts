@@ -769,10 +769,11 @@ function buildChatMessagePrompts(
 			if (!promptText && !thinkingText && !signature && toolCalls.length === 0) continue;
 			prompts.push(
 				create(ChatMessagePromptSchema, {
+					// Native assistant ids are bare UUIDs, like every other history row.
 					messageId:
 						isNativeDevinMessage && msg.responseId
 							? msg.responseId
-							: `bot-${deterministicUuid(`${cascadeId}\0${index}\0assistant`)}`,
+							: deterministicUuid(`${cascadeId}\0${index}\0assistant`),
 					source: ChatMessageSource.SYSTEM,
 					prompt: promptText,
 					thinking: thinkingText,
