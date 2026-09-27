@@ -458,7 +458,9 @@ describe("streamDevin router assignment", () => {
 			stopPatterns: [],
 			fimEotProbThreshold: 0,
 		});
-		expect(edge.recorded.chat?.configuration?.topP).toBeCloseTo(0.95);
+		// float32-widened, matching the native CLI's bytes rather than the double 0.95.
+		expect(edge.recorded.chat?.configuration?.topP).toBe(Math.fround(0.95));
+		expect(edge.recorded.chat?.configuration?.topP).not.toBe(0.95);
 	});
 
 	it("keeps explicit completion overrides without adding stop patterns", async () => {
@@ -476,7 +478,7 @@ describe("streamDevin router assignment", () => {
 		expect(edge.recorded.chat?.configuration).toMatchObject({
 			maxTokens: 32_000n,
 			temperature: 0.2,
-			topP: 0.8,
+			topP: Math.fround(0.8),
 			stopPatterns: ["END"],
 		});
 	});

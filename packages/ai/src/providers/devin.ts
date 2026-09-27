@@ -703,7 +703,10 @@ function buildDevinChatRequest(
 			maxNewlines: 400n,
 			temperature: options?.temperature ?? 1,
 			topK: 40n,
-			topP: options?.topP ?? 0.95,
+			// The native CLI stores topP as float32 and widens it on the wire
+			// (0.95 -> 0.949999988079071); round the same way so defaults and
+			// caller overrides match its bytes.
+			topP: Math.fround(options?.topP ?? 0.95),
 			stopPatterns: options?.stopSequences ?? [],
 		}),
 		tools,
