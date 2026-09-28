@@ -449,11 +449,7 @@ export class UiHelpers {
 			const previous = waitingPoll;
 			if (!previous) return;
 			waitingPoll = null;
-			if (
-				nextToolName === "wait" &&
-				previous.isDisplaceableBlock() &&
-				this.ctx.chatContainer.canRemoveBlock(previous)
-			) {
+			if (nextToolName === "wait" && previous.isDisplaceableBlock()) {
 				this.ctx.chatContainer.removeChild(previous);
 			}
 			// Sealing finalizes the block and stops the waiting-poll spinner that
@@ -470,9 +466,7 @@ export class UiHelpers {
 			}
 			if (previous.canBeDisplacedBy(nextToolName)) {
 				todoSnapshot = null;
-				if (this.ctx.chatContainer.canRemoveBlock(previous)) {
-					this.ctx.chatContainer.removeChild(previous);
-				}
+				this.ctx.chatContainer.removeChild(previous);
 				previous.seal();
 				return;
 			}

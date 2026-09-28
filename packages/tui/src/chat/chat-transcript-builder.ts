@@ -189,7 +189,7 @@ export class ChatTranscriptBuilder {
 		const previous = this.#waitingPoll;
 		if (!previous) return;
 		this.#waitingPoll = null;
-		if (nextToolName === "wait" && previous.isDisplaceableBlock() && this.container.canRemoveBlock(previous)) {
+		if (nextToolName === "wait" && previous.isDisplaceableBlock()) {
 			this.container.removeChild(previous);
 		}
 		previous.seal();
@@ -204,9 +204,7 @@ export class ChatTranscriptBuilder {
 		}
 		if (previous.canBeDisplacedBy(nextToolName)) {
 			this.#todoSnapshot = null;
-			if (this.container.canRemoveBlock(previous)) {
-				this.container.removeChild(previous);
-			}
+			this.container.removeChild(previous);
 			previous.seal();
 			return;
 		}
