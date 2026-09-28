@@ -891,6 +891,45 @@ describe("computer worker round trips", () => {
 		});
 	});
 
+	describe("window selector misses", () => {
+		class DesktopWithApps extends FakeNativeSession {
+			override async listWindows(): Promise<DesktopWindow[]> {
+				return [
+					windowFixture,
+					{ ...windowFixture, id: "43", title: "", focused: false },
+					{ ...windowFixture, id: "7", app: "Finder", title: "Downloads", pid: 9, focused: false },
+					{ ...windowFixture, id: "8", app: "TextEdit", title: "notes.txt", pid: 10, focused: false },
+					{ ...windowFixture, id: "9", app: "TextEdit", title: "draft.txt", pid: 10, focused: false },
+				];
+			}
+		}
+
+		async function missLines(selector: string): Promise<string[]> {
+			const transport = new MemoryTransport();
+			new ComputerWorkerCore(transport, () => new DesktopWithApps());
+			const result = await runWorker(transport, "window-miss", `await desktop.window(${selector})`);
+			expect(result.ok).toBe(false);
+			return result.ok ? [] : result.error.message.split("\n");
+		}
+
+		it("leads with the requested app's windows when its title filter misses", async () => {
+			const lines = await missLines('{ app: "textedit", title: "report" }');
+			expect(lines.slice(0, 3)).toEqual([
+				'no window matches {"app":"textedit","title":"report"}',
+				'Open windows by app (id "title"):',
+				'- TextEdit: 8 "notes.txt", 9 "draft.txt"',
+			]);
+		});
+
+		it("says the app has no window and lists every app's windows, counting untitled ones", async () => {
+			const lines = await missLines('{ app: "Calendar" }');
+			expect(lines).toContain('No open window belongs to an app matching "Calendar".');
+			expect(lines).toContain('- Code: 42 "Editor", 1 more');
+			expect(lines).toContain('- Finder: 7 "Downloads"');
+			expect(lines).toContain('- TextEdit: 8 "notes.txt", 9 "draft.txt"');
+		});
+	});
+
 	it("resolves ref() to a populated live element and find() to every match", async () => {
 		const transport = new MemoryTransport();
 		new ComputerWorkerCore(transport, () => new FakeNativeSession());
@@ -929,7 +968,7 @@ describe("computer worker round trips", () => {
 			new ComputerWorkerCore(transport, () => new TwoWindowSession());
 			const result = await runWorker(transport, "numeric-miss", `await desktop.window(${id})`);
 			expect(result.ok).toBe(false);
-			if (!result.ok) expect(result.error.message).toBe(`no window matches ${id}`);
+			if (!result.ok) expect(result.error.message.split("\n")[0]).toBe(`no window matches ${id}`);
 		});
 	});
 
