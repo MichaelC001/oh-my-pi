@@ -341,23 +341,22 @@ describe("bash services via proc://", () => {
 			const persisted = await proc.write(parseInternalUrl("proc://echo-service/mode"), "persist", { session });
 			expect(persisted.content[0]?.type === "text" ? persisted.content[0].text : "").toContain("persistent");
 			expect(persisted.details?.proc).toMatchObject({ action: "mode", mode: "persist", daemon: { persist: true } });
-			const metadata: { spec: { persist: boolean } } = await Bun.file(
-				path.join(runtimeDir, "daemons", "echo-service", "meta.json"),
+			const spec: { persist: boolean } = await Bun.file(
+				path.join(runtimeDir, "daemons", "echo-service", "spec.json"),
 			).json();
-			expect(metadata.spec.persist).toBeTrue();
+			expect(spec.persist).toBeTrue();
 			const sessionMode = await proc.write(parseInternalUrl("proc://echo-service/mode"), "session", { session });
 			expect(sessionMode.content[0]?.type === "text" ? sessionMode.content[0].text : "").toContain("mode=session");
-			const sessionMetadata: { spec: { persist: boolean } } = await Bun.file(
-				path.join(runtimeDir, "daemons", "echo-service", "meta.json"),
+			const sessionSpec: { persist: boolean } = await Bun.file(
+				path.join(runtimeDir, "daemons", "echo-service", "spec.json"),
 			).json();
-			expect(sessionMetadata.spec.persist).toBeFalse();
+			expect(sessionSpec.persist).toBeFalse();
 			const restarted = await bash.execute("restart", {
 				command: "printf 'REPLACED\\n'; read line",
 				name: "echo-service",
 				ready: { log: "REPLACED", host: "", timeout: 5 },
 				pty: false,
 				async: false,
-				env: {},
 			});
 			expect(restarted.content[0]?.type === "text" ? restarted.content[0].text : "").toContain("REPLACED");
 			const write = new WriteTool(session);
@@ -374,10 +373,10 @@ describe("bash services via proc://", () => {
 			expect(detached.content[0]?.type === "text" ? detached.content[0].text : "").toContain("detached");
 			const detachedRead = await proc.resolve(parseInternalUrl("proc://detach-candidate"), { session });
 			expect(detachedRead.content).toContain("detached=true");
-			const detachedMetadata: { spec: { persist: boolean; detached: boolean; pty: boolean } } = await Bun.file(
-				path.join(runtimeDir, "daemons", "detach-candidate", "meta.json"),
+			const detachedSpec: { persist: boolean; detached: boolean; pty: boolean } = await Bun.file(
+				path.join(runtimeDir, "daemons", "detach-candidate", "spec.json"),
 			).json();
-			expect(detachedMetadata.spec).toMatchObject({ detached: true, persist: true, pty: false });
+			expect(detachedSpec).toMatchObject({ detached: true, persist: true, pty: false });
 			await expect(
 				proc.write(parseInternalUrl("proc://detach-candidate/mode"), "session", { session }),
 			).rejects.toThrow("must remain persistent");
@@ -430,7 +429,6 @@ describe("bash services via proc://", () => {
 				async: false,
 				name: "",
 				ready: { log: "", port: 1, host: "", timeout: 1 },
-				env: {},
 			});
 			expect(materialized.details?.service).toBeUndefined();
 			expect(textOf(materialized)).toContain("PLAIN");
@@ -440,19 +438,11 @@ describe("bash services via proc://", () => {
 				command: "printf 'BLANK\\n'",
 				name: "   ",
 				ready: { log: "", host: "" },
-				env: {},
 			});
 			expect(blank.details?.service).toBeUndefined();
 			expect(textOf(blank)).not.toContain("Ignored");
 
-			const orphanEnv = await bash.execute("orphan-env", {
-				command: "printf 'ENV\\n'",
-				env: { SERVICE_ONLY: "1" },
-			});
-			expect(orphanEnv.details?.service).toBeUndefined();
-			expect(textOf(orphanEnv)).toContain("Ignored env");
-
-			expect(commands).toEqual(["printf 'PLAIN\\n'", "printf 'BLANK\\n'", "printf 'ENV\\n'"]);
+			expect(commands).toEqual(["printf 'PLAIN\\n'", "printf 'BLANK\\n'"]);
 		} finally {
 			spy.mockRestore();
 		}
