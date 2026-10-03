@@ -396,6 +396,15 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 	"prompt-cache": { key: "promptCache", set: "catalog", shape: "object" },
 	"long-usage-limit-fallback": { key: "longUsageLimitFallback", set: "catalog", shape: "scalar" },
 	"max-context-window": { key: "maxContextWindow", set: "catalog", shape: "scalar" },
+	/**
+	 * The model's stored reasoning is its own full plaintext trace and its
+	 * identity (class + family + revision) pins one set of weights, so a turn's
+	 * reasoning may replay natively on another host serving the same model.
+	 * Declared per family in `classes/*.kdl`; a host whose reasoning must not be
+	 * carried in or out sets `#false` in its `providers/*.kdl`. Read through
+	 * `compat/reasoning-carry.ts`.
+	 */
+	"portable-reasoning": { key: "portableReasoning", set: "catalog", shape: "scalar", values: [true, false] },
 	"pricing-status": {
 		key: "pricingStatus",
 		set: "catalog",

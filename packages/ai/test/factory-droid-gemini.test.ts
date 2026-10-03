@@ -227,7 +227,9 @@ describe("Factory Droid gemini wire — history replay", () => {
 			}),
 			finishChunk("STOP"),
 		]);
-		expect(result.content).toEqual([{ type: "thinking", thinking: "first second", thinkingSignature: "sig-1" }]);
+		expect(result.content).toEqual([
+			{ type: "thinking", thinking: "first second", thinkingSignature: "sig-1", summary: true },
+		]);
 	});
 
 	it("captures thoughtSignature on tool calls and replays the droid continuation shape", async () => {

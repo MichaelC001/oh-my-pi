@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- When a session moves to another host serving the same model (Kimi K3, DeepSeek V4, GLM 5+, MiniMax M3), the model's earlier reasoning now reaches the new host in its reasoning field instead of as `<think>` text inside earlier replies, which the model could start imitating in its own replies. Reasoning summaries from OpenAI Responses and Gemini are marked on the stored thinking block and never carried.
+
 ### Fixed
 
 - Fixed Antigravity chat and image requests sending an outdated client version when the model list came from cache, which could make newer models such as Claude Opus 5.5 unavailable.

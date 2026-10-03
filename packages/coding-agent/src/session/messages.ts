@@ -98,7 +98,8 @@ export function sanitizeAssistantForReparentedHistory(message: AssistantMessage)
 	for (const block of message.content) {
 		if (block.type === "redactedThinking" || block.type === "anthropicServerTool") continue;
 		if (block.type === "thinking") {
-			content.push({ type: "thinking", thinking: block.thinking });
+			// Signatures are replay-bound; the summary marker is provenance and stays.
+			content.push({ type: "thinking", thinking: block.thinking, ...(block.summary && { summary: true }) });
 			continue;
 		}
 		content.push(block);

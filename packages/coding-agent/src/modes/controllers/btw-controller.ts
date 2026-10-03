@@ -39,7 +39,7 @@ function assistantMessageWithReplyText(assistantMessage: AssistantMessage, reply
 	let replacedText = false;
 	for (const part of assistantMessage.content) {
 		if (part.type === "thinking") {
-			content.push({ type: "thinking", thinking: part.thinking });
+			content.push({ type: "thinking", thinking: part.thinking, ...(part.summary && { summary: true }) });
 			continue;
 		}
 		if (part.type === "redactedThinking") continue;

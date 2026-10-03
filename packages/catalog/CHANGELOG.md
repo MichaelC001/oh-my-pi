@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `portable-reasoning` rule: a model family declares that its reasoning may move natively between hosts serving the same model (same class, family and revision), and a host can opt out. Declared for Kimi K3, DeepSeek V4, GLM 5+ and MiniMax M3; Cursor's K3 turns opt out.
+
 ### Fixed
 
 - Fixed DeepSeek V4 model IDs and the V4.1 Flash alias lacking version information in model identity and dashboards ([#14194](https://github.com/can1357/oh-my-pi/issues/14194)).
