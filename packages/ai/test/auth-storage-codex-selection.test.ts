@@ -735,6 +735,12 @@ describe("AuthStorage codex oauth ranking", () => {
 
 		expect(await authStorage.credentials.removeById("openai-codex", required.credentialId)).toBe(true);
 		expect(store.listAuthCredentials("openai-codex")).toHaveLength(1);
+		vi.spyOn(oauthUtils, "getOAuthApiKey").mockImplementation(async (_provider, credentials) => {
+			const credential = credentials["openai-codex"] as OAuthCredentials | undefined;
+			if (!credential?.accountId) return null;
+			return { apiKey: `api-${credential.accountId}`, newCredentials: credential };
+		});
+		expect(await authStorage.keys.get("openai-codex", "inert-policy-after-removal")).toBe("api-acct-sibling");
 		expect(await authStorage.credentials.removeById("openai-codex", sibling.credentialId)).toBe(true);
 		expect(store.listAuthCredentials("openai-codex")).toHaveLength(0);
 	});
