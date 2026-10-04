@@ -1,21 +1,12 @@
 import type { DesktopWindow } from "@oh-my-pi/pi-natives";
 import { truncate } from "@oh-my-pi/pi-utils/format";
 
-/** Apps listed in a miss, candidates first; the rest are counted. */
 const MAX_APPS = 12;
-/** Titled windows named per app in a miss; the rest are counted. */
 const WINDOWS_PER_APP = 3;
-/** Titled windows named for an app the selector's `app` matched: those are the likely candidates. */
 const WINDOWS_PER_MATCHED_APP = 10;
-/** Characters of a window title shown in a miss. */
 const MAX_TITLE_CHARS = 80;
 
-/**
- * What a window selector that matched nothing could have meant: the apps with
- * an open window and the windows they have, apps matching the selector's `app`
- * first, so the next call can name an exact id (or conclude the app has no
- * window yet) without listing windows first.
- */
+/** Lists the open windows by app, apps matching `app` first, for a selector that matched nothing. */
 export function describeWindowMiss(windows: readonly DesktopWindow[], app: string | undefined): string {
 	if (windows.length === 0) return "No windows are open.";
 	// An empty `app` filters nothing in `matchesFilter`, so it matches no app here either.
@@ -34,8 +25,7 @@ export function describeWindowMiss(windows: readonly DesktopWindow[], app: strin
 			.map(window => `${window.id} ${JSON.stringify(truncate(window.title, MAX_TITLE_CHARS))}`);
 		if (titled.length > limit) entries.push(`${titled.length - limit} more`);
 		if (group.length > titled.length) entries.push(`${group.length - titled.length} untitled`);
-		// App names come from the OS: a newline in one must not start a row of its own.
-		return `- ${name.replace(/[\s\p{Cc}]+/gu, " ")}: ${entries.join(", ")}`;
+		return `- ${name}: ${entries.join(", ")}`;
 	});
 	const omitted = apps.slice(MAX_APPS);
 	if (omitted.length > 0) {

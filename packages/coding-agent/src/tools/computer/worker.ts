@@ -730,7 +730,7 @@ export class ComputerWorkerCore {
 						? windows.filter(window => window.id === String(selector))
 						: windows.filter(window => matchesFilter(window, selector));
 				if (matches.length === 0) {
-					// Scripts are untyped: `window(null)` reaches here when no window is open.
+					// Untyped scripts may pass `null`, which `matchesFilter` accepts as no filter.
 					const app = typeof selector === "object" ? selector?.app : undefined;
 					throw new ToolError(
 						`no window matches ${JSON.stringify(selector)}\n${describeWindowMiss(windows, app)}`,
