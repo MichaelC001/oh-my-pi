@@ -106,10 +106,12 @@ export async function loadBabelParser(): Promise<typeof BabelParser> {
 
 type ParsedProgram = { program: { body: ReadonlyArray<BabelProgramNode> } };
 
-async function tryParseProgram(code: string): Promise<{ ast: ParsedProgram } | { error: unknown }> {
+async function tryParseProgram(
+	code: string,
+): Promise<{ ast: ParsedProgram; recovered: readonly unknown[] } | { error: unknown }> {
 	const { parse } = await loadBabelParser();
 	try {
-		const ast = parse(code, {
+		const file = parse(code, {
 			sourceType: "module",
 			allowAwaitOutsideFunction: true,
 			allowReturnOutsideFunction: true,
@@ -119,8 +121,8 @@ async function tryParseProgram(code: string): Promise<{ ast: ParsedProgram } | {
 			allowUndeclaredExports: true,
 			errorRecovery: true,
 			plugins: ["typescript"],
-		}) as unknown as ParsedProgram;
-		return { ast };
+		});
+		return { ast: file as unknown as ParsedProgram, recovered: file.errors ?? [] };
 	} catch (error) {
 		return { error };
 	}
@@ -140,13 +142,12 @@ const FRAME_MAX_LINE_WIDTH = 120;
  * position plus a short code frame with a caret under the offending column.
  */
 function buildCellSyntaxError(code: string, error: unknown): SyntaxError | undefined {
-	const loc = (error as { loc?: { line?: unknown; column?: unknown } } | null)?.loc;
-	const rawMessage = (error as { message?: unknown } | null)?.message;
-	if (!loc || typeof loc.line !== "number" || typeof loc.column !== "number" || typeof rawMessage !== "string") {
-		return undefined;
-	}
+	if (!(error instanceof Error) || !("loc" in error)) return undefined;
+	const { loc } = error;
+	if (typeof loc !== "object" || loc === null || !("line" in loc) || !("column" in loc)) return undefined;
 	const { line, column } = loc;
-	const reason = rawMessage.replace(/ \(\d+:\d+\)$/, "");
+	if (typeof line !== "number" || typeof column !== "number") return undefined;
+	const reason = error.message.replace(/ \(\d+:\d+\)$/, "");
 	const lines = code.split(/\r\n|[\n\r\u2028\u2029]/);
 	if (line < 1 || line > lines.length) return undefined;
 	const first = Math.max(1, line - FRAME_CONTEXT_LINES);
@@ -165,7 +166,10 @@ function buildCellSyntaxError(code: string, error: unknown): SyntaxError | undef
 		frame.push(`${String(n).padStart(gutterWidth)} | ${text}`);
 		if (n === line) {
 			// Keep tabs so the caret lines up with the source line above it.
-			const pad = text.slice(0, caretColumn).replace(/[^\t]/g, " ");
+			let pad = "";
+			for (const char of text.slice(0, caretColumn)) {
+				pad += char === "\t" ? char : " ".repeat(Bun.stringWidth(char));
+			}
 			frame.push(`${" ".repeat(gutterWidth)} | ${pad}^`);
 		}
 	}
@@ -174,12 +178,15 @@ function buildCellSyntaxError(code: string, error: unknown): SyntaxError | undef
 
 /**
  * Re-parses the original cell source after the engine rejected it with a `SyntaxError`, and returns
- * a position-carrying replacement when Babel also fails. Returns `undefined` when Babel accepts the
+ * a position-carrying replacement when Babel also fails, whether it throws or recovers with
+ * reported errors. Returns `undefined` when Babel accepts the
  * cell (the engine error is then the better signal). Runs only on the failure path.
  */
 export async function diagnoseCellSyntaxError(code: string): Promise<SyntaxError | undefined> {
 	const parsed = await tryParseProgram(code);
-	return "error" in parsed ? buildCellSyntaxError(code, parsed.error) : undefined;
+	if ("error" in parsed) return buildCellSyntaxError(code, parsed.error);
+	// Babel recovers from some errors (e.g. `break;` outside a loop) and reports them on the AST.
+	return buildCellSyntaxError(code, parsed.recovered[0]);
 }
 
 // Callee substituted for dynamic `import(...)` calls. Functions handed to puppeteer

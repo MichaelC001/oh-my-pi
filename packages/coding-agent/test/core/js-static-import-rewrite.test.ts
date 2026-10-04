@@ -329,6 +329,23 @@ describe("cell syntax error position", () => {
 		expect((error as SyntaxError).message).toContain("2 | const x = ;");
 	});
 
+	it("reports a position for errors Babel recovers from", async () => {
+		const error = await runError("break;");
+		expect(error).toBeInstanceOf(SyntaxError);
+		expect((error as SyntaxError).message).toBe(
+			["Unsyntactic break. (line 1, column 1)", "1 | break;", "  | ^"].join("\n"),
+		);
+	});
+
+	it("aligns the caret by terminal width after wide characters", async () => {
+		const error = await runError("const 汉 = ;");
+		expect(error).toBeInstanceOf(SyntaxError);
+		// `汉` takes two terminal columns, so the caret pad is "const " (6) + 2 + " = " (3) = 11 spaces.
+		expect((error as SyntaxError).message).toBe(
+			["Unexpected token (line 1, column 11)", "1 | const 汉 = ;", `  | ${" ".repeat(11)}^`].join("\n"),
+		);
+	});
+
 	it("leaves valid cells unchanged", async () => {
 		const cell = "const ok = `a$" + "{1 + 1}b`;\nok";
 		expect(await runtime.run(cell, undefined, hooks)).toBe("a2b");
