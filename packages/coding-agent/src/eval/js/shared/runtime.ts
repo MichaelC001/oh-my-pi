@@ -533,7 +533,14 @@ export class JsRuntime {
 		try {
 			return await this.#als.run(context, async () => {
 				const wrapped = await wrapCode(code);
-				const value = indirectEval(wrapped.source, filename);
+				let value: unknown;
+				try {
+					value = indirectEval(wrapped.source, filename);
+				} catch (error) {
+					// The engine's own SyntaxError has no usable cell position; surface Babel's.
+					if (wrapped.syntaxError && error instanceof SyntaxError) throw wrapped.syntaxError;
+					throw error;
+				}
 				if (wrapped.finalExpressionReturned) {
 					const awaited = await awaitMaybePromise(value);
 					if (context.finalExpressionSet) {

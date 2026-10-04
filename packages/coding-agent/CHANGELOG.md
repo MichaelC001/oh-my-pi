@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed JS eval cells with a syntax error (such as a raw backtick inside a template literal) failing with the engine's position-less message; the error now names the cell line and column and shows a short code frame ([#14275](https://github.com/can1357/oh-my-pi/issues/14275)).
+
 ## [18.8.0] - 2026-10-07
 
 ### Added

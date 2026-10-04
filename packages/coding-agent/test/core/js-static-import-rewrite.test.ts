@@ -1,7 +1,8 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 
 import { rewriteImports, wrapCode } from "@oh-my-pi/pi-coding-agent/eval/js/context-manager";
 import { indirectEval } from "@oh-my-pi/pi-coding-agent/eval/js/shared/indirect-eval";
+import { JsRuntime, type RuntimeHooks } from "@oh-my-pi/pi-coding-agent/eval/js/shared/runtime";
 
 // Test fixtures embed user-supplied `import(...)` syntax that the rewriter must
 // transform. The strings are split so static-analysis heuristics don't read them
@@ -276,5 +277,67 @@ describe("wrapCode runtime call-site instrumentation", () => {
 			'function f(__omp_with_call_site__) { return __omp_with_call_site__; }\nawait tool.read({ path: "a.txt" });',
 		);
 		expect(wrapped.source).not.toContain('__omp_with_call_site__("js:');
+	});
+});
+
+describe("cell syntax error position", () => {
+	const hooks: RuntimeHooks = { onText: () => {}, onDisplay: () => {}, callTool: async () => undefined };
+	let runtime: JsRuntime;
+
+	beforeAll(() => {
+		runtime = new JsRuntime({ initialCwd: process.cwd(), sessionId: "syntax-error-position-test" });
+	});
+
+	afterAll(() => {
+		runtime.dispose();
+	});
+
+	async function runError(code: string): Promise<unknown> {
+		try {
+			await runtime.run(code, undefined, hooks);
+		} catch (error) {
+			return error;
+		}
+		throw new Error("expected the cell to throw");
+	}
+
+	it("reports the cell line and column with a code frame for a raw backtick inside a template literal", async () => {
+		const cell = [
+			"const script = `#!/usr/bin/env bash",
+			"now=`date +%s`",
+			'echo "stamp: $now"',
+			"`;",
+			'await write("/tmp/t1.sh", script);',
+			'"written"',
+		].join("\n");
+		const error = await runError(cell);
+		expect(error).toBeInstanceOf(SyntaxError);
+		expect((error as SyntaxError).message).toBe(
+			[
+				"Unexpected token (line 2, column 12)",
+				"1 | const script = `#!/usr/bin/env bash",
+				"2 | now=`date +%s`",
+				"  |            ^",
+			].join("\n"),
+		);
+	});
+
+	it("keeps the position on the original cell when call-site instrumentation applies", async () => {
+		const error = await runError('await tool.read({ path: "a.txt" });\nconst x = ;');
+		expect(error).toBeInstanceOf(SyntaxError);
+		expect((error as SyntaxError).message).toContain("(line 2, column 11)");
+		expect((error as SyntaxError).message).toContain("2 | const x = ;");
+	});
+
+	it("leaves valid cells unchanged", async () => {
+		const wrapped = await wrapCode("const a = 1;\na + 1");
+		expect(wrapped.syntaxError).toBeUndefined();
+		const cell = "const ok = `a$" + "{1 + 1}b`;\nok";
+		expect(await runtime.run(cell, undefined, hooks)).toBe("a2b");
+	});
+
+	it("does not mask a runtime error thrown by a cell that parses", async () => {
+		const error = await runError('throw new SyntaxError("from user code");');
+		expect((error as SyntaxError).message).toBe("from user code");
 	});
 });

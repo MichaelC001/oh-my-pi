@@ -104,10 +104,12 @@ export async function loadBabelParser(): Promise<typeof BabelParser> {
 	return babelParser;
 }
 
-async function parseProgram(code: string): Promise<{ program: { body: ReadonlyArray<BabelProgramNode> } } | null> {
+type ParsedProgram = { program: { body: ReadonlyArray<BabelProgramNode> } };
+
+async function tryParseProgram(code: string): Promise<{ ast: ParsedProgram } | { error: unknown }> {
 	const { parse } = await loadBabelParser();
 	try {
-		return parse(code, {
+		const ast = parse(code, {
 			sourceType: "module",
 			allowAwaitOutsideFunction: true,
 			allowReturnOutsideFunction: true,
@@ -117,10 +119,57 @@ async function parseProgram(code: string): Promise<{ program: { body: ReadonlyAr
 			allowUndeclaredExports: true,
 			errorRecovery: true,
 			plugins: ["typescript"],
-		}) as unknown as { program: { body: ReadonlyArray<BabelProgramNode> } };
-	} catch {
-		return null;
+		}) as unknown as ParsedProgram;
+		return { ast };
+	} catch (error) {
+		return { error };
 	}
+}
+
+async function parseProgram(code: string): Promise<ParsedProgram | null> {
+	const result = await tryParseProgram(code);
+	return "ast" in result ? result.ast : null;
+}
+
+const FRAME_CONTEXT_LINES = 2;
+const FRAME_MAX_LINE_WIDTH = 120;
+
+/**
+ * Builds a `SyntaxError` for a Babel parse failure on the user's cell source. `line` is
+ * 1-based and `column` is shown 1-based (Babel reports it 0-based). The message carries the
+ * position plus a short code frame with a caret under the offending column.
+ */
+function buildCellSyntaxError(code: string, error: unknown): SyntaxError | undefined {
+	const loc = (error as { loc?: { line?: unknown; column?: unknown } } | null)?.loc;
+	const rawMessage = (error as { message?: unknown } | null)?.message;
+	if (!loc || typeof loc.line !== "number" || typeof loc.column !== "number" || typeof rawMessage !== "string") {
+		return undefined;
+	}
+	const { line, column } = loc;
+	const reason = rawMessage.replace(/ \(\d+:\d+\)$/, "");
+	const lines = code.split(/\r\n|[\n\r\u2028\u2029]/);
+	if (line < 1 || line > lines.length) return undefined;
+	const first = Math.max(1, line - FRAME_CONTEXT_LINES);
+	const gutterWidth = String(line).length;
+	const frame: string[] = [];
+	for (let n = first; n <= line; n++) {
+		let text = lines[n - 1];
+		let caretColumn = column;
+		if (n === line && text.length > FRAME_MAX_LINE_WIDTH) {
+			const start = Math.min(Math.max(0, column - FRAME_MAX_LINE_WIDTH / 2), text.length - FRAME_MAX_LINE_WIDTH);
+			text = text.slice(start, start + FRAME_MAX_LINE_WIDTH);
+			caretColumn = column - start;
+		} else if (text.length > FRAME_MAX_LINE_WIDTH) {
+			text = text.slice(0, FRAME_MAX_LINE_WIDTH);
+		}
+		frame.push(`${String(n).padStart(gutterWidth)} | ${text}`);
+		if (n === line) {
+			// Keep tabs so the caret lines up with the source line above it.
+			const pad = text.slice(0, caretColumn).replace(/[^\t]/g, " ");
+			frame.push(`${" ".repeat(gutterWidth)} | ${pad}^`);
+		}
+	}
+	return new SyntaxError(`${reason} (line ${line}, column ${column + 1})\n${frame.join("\n")}`);
 }
 
 // Callee substituted for dynamic `import(...)` calls. Functions handed to puppeteer
@@ -1014,7 +1063,25 @@ export function stripTypeScriptSyntax(
 const LOOKS_LIKE_TS =
 	/(?:\bimport\s+type\b|\bexport\s+type\b|\b(?:import|export)\s*\{[^}\n]*\btype\s+\w|\binterface\s+\w|\btype\s+\w+\s*=|\b(?:as|satisfies)\s+(?:[A-Z]|\bconst\b)|:\s*(?:string|number|boolean|any|unknown|void|never|object|[A-Z]\w*)\b|<\s*[A-Z]\w*\s*[,>])/;
 
-export async function wrapCode(
+export async function wrapCode(code: string): Promise<{
+	source: string;
+	asyncWrapped: boolean;
+	finalExpressionReturned: boolean;
+	/**
+	 * Set when Babel could not parse the cell. Positions refer to the original `code`, which is
+	 * parsed before any transform runs. The VM still gets the source (Babel is stricter than the
+	 * engine for a few legacy script forms), so the caller throws this only if the engine also
+	 * rejects it with a `SyntaxError`.
+	 */
+	syntaxError?: SyntaxError;
+}> {
+	const parsed = await tryParseProgram(code);
+	const syntaxError = "error" in parsed ? buildCellSyntaxError(code, parsed.error) : undefined;
+	const wrapped = await wrapParsedCode(code);
+	return syntaxError ? { ...wrapped, syntaxError } : wrapped;
+}
+
+async function wrapParsedCode(
 	code: string,
 ): Promise<{ source: string; asyncWrapped: boolean; finalExpressionReturned: boolean }> {
 	const instrumented = await instrumentRuntimeCallSites(code);
