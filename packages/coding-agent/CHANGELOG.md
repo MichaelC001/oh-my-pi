@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed snapcompact archives being sized from the context window, which could leave the context over a low compaction trigger right after compacting; archives now take half the room left under the trigger
+
 ## [18.6.1] - 2026-10-04
 
 ### Fixed

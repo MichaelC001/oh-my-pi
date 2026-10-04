@@ -1,0 +1,336 @@
+/**
+ * Snapcompact archive size follows the room under the compaction trigger, not
+ * the window: half of what the trigger leaves after the system prompt, kept
+ * turns and the archive's text, never planned past 60% of the trigger.
+ */
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { Model } from "@oh-my-pi/pi-ai";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { computeNonMessageTokens } from "@oh-my-pi/pi-tui/status-line/context-usage";
+import * as snapcompact from "@oh-my-pi/snapcompact";
+
+const SHARE = 0.5;
+const TARGET = 0.6;
+const RECOVERY_BAND = 0.8;
+
+describe("snapcompact archive sized by the compaction trigger", () => {
+	let authStorage: AuthStorage;
+	let modelRegistry: ModelRegistry;
+	const sessions: AgentSession[] = [];
+
+	beforeAll(async () => {
+		authStorage = await AuthStorage.create(":memory:");
+		authStorage.keys.setRuntime("anthropic", "test-key");
+		modelRegistry = new ModelRegistry(authStorage);
+	});
+
+	afterEach(async () => {
+		for (const session of sessions.splice(0)) await session.dispose();
+		vi.restoreAllMocks();
+	});
+
+	afterAll(() => {
+		authStorage.close();
+	});
+
+	function opus(contextWindow: number): Model {
+		const bundled = getBundledModel("anthropic", "claude-opus-5-5");
+		if (!bundled) throw new Error("Expected bundled claude-opus-5-5");
+		return { ...bundled, contextWindow, maxTokens: 64_000 };
+	}
+
+	/** A session whose discarded history needs `turns × ~2.6k` chars of archive. */
+	function createSession(
+		model: Model,
+		overrides: Record<string, unknown>,
+		turns = 64,
+	): { session: AgentSession; notices: string[] } {
+		const sessionManager = SessionManager.inMemory();
+		const filler = "the quick brown fox jumps over the lazy dog. ".repeat(64);
+		for (let i = 0; i < turns; i++) {
+			sessionManager.appendMessage({
+				role: "user",
+				content: [{ type: "text", text: `turn ${i}: ${filler}` }],
+				timestamp: Date.now() - (turns - i) * 1000,
+			});
+			sessionManager.appendMessage({
+				role: "assistant",
+				content: [{ type: "text", text: `reply ${i}: ${filler}` }],
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				stopReason: "stop",
+				usage: {
+					input: 1000,
+					output: 1000,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2000,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				timestamp: Date.now() - (turns - i) * 1000 + 100,
+			});
+		}
+		const agent = new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } });
+		const session = new AgentSession({
+			agent,
+			sessionManager,
+			settings: Settings.isolated({
+				"compaction.methodOrder": ["snapcompact", "soft"],
+				"compaction.autoContinue": false,
+				"compaction.keepRecentTokens": 4000,
+				...overrides,
+			}),
+			modelRegistry,
+		});
+		const notices: string[] = [];
+		session.subscribe(event => {
+			if (event.type === "notice" && event.source === "compaction") notices.push(event.message);
+		});
+		sessions.push(session);
+		return { session, notices };
+	}
+
+	/** What the trigger's tokenizer charges for one full frame of `model`'s shape. */
+	function framePrice(model: Model): number {
+		const { frameSize } = snapcompact.resolveShape(model);
+		return snapcompact.frameTokens(model, { width: frameSize, height: frameSize });
+	}
+
+	/** Tokens the session's tokenizer charges for the committed archive's frames. */
+	function committedFrameTokens(session: AgentSession): number {
+		const summary = session.messages.find(message => message.role === "compactionSummary");
+		if (summary?.role !== "compactionSummary") throw new Error("Expected a compaction summary message");
+		const blocks = summary.blocks ?? [];
+		const textOnly = { ...summary, blocks: blocks.filter(block => block.type === "text") };
+		return session.agent.tokenizer.countMessage(summary) - session.agent.tokenizer.countMessage(textOnly);
+	}
+
+	function latestArchive(session: AgentSession): snapcompact.Archive | undefined {
+		const entry = session.sessionManager.getBranch().findLast(entry => entry.type === "compaction");
+		return snapcompact.getPreservedArchive(entry?.type === "compaction" ? entry.preserveData : undefined);
+	}
+
+	/** Stub render that records maxFrames and stops the pass before anything is committed. */
+	function stopAtRender(): number[] {
+		const requested: number[] = [];
+		vi.spyOn(snapcompact, "compact").mockImplementation(async (_preparation, options) => {
+			requested.push(options?.maxFrames ?? -1);
+			throw new Error("stop after sizing");
+		});
+		return requested;
+	}
+
+	/** maxFrames the session hands snapcompact for one manual snapcompact pass. */
+	async function requestedFrames(model: Model, overrides: Record<string, unknown>): Promise<number> {
+		const { session } = createSession(model, overrides);
+		const spy = vi.spyOn(snapcompact, "compact").mockImplementation(async preparation => ({
+			summary: "stub",
+			shortSummary: "stub",
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: preparation.tokensBefore,
+			details: { readFiles: [], modifiedFiles: [] },
+			preserveData: { snapcompact: { frames: [], totalChars: 0, truncatedChars: 0 } },
+		}));
+		await session.compact(undefined, { mode: "snapcompact" });
+		const maxFrames = spy.mock.calls[0]?.[1]?.maxFrames;
+		spy.mockRestore();
+		if (maxFrames === undefined) throw new Error("snapcompact.compact was not called");
+		return maxFrames;
+	}
+
+	/** What the compaction trigger counts for the session's current context (stored estimate). */
+	function storedContextTokens(session: AgentSession): number {
+		return (
+			computeNonMessageTokens(session, session.agent.tokenizer, session.settings.revision) +
+			session.agent.tokenizer.countMessages(session.messages as AgentMessage[], { excludeEncryptedReasoning: true })
+		);
+	}
+
+	it("scales the frame budget with the trigger and ignores the window above it", async () => {
+		const frame = framePrice(opus(1_000_000));
+		const low = await requestedFrames(opus(1_000_000), { "compaction.thresholdTokens": 80_000 });
+		const high = await requestedFrames(opus(1_000_000), { "compaction.thresholdTokens": 160_000 });
+		const smallWindow = await requestedFrames(opus(300_000), { "compaction.thresholdTokens": 160_000 });
+
+		expect(smallWindow).toBe(high);
+		expect(low).toBeGreaterThan(0);
+		expect(high).toBeGreaterThan(2 * low - 2);
+		expect(low * frame).toBeLessThanOrEqual(SHARE * 80_000);
+		expect(high * frame).toBeLessThanOrEqual(SHARE * 160_000);
+	});
+
+	it("keeps a trigger far below the window from getting a window-sized archive", async () => {
+		const model = opus(1_000_000);
+		const frames = await requestedFrames(model, { "compaction.thresholdTokens": 60_000 });
+		expect(frames).toBeGreaterThan(0);
+		expect(frames * framePrice(model)).toBeLessThanOrEqual(SHARE * 60_000);
+		// The window alone would allow the full payload cap.
+		expect(frames).toBeLessThan(snapcompact.maxFramesForDataBudget(snapcompact.resolveShape(model)));
+	});
+
+	it("follows the active model's trigger after a model switch", async () => {
+		const haiku = getBundledModel("anthropic", "claude-haiku-4-5");
+		if (!haiku) throw new Error("Expected bundled claude-haiku-4-5");
+		// 20% of each model's window: 200k on Opus 1M, 40k on Haiku 200k.
+		const { session } = createSession(opus(1_000_000), { "compaction.thresholdPercent": 20 });
+		const requested = stopAtRender();
+		await expect(session.compact(undefined, { mode: "snapcompact" })).rejects.toThrow("stop after sizing");
+		session.agent.setModel(haiku);
+		await expect(session.compact(undefined, { mode: "snapcompact" })).rejects.toThrow("stop after sizing");
+
+		const [onOpus, onHaiku] = requested;
+		expect(onHaiku).toBeGreaterThan(0);
+		expect(onHaiku * framePrice(haiku)).toBeLessThanOrEqual(SHARE * 40_000);
+		expect(onOpus).toBeGreaterThan(onHaiku);
+	});
+
+	it("still commits a manual compaction that leaves no room under the trigger", async () => {
+		// Manual `/compact` keeps only its reduction and window-fit checks: the
+		// user asked for it, so a one-frame archive above a tiny trigger lands.
+		const thresholdTokens = 12_000;
+		const { session } = createSession(opus(1_000_000), { "compaction.thresholdTokens": thresholdTokens });
+		const spy = vi.spyOn(snapcompact, "compact");
+		await session.compact(undefined, { mode: "snapcompact" });
+		expect(spy.mock.calls[0]?.[1]?.maxFrames).toBe(1);
+		expect(latestArchive(session)?.frames.length).toBe(1);
+		expect(storedContextTokens(session)).toBeGreaterThan(thresholdTokens);
+	});
+
+	it("hands an automatic compaction to the next method when even one frame leaves no room under the trigger", async () => {
+		const model = opus(1_000_000);
+		// The kept turns, text edges and one frame already exceed 80% of a 12k trigger.
+		const { session, notices } = createSession(model, {
+			"compaction.thresholdTokens": 12_000,
+			"compaction.methodOrder": ["snapcompact"],
+		});
+		const compactSpy = vi.spyOn(snapcompact, "compact");
+		const { promise: done, resolve } = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_end") resolve();
+		});
+		const assistant = {
+			role: "assistant" as const,
+			content: [{ type: "text" as const, text: "Done." }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			stopReason: "stop" as const,
+			usage: {
+				input: 60_000,
+				output: 100,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 60_100,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: Date.now(),
+		};
+		session.agent.emitExternalEvent({ type: "message_end", message: assistant });
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistant] });
+		await done;
+		await session.waitForIdle();
+
+		// The single-frame render really happened, and was rejected rather than committed.
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+		expect(compactSpy.mock.calls[0]?.[1]?.maxFrames).toBe(1);
+		expect(notices.some(notice => notice.includes("could not leave room under the compaction trigger"))).toBe(true);
+		expect(session.sessionManager.getBranch().some(entry => entry.type === "compaction")).toBe(false);
+	});
+
+	it("re-renders toward 60% of the trigger, dropping the oldest frames when a render overshoots", async () => {
+		const thresholdTokens = 100_000;
+		const { session } = createSession(opus(1_000_000), { "compaction.thresholdTokens": thresholdTokens }, 500);
+		const compact = snapcompact.compact;
+		const calls: number[] = [];
+		vi.spyOn(snapcompact, "compact").mockImplementation((preparation, options) => {
+			calls.push(options?.maxFrames ?? -1);
+			// First render ignores the budget, as if the text estimate had run short.
+			return compact(preparation, calls.length === 1 ? { ...options, maxFrames: 30 } : options);
+		});
+
+		await session.compact(undefined, { mode: "snapcompact" });
+
+		expect(calls.length).toBeGreaterThanOrEqual(2);
+		const last = calls.at(-1) ?? 0;
+		expect(last).toBeGreaterThan(0);
+		expect(last).toBeLessThan(30);
+		expect(latestArchive(session)?.frames.length).toBe(last);
+		const stored = storedContextTokens(session);
+		expect(stored).toBeLessThanOrEqual(TARGET * thresholdTokens);
+		// The archive still fills most of the allowed room rather than collapsing.
+		expect(stored).toBeGreaterThan(0.4 * thresholdTokens);
+	});
+
+	it("lands a real archive under the target, priced as the trigger counts it", async () => {
+		const model = opus(1_000_000);
+		const thresholdTokens = 100_000;
+		const { session } = createSession(model, { "compaction.thresholdTokens": thresholdTokens }, 500);
+		const spy = vi.spyOn(snapcompact, "compact");
+		await session.compact(undefined, { mode: "snapcompact" });
+		expect(spy).toHaveBeenCalledTimes(1);
+		const stored = storedContextTokens(session);
+		expect(stored).toBeLessThanOrEqual(TARGET * thresholdTokens);
+		expect(stored).toBeGreaterThan(0.4 * thresholdTokens);
+		const frames = latestArchive(session)?.frames.length ?? 0;
+		expect(frames).toBeGreaterThan(3);
+		expect(committedFrameTokens(session)).toBe(frames * framePrice(model));
+	});
+
+	it("rebuilds an Opus archive for a smaller Codex window and recovers below the recovery band", async () => {
+		const bundledCodex = getBundledModel("openai-codex", "gpt-6-astra");
+		if (!bundledCodex) throw new Error("Expected bundled gpt-6-astra");
+		const codex = { ...bundledCodex, contextWindow: 90_000 };
+		// A real Opus archive at the payload cap; 85% of each window is the trigger.
+		const { session, notices } = createSession(opus(1_000_000), { "compaction.thresholdPercent": 85 }, 600);
+		await session.compact(undefined, { mode: "snapcompact" });
+		const opusFrames = latestArchive(session)?.frames.length ?? 0;
+		expect(opusFrames).toBeGreaterThan(10);
+
+		// On Codex the Opus archive alone is over the trigger, and nothing after
+		// it can be summarized, so maintenance must rebuild it for the new model.
+		session.agent.setModel(codex);
+		const thresholdTokens = Math.floor(0.85 * codex.contextWindow);
+		const before = storedContextTokens(session);
+		expect(before).toBeGreaterThan(thresholdTokens);
+
+		const { promise: done, resolve } = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_end") resolve();
+		});
+		const assistant = {
+			role: "assistant" as const,
+			content: [{ type: "text" as const, text: "Done." }],
+			api: codex.api,
+			provider: codex.provider,
+			model: codex.id,
+			stopReason: "stop" as const,
+			usage: {
+				input: before,
+				output: 100,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: before + 100,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: Date.now(),
+		};
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistant] });
+		await done;
+		await session.waitForIdle();
+
+		expect(session.sessionManager.getBranch().filter(entry => entry.type === "compaction")).toHaveLength(2);
+		const after = storedContextTokens(session);
+		expect(after).toBeLessThanOrEqual(Math.floor(RECOVERY_BAND * thresholdTokens));
+		// Codex frames are budgeted at Codex's price, so the rebuild fills the band
+		// instead of shrinking as if each frame cost the high-res ceiling.
+		expect(after).toBeGreaterThan(0.65 * thresholdTokens);
+		expect(notices.some(notice => notice.includes("rebuilt the trailing snapcompact archive"))).toBe(true);
+	});
+});
