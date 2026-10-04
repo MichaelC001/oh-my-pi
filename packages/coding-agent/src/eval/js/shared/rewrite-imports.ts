@@ -172,6 +172,16 @@ function buildCellSyntaxError(code: string, error: unknown): SyntaxError | undef
 	return new SyntaxError(`${reason} (line ${line}, column ${column + 1})\n${frame.join("\n")}`);
 }
 
+/**
+ * Re-parses the original cell source after the engine rejected it with a `SyntaxError`, and returns
+ * a position-carrying replacement when Babel also fails. Returns `undefined` when Babel accepts the
+ * cell (the engine error is then the better signal). Runs only on the failure path.
+ */
+export async function diagnoseCellSyntaxError(code: string): Promise<SyntaxError | undefined> {
+	const parsed = await tryParseProgram(code);
+	return "error" in parsed ? buildCellSyntaxError(code, parsed.error) : undefined;
+}
+
 // Callee substituted for dynamic `import(...)` calls. Functions handed to puppeteer
 // (`tab.evaluate`, `page.evaluate`, `waitForFunction`, `$$eval`, ...) are serialized with
 // `Function.prototype.toString()` and re-evaluated inside the browser page, where the
@@ -1063,25 +1073,7 @@ export function stripTypeScriptSyntax(
 const LOOKS_LIKE_TS =
 	/(?:\bimport\s+type\b|\bexport\s+type\b|\b(?:import|export)\s*\{[^}\n]*\btype\s+\w|\binterface\s+\w|\btype\s+\w+\s*=|\b(?:as|satisfies)\s+(?:[A-Z]|\bconst\b)|:\s*(?:string|number|boolean|any|unknown|void|never|object|[A-Z]\w*)\b|<\s*[A-Z]\w*\s*[,>])/;
 
-export async function wrapCode(code: string): Promise<{
-	source: string;
-	asyncWrapped: boolean;
-	finalExpressionReturned: boolean;
-	/**
-	 * Set when Babel could not parse the cell. Positions refer to the original `code`, which is
-	 * parsed before any transform runs. The VM still gets the source (Babel is stricter than the
-	 * engine for a few legacy script forms), so the caller throws this only if the engine also
-	 * rejects it with a `SyntaxError`.
-	 */
-	syntaxError?: SyntaxError;
-}> {
-	const parsed = await tryParseProgram(code);
-	const syntaxError = "error" in parsed ? buildCellSyntaxError(code, parsed.error) : undefined;
-	const wrapped = await wrapParsedCode(code);
-	return syntaxError ? { ...wrapped, syntaxError } : wrapped;
-}
-
-async function wrapParsedCode(
+export async function wrapCode(
 	code: string,
 ): Promise<{ source: string; asyncWrapped: boolean; finalExpressionReturned: boolean }> {
 	const instrumented = await instrumentRuntimeCallSites(code);

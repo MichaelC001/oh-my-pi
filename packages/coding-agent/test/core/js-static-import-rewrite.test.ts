@@ -330,8 +330,6 @@ describe("cell syntax error position", () => {
 	});
 
 	it("leaves valid cells unchanged", async () => {
-		const wrapped = await wrapCode("const a = 1;\na + 1");
-		expect(wrapped.syntaxError).toBeUndefined();
 		const cell = "const ok = `a$" + "{1 + 1}b`;\nok";
 		expect(await runtime.run(cell, undefined, hooks)).toBe("a2b");
 	});

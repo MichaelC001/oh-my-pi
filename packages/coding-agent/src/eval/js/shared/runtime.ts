@@ -17,7 +17,7 @@ import { createHelpers, type HelperBundle } from "./helpers";
 import { awaitMaybePromise, indirectEval } from "./indirect-eval";
 import { LocalModuleLoader } from "./local-module-loader";
 import { JAVASCRIPT_PRELUDE_SOURCE } from "./prelude";
-import { wrapCode } from "./rewrite-imports";
+import { diagnoseCellSyntaxError, wrapCode } from "./rewrite-imports";
 import type { JsDisplayOutput, JsStatusEvent } from "./types";
 
 export interface RuntimeCallIdentity {
@@ -538,7 +538,7 @@ export class JsRuntime {
 					value = indirectEval(wrapped.source, filename);
 				} catch (error) {
 					// The engine's own SyntaxError has no usable cell position; surface Babel's.
-					if (wrapped.syntaxError && error instanceof SyntaxError) throw wrapped.syntaxError;
+					if (error instanceof SyntaxError) throw (await diagnoseCellSyntaxError(code)) ?? error;
 					throw error;
 				}
 				if (wrapped.finalExpressionReturned) {
