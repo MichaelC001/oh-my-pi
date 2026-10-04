@@ -367,4 +367,36 @@ describe("AgentSession snapcompact frame-budget sizing", () => {
 			[snapcompact.PRESERVE_KEY]: archive,
 		});
 	});
+
+	it.each([
+		{ name: "Gemini", provider: "google", id: "gemini-3.1-pro-preview", frameSize: 2048, frameTokens: 1120 },
+		{ name: "Codex", provider: "openai-codex", id: "gpt-6.1-sol", frameSize: 1568, frameTokens: 2882 },
+	] as const)(
+		"persists the trigger's post-commit count as tokensAfter for a real $name archive",
+		async ({ provider, id, frameSize, frameTokens }) => {
+			const bundled = getBundledModel(provider, id);
+			if (!bundled) throw new Error(`Expected bundled ${provider}/${id}`);
+			const model = { ...bundled, contextWindow: 400_000, maxTokens: 32_000 };
+			expect(snapcompact.resolveShape(model).frameSize).toBe(frameSize);
+			session.agent.setModel(model);
+
+			await session.compact(undefined, { mode: "snapcompact" });
+
+			const entry = sessionManager.getBranch().findLast(e => e.type === "compaction");
+			if (entry?.type !== "compaction") throw new Error("Expected a committed compaction entry");
+			const frames = snapcompact.getPreservedArchive(entry.preserveData)?.frames ?? [];
+			expect(frames.length).toBeGreaterThan(1);
+			const summary = session.messages.find(m => m.role === "compactionSummary");
+			if (summary?.role !== "compactionSummary") throw new Error("Expected a compaction summary message");
+			const blocks = summary.blocks ?? [];
+			expect(blocks.filter(block => block.type === "image")).toHaveLength(frames.length);
+			const tokenizer = session.agent.tokenizer;
+			const textOnly = { ...summary, blocks: blocks.filter(block => block.type === "text") };
+			expect(tokenizer.countMessage(summary) - tokenizer.countMessage(textOnly)).toBe(frames.length * frameTokens);
+			expect(entry.tokensAfter).toBe(
+				computeNonMessageTokens(session, tokenizer, session.settings.revision) +
+					tokenizer.countMessages(session.messages, { excludeEncryptedReasoning: true }),
+			);
+		},
+	);
 });

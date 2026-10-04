@@ -446,6 +446,19 @@ export function resolveShapeForText(text: string, model?: ShapeTarget, variant?:
 		: shape;
 }
 
+/** Identity of the frame price list `target` bills under; equal keys price every frame alike. */
+export function frameBillingKey(target: ShapeTarget | undefined): string {
+	return billingFamily(target?.api);
+}
+
+/**
+ * Billed-token estimate for one rendered frame of `size` read by `target`. The
+ * family formulas take one edge, so the frame is priced at its longer edge.
+ */
+export function frameTokens(target: ShapeTarget | undefined, size: { width: number; height: number }): number {
+	return familyBilling(billingFamily(target?.api), Math.max(size.width, size.height)).frameTokenEstimate;
+}
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -468,10 +481,11 @@ export const MAX_FRAMES_DEFAULT = 80;
  *  text region (newest) — with the denser low-quality tier filling the middle. */
 export const HQ_EDGE_FRAMES = 3;
 
-/** Conservative per-frame token estimate used for context budgeting — the
- *  upper bound across shapes: high-res Claude frames hit the 4,784 visual-token
- *  cap, billed at +5% margin (ceil(4784 * 1.05)). Keeps the overflow guard from
- *  undercounting a high-res archive at the raised {@link MAX_FRAMES_DEFAULT}. */
+/** Conservative per-frame token estimate for archive sizing and for frames of
+ *  unknown size — the upper bound across shapes: high-res Claude frames hit the
+ *  4,784 visual-token cap, billed at +5% margin (ceil(4784 * 1.05)). Keeps the
+ *  overflow guard from undercounting a high-res archive at the raised
+ *  {@link MAX_FRAMES_DEFAULT}. */
 export const FRAME_TOKEN_ESTIMATE = 5024;
 
 /** Conservative upper bound for one persisted frame's base64 payload. The

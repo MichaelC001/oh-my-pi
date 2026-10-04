@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `frameTokens` and `frameBillingKey`, which price a rendered frame at what the model reading it is billed ([#14291](https://github.com/can1357/oh-my-pi/pull/14291) by [@will-bogusz](https://github.com/will-bogusz))
+
 ## [18.2.9] - 2026-09-22
 
 ### Fixed

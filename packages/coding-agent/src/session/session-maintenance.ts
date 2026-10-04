@@ -3695,7 +3695,6 @@ export class SessionMaintenance {
 		const blocks = archive
 			? snapcompact.historyBlocks(archive, { maxFrameDataBytes: snapcompact.FRAME_DATA_BYTES_BUDGET })
 			: undefined;
-		const projectionOptions = { excludeEncryptedReasoning: true } as const;
 		if (!leaf) {
 			const summaryMessage = createCompactionSummaryMessage(
 				args.summary,
@@ -3707,7 +3706,7 @@ export class SessionMaintenance {
 					blocks,
 				},
 			);
-			return nonMessageTokens + this.#tokenizer.countMessages(convertToLlm([summaryMessage]), projectionOptions);
+			return nonMessageTokens + this.#countProjectedMessages([summaryMessage]);
 		}
 		const pending: CompactionEntry = {
 			type: "compaction",
@@ -3724,10 +3723,10 @@ export class SessionMaintenance {
 			providerReplayThroughEntryId: args.providerReplayThroughEntryId,
 		};
 		const rebuilt = buildSessionContext([...branch, pending]);
-		const rebuiltMessages = convertToLlm(rebuilt.messages);
+		const rebuiltTokens = this.#countProjectedMessages(rebuilt.messages);
 		const providerPayload = getOpenAiRemoteCompactionPayload(pending);
 		if (!providerPayload) {
-			return nonMessageTokens + this.#tokenizer.countMessages(rebuiltMessages, projectionOptions);
+			return nonMessageTokens + rebuiltTokens;
 		}
 
 		const summaryMessage = createCompactionSummaryMessage(args.summary, args.tokensBefore, new Date().toISOString(), {
@@ -3736,13 +3735,27 @@ export class SessionMaintenance {
 			method: args.method,
 			blocks,
 		});
-		const summaryTokens = this.#tokenizer.countMessages(convertToLlm([summaryMessage]), projectionOptions);
+		const summaryTokens = this.#countProjectedMessages([summaryMessage]);
 		const nativeHistoryTokens = this.#countOpenAiNativeHistoryTokens(providerPayload);
+		return nonMessageTokens + rebuiltTokens - summaryTokens + nativeHistoryTokens;
+	}
+
+	/**
+	 * Count a rebuilt context the way {@link #estimateStoredContextTokens} will once it is committed:
+	 * a summary carrying frames is counted as itself so each frame gets the active model's frame
+	 * price, not the generic image estimate `convertToLlm` would give it.
+	 */
+	#countProjectedMessages(messages: AgentMessage[]): number {
+		const options = { excludeEncryptedReasoning: true } as const;
+		const archives: AgentMessage[] = [];
+		const rest: AgentMessage[] = [];
+		for (const message of messages) {
+			const hasFrames =
+				message.role === "compactionSummary" && (message.blocks !== undefined || message.images !== undefined);
+			(hasFrames ? archives : rest).push(message);
+		}
 		return (
-			nonMessageTokens +
-			this.#tokenizer.countMessages(rebuiltMessages, projectionOptions) -
-			summaryTokens +
-			nativeHistoryTokens
+			this.#tokenizer.countMessages(archives, options) + this.#tokenizer.countMessages(convertToLlm(rest), options)
 		);
 	}
 
