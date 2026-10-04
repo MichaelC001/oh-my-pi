@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Sped up streaming JSON string scanning for long tool-argument payloads by bulk-skipping ordinary characters.
+
 ## [18.5.1] - 2026-10-03
 
 ### Added

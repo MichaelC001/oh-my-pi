@@ -32,6 +32,16 @@ export const LBRACKET = 0x5b;
 export const RBRACKET = 0x5d;
 const U = 0x75;
 
+/**
+ * Minimum remaining string length for bulk-skipping ordinary characters in
+ * {@link JsonLexer.string} with two engine `indexOf` scans (nearest quote or
+ * backslash) instead of one `charCodeAt` per character. Below this the
+ * `indexOf` setup costs more than the per-char loop on quote-dense input;
+ * long string runs — the multi-KB tool-argument payloads that dominate
+ * streaming re-parses — scan several times faster above it.
+ */
+const STRING_BULK_SCAN_MIN = 32;
+
 /** Valid chars after `\` in a strict JSON escape: `" \ / b f n r t u`. */
 export const VALID_ESCAPE_CHAR = new Uint8Array(128);
 for (const ch of '"\\/bfnrtu') VALID_ESCAPE_CHAR[ch.charCodeAt(0)] = 1;
@@ -218,7 +228,19 @@ export class JsonLexer {
 		// malformed structure fails loudly instead of silently swallowing
 		// commas/colons or sibling members.
 		const lenient = quote === SQUOTE || this.mode === "streaming";
+		const quoteChar = quote === QUOTE ? '"' : "'";
 		while (i < n) {
+			// Bulk-skip ordinary characters: the next interesting offset is the
+			// nearest quote or backslash, found with engine-speed scans rather
+			// than one `charCodeAt` per character. Short tails keep the per-char
+			// loop; landing on a special char falls through to the unchanged
+			// handling below, so scanned tokens are identical.
+			if (n - i > STRING_BULK_SCAN_MIN) {
+				const q = s.indexOf(quoteChar, i);
+				const b = s.indexOf("\\", i);
+				i = q === -1 ? (b === -1 ? n : b) : b === -1 || q < b ? q : b;
+				if (i >= n) break;
+			}
 			const cc = s.charCodeAt(i);
 			if (cc !== BACKSLASH && cc !== quote) {
 				i++;
