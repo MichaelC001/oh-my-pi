@@ -24,8 +24,8 @@ export function matchesAuthAccountSelector(selector: AuthAccountSelector, identi
 export class AccountPolicies {
 	#accountPolicies: AuthAccountPolicies;
 	#defaultReservePct: number;
-	/** Unmatched-policy warnings already logged, so per-request validation stays quiet. */
-	#warnedUnmatched = new Set<string>();
+	/** Indexes of policies already warned as unmatched; validation runs on every selection. */
+	#warnedUnmatched = new Set<number>();
 
 	constructor(policies: AuthAccountPolicies, defaultReservePct: number | undefined) {
 		AccountPolicies.#validateAccountPolicyConfiguration(policies);
@@ -52,10 +52,10 @@ export class AccountPolicies {
 		storedCredentials: ReadonlyMap<string, readonly AuthCredential[]> = new Map(),
 	): void {
 		const next = new AccountPolicies(policies, defaultReservePct);
-		next.#warnedUnmatched = this.#warnedUnmatched;
 		for (const [provider, credentials] of storedCredentials) next.validateFor(provider, credentials);
 		this.#accountPolicies = next.#accountPolicies;
 		this.#defaultReservePct = next.#defaultReservePct;
+		this.#warnedUnmatched = next.#warnedUnmatched;
 	}
 
 	static #validateAccountPolicyConfiguration(accountPolicies: AuthAccountPolicies): void {
@@ -109,13 +109,7 @@ export class AccountPolicies {
 		}
 	}
 
-	/**
-	 * Check the policies for `provider` against its visible OAuth credentials.
-	 *
-	 * A policy whose account is not among them (disabled, logged out, or hidden by an
-	 * account-pool filter) is inert: it matches nothing at selection time, so it only
-	 * warns once. Ambiguous or overlapping selectors still throw.
-	 */
+	/** Throw on ambiguous selectors for `provider`; a selector whose account is absent is inert and warns once. */
 	validateFor(provider: string, credentials: readonly AuthCredential[]): void {
 		const policies = this.#accountPolicies
 			.map((policy, index) => ({ policy, index }))
@@ -136,9 +130,8 @@ export class AccountPolicies {
 			}
 			const path = `auth.accountPolicies[${index}].account`;
 			if (matches.length === 0) {
-				const key = `${provider}\0${index}\0${JSON.stringify(policy.account)}`;
-				if (!this.#warnedUnmatched.has(key)) {
-					this.#warnedUnmatched.add(key);
+				if (!this.#warnedUnmatched.has(index)) {
+					this.#warnedUnmatched.add(index);
 					logger.warn("Account policy matches no stored OAuth account; ignoring it", { provider, path });
 				}
 				continue;
