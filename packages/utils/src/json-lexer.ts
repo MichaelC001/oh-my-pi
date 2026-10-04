@@ -229,16 +229,30 @@ export class JsonLexer {
 		// commas/colons or sibling members.
 		const lenient = quote === SQUOTE || this.mode === "streaming";
 		const quoteChar = quote === QUOTE ? '"' : "'";
+		// Next quote / backslash at or after the cursor, cached across iterations
+		// and re-searched only once the cursor passes them, so every character is
+		// scanned at most once per kind and the bulk path stays linear even on
+		// escape-dense input (re-searching the far closing quote after each
+		// escape would be quadratic). `n` means "none before end of input".
+		let nextQuote = -1;
+		let nextBackslash = -1;
 		while (i < n) {
-			// Bulk-skip ordinary characters: the next interesting offset is the
-			// nearest quote or backslash, found with engine-speed scans rather
-			// than one `charCodeAt` per character. Short tails keep the per-char
-			// loop; landing on a special char falls through to the unchanged
-			// handling below, so scanned tokens are identical.
-			if (n - i > STRING_BULK_SCAN_MIN) {
-				const q = s.indexOf(quoteChar, i);
-				const b = s.indexOf("\\", i);
-				i = q === -1 ? (b === -1 ? n : b) : b === -1 || q < b ? q : b;
+			// Bulk-skip a run of ordinary characters: jump to the nearest quote or
+			// backslash instead of one `charCodeAt` per character. Only entered on
+			// an ordinary character, so back-to-back escapes never pay an `indexOf`;
+			// short tails keep the per-char loop. Landing on a special char falls
+			// through to the unchanged handling below, so tokens are identical.
+			const c0 = s.charCodeAt(i);
+			if (c0 !== BACKSLASH && c0 !== quote && n - i > STRING_BULK_SCAN_MIN) {
+				if (nextQuote < i) {
+					const q = s.indexOf(quoteChar, i);
+					nextQuote = q === -1 ? n : q;
+				}
+				if (nextBackslash < i) {
+					const b = s.indexOf("\\", i);
+					nextBackslash = b === -1 ? n : b;
+				}
+				i = nextQuote < nextBackslash ? nextQuote : nextBackslash;
 				if (i >= n) break;
 			}
 			const cc = s.charCodeAt(i);
