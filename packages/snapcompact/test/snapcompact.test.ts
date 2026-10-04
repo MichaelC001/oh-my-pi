@@ -1152,6 +1152,26 @@ describe("compact", () => {
 	});
 });
 
+describe("frame data budget", () => {
+	const codex = { api: "openai-codex-responses", id: "gpt-6-astra" } as const;
+	const highResFrames = Math.floor(snapcompact.FRAME_DATA_BYTES_BUDGET / snapcompact.FRAME_DATA_BYTES_ESTIMATE);
+
+	it("gives the default 1568px shapes more of the same byte budget", () => {
+		const opus = snapcompact.resolveShape({ api: "anthropic-messages", id: "claude-opus-4-8" });
+		const sonnet = snapcompact.resolveShape({ api: "anthropic-messages", id: "claude-sonnet-4-5" });
+		expect(snapcompact.maxFramesForDataBudget(opus)).toBe(highResFrames);
+		expect(snapcompact.maxFramesForDataBudget(snapcompact.resolveShape(codex))).toBe(26);
+		expect(snapcompact.maxFramesForDataBudget(sonnet)).toBe(26);
+		// Frames larger than 1932px keep the 1932px charge rather than losing frames.
+		const gemini = snapcompact.resolveShape({ api: "google-generative-ai", id: "gemini-3.5-flash" });
+		expect(snapcompact.maxFramesForDataBudget(gemini)).toBe(highResFrames);
+		// Inkier 1568px variants keep the 1932px charge.
+		for (const variant of ["8x13-bw", "6x12-dim", "doc-8on16-sent-dim", "8on16-bw", "silver16-bw"] as const) {
+			expect(snapcompact.maxFramesForDataBudget(snapcompact.resolveShape(codex, variant))).toBe(highResFrames);
+		}
+	});
+});
+
 describe("archive helpers", () => {
 	it("getPreservedArchive rejects malformed payloads", () => {
 		expect(snapcompact.getPreservedArchive(undefined)).toBeUndefined();

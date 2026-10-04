@@ -501,9 +501,29 @@ export const FRAME_DATA_BYTES_ESTIMATE = 170_000;
  *  ~11 MB JSON payload on every turn. */
 export const FRAME_DATA_BYTES_BUDGET = 3_000_000;
 
-/** Frame-count cap implied by {@link FRAME_DATA_BYTES_BUDGET}. */
-export function maxFramesForDataBudget(maxFrameDataBytes: number = FRAME_DATA_BYTES_BUDGET): number {
-	return Math.max(1, Math.floor(maxFrameDataBytes / FRAME_DATA_BYTES_ESTIMATE));
+/** Default edge variants whose frames shrink with pixel area. Inkier variants
+ *  keep the full {@link FRAME_DATA_BYTES_ESTIMATE} at any frame size. */
+const AREA_PRICED_VARIANTS: readonly ShapeGeometry[] = [SHAPE_VARIANTS["8on22-bw"], SHAPE_VARIANTS["11on16-bw"]];
+
+/** Frame-count cap implied by {@link FRAME_DATA_BYTES_BUDGET} for frames
+ *  rendered by `shape`. {@link AREA_PRICED_VARIANTS} below 1932px are charged
+ *  {@link FRAME_DATA_BYTES_ESTIMATE} scaled by pixel area; every other shape
+ *  pays the full estimate. */
+export function maxFramesForDataBudget(shape: ShapeGeometry): number {
+	const areaPriced = AREA_PRICED_VARIANTS.some(
+		variant =>
+			variant.font === shape.font &&
+			variant.cellWidth === shape.cellWidth &&
+			variant.cellHeight === shape.cellHeight &&
+			variant.stretch === shape.stretch &&
+			variant.variant === shape.variant &&
+			variant.stopwordDim === shape.stopwordDim &&
+			variant.columns === shape.columns &&
+			variant.lineRepeat === shape.lineRepeat,
+	);
+	const areaRatio = areaPriced ? (shape.frameSize / HIGH_RES_ANTHROPIC_VARIANT.frameSize) ** 2 : 1;
+	const frameBytes = Math.min(FRAME_DATA_BYTES_ESTIMATE, Math.ceil(FRAME_DATA_BYTES_ESTIMATE * areaRatio));
+	return Math.max(1, Math.floor(FRAME_DATA_BYTES_BUDGET / frameBytes));
 }
 
 /** Base64 byte length for persisted snapcompact frames. */
