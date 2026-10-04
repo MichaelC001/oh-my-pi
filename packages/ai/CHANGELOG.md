@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Aligned Devin completion settings with the native Devin CLI: temperature 1, topP 0.95, topK 40, 400 max newlines, and no synthetic stop patterns. Explicit temperature, topP, output, and stop-sequence overrides still apply ([#10234](https://github.com/can1357/oh-my-pi/pull/10234) by [@will-bogusz](https://github.com/will-bogusz)).
+- Changed Devin chat turns to sample with the native Devin CLI's settings and no synthetic stop patterns; explicit temperature, topP and stop sequences still apply ([#10234](https://github.com/can1357/oh-my-pi/pull/10234) by [@will-bogusz](https://github.com/will-bogusz)).
 
 ## [18.4.4] - 2026-09-29
 
