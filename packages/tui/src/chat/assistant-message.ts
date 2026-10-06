@@ -2,7 +2,7 @@ import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-a
 import { type Component, Container } from "../tui";
 import { Image, type ImageBudget } from "../components/image";
 import { ImageProtocol, TERMINAL } from "../terminal-capabilities";
-import { Markdown, type MarkdownTheme } from "../components/markdown";
+import { type DefaultTextStyle, Markdown, type MarkdownTheme } from "../components/markdown";
 import { Spacer } from "../components/spacer";
 import { Text } from "../components/text";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
@@ -362,20 +362,23 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	/**
-	 * Color transform for assistant paragraph prose. An explicitly installed
-	 * transform (live-command output) always wins; otherwise the optional
-	 * `assistantMessageText` theme token paints prose. Returns undefined when the
-	 * token is unset or empty so the terminal default foreground is used
-	 * byte-for-byte, exactly as before the token existed.
+	 * Default text style for assistant paragraph Markdown. An explicitly
+	 * installed transform (live-command output) always wins and keeps its
+	 * historical paint-everything contract; otherwise the optional
+	 * `assistantMessageText` theme token paints prose, flagged `proseFg` so
+	 * markdown sub-elements keep their own `md*` tokens (docs/theme.md).
+	 * Returns undefined when the token is unset or empty so the terminal
+	 * default foreground is used byte-for-byte, exactly as before the token
+	 * existed.
 	 *
 	 * The token is re-derived on every rebuild (the theme-change path calls
 	 * `invalidate()` and rebuilds through the teardown path, which re-consults
 	 * the active theme), so prose follows theme switches both ways.
 	 */
-	#getProseColorTransform(): ((text: string) => string) | undefined {
-		if (this.#textColorTransform) return this.#textColorTransform;
+	#getProseTextStyle(): DefaultTextStyle | undefined {
+		if (this.#textColorTransform) return { color: this.#textColorTransform };
 		if (typeof theme === "undefined" || !theme.hasColor("assistantMessageText")) return undefined;
-		return (text: string) => theme.fg("assistantMessageText", text);
+		return { color: (text: string) => theme.fg("assistantMessageText", text), proseFg: true };
 	}
 
 	#getProseTheme(): MarkdownTheme {
@@ -1211,7 +1214,7 @@ export class AssistantMessageComponent extends Container {
 					1,
 					0,
 					this.#getProseTheme(),
-					this.#textColorTransform ? { color: this.#textColorTransform } : undefined,
+					this.#getProseTextStyle(),
 					0,
 				)
 			: new Markdown(text, 1, 0, getMarkdownTheme(), {
@@ -1639,9 +1642,7 @@ export class AssistantMessageComponent extends Container {
 			if (content.type === "text" && canonicalizeMessage(content.text)) {
 				// Set paddingY=0 to avoid extra spacing before tool executions
 				const trimmed = content.text.trim();
-				const proseColor = this.#getProseColorTransform();
-				const mdOptions = proseColor ? { color: proseColor } : undefined;
-				const md = new Markdown(trimmed, 1, 0, this.#getProseTheme(), mdOptions, 0);
+				const md = new Markdown(trimmed, 1, 0, this.#getProseTheme(), this.#getProseTextStyle(), 0);
 				this.#contentContainer.addChild(md);
 				this.#emergencyText = md;
 				captureItems?.push({ md, contentIndex: i, blockType: "text", lastText: trimmed });
