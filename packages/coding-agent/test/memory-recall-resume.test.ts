@@ -183,8 +183,8 @@ describe("Mnemopi recall across a resume", () => {
 		}
 		await writeTranscript(live.session.sessionManager);
 		await live.maybeRecallOnAgentStart();
-		const delivered = live.lastRecallSnippet ?? "";
-		// The budget cut the block, as the prompt carries it.
+		// The session caches the full recall; the prompt carries it cut to the budget.
+		const delivered = live.budgetRecallBlock(live.lastRecallSnippet ?? "");
 		expect(delivered.endsWith("…")).toBe(true);
 		const sessionFile = await writeTranscript(live.session.sessionManager);
 

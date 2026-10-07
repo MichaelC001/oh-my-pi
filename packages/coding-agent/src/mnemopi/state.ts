@@ -640,9 +640,11 @@ export class MnemopiSessionState {
 		const truncated = truncateRecallQuery(query, latestPrompt, this.config.recallMaxQueryChars);
 		const recall = await this.#recallBlock(truncated, signal);
 		const record = recall && this.#deliveredRecall(recall, budget);
+		// The staged block and the transcript carry it as delivered; the session caches the
+		// full one, which every later prompt render cuts to the current budget.
 		return {
 			context: record?.text || undefined,
-			commit: () => this.#commitRecall(generation, record?.text ?? "", record),
+			commit: () => this.#commitRecall(generation, recall?.text ?? "", record),
 		};
 	}
 
@@ -788,7 +790,7 @@ export class MnemopiSessionState {
 			try {
 				const recall = await this.#recallBlock(truncated);
 				record = recall && this.#deliveredRecall(recall, block => this.budgetRecallBlock(block));
-				context = record?.text;
+				context = recall?.text;
 			} catch (error) {
 				logger.warn("Mnemopi: auto-recall failed", {
 					bank: this.config.bank,
