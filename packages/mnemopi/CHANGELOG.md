@@ -16,7 +16,7 @@
 - Fixed new memories gaining graph links (`related_to`, `references`, `ctx`) to memories that were already invalidated, superseded, or expired; proactive linking and consolidation now link only to memories recall can still return, so the graph stops growing toward retired memories ([#14427](https://github.com/can1357/oh-my-pi/pull/14427) by [@tickernelz](https://github.com/tickernelz)).
 ### Added
 
-- Exported `clipRecallContent`, which clips content the way recall previews are clipped
+- Exported `clipRecallContent`, which clips content the way recall previews are clipped ([#14656](https://github.com/can1357/oh-my-pi/pull/14656) by [@andrebrait](https://github.com/andrebrait))
 
 ## [18.5.1] - 2026-10-03
 
