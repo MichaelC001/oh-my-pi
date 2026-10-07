@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Codex `config.toml` files (`~/.codex/config.toml` when enabled, and project `.codex/config.toml`) being rejected with an `Invalid item … Missing path` warning; keys that match an omp setting, such as `personality`, now apply from a project's `.codex/config.toml` as they do from `.claude/settings.json`
+
 ## [18.8.2] - 2026-10-07
 
 ### Fixed
