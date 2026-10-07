@@ -613,8 +613,8 @@ async function writeOwnedProfilePreferences(file: string): Promise<void> {
 	profile.password_manager_leak_detection = false;
 	prefs.profile = profile;
 	const staged = `${file}.omp-${process.pid}`;
-	await Bun.write(staged, JSON.stringify(prefs));
 	try {
+		await Bun.write(staged, JSON.stringify(prefs));
 		await fs.promises.rename(staged, file);
 	} catch (error) {
 		await fs.promises.rm(staged, { force: true });
