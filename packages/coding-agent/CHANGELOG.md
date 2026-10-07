@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Plugin registry discovery warnings (unparsable registry, invalid plugin ids, missing `installPath`) are now logged instead of silently dropped.
+- Plugin registry discovery warnings (unparsable registry, invalid plugin ids, missing `installPath`) are now logged instead of silently dropped ([#14503](https://github.com/can1357/oh-my-pi/issues/14503)) ([#14788](https://github.com/can1357/oh-my-pi/pull/14788) by [@tahakotil](https://github.com/tahakotil)).
 
 ## [18.8.0] - 2026-10-07
 

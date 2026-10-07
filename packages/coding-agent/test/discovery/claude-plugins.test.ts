@@ -116,6 +116,24 @@ describe("listClaudePluginRoots", () => {
 		expect(warnSpy.mock.calls.filter(([message]) => message === first.warnings[0])).toHaveLength(1);
 	});
 
+	test("logs registry warnings once for concurrent callers", async () => {
+		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		await fs.mkdir(pluginsDir, { recursive: true });
+		const registryPath = path.join(pluginsDir, "installed_plugins.json");
+		await fs.writeFile(registryPath, "not json");
+		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+		const results = await Promise.all([
+			listClaudePluginRoots(tempDir),
+			listClaudePluginRoots(tempDir),
+			listClaudePluginRoots(tempDir),
+		]);
+
+		const message = `Failed to parse Claude Code plugin registry: ${registryPath}`;
+		for (const result of results) expect(result.warnings).toEqual([message]);
+		expect(warnSpy.mock.calls.filter(([m]) => m === message)).toHaveLength(1);
+	});
+
 	test("parses plugin with user scope", async () => {
 		const pluginsDir = path.join(tempDir, ".claude", "plugins");
 		await fs.mkdir(pluginsDir, { recursive: true });
