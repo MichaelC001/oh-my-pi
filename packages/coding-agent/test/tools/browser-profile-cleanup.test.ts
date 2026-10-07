@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { removeUserDataDir } from "@oh-my-pi/pi-coding-agent/tools/browser/launch";
+import { removeUserDataDir, seedOwnedProfilePreferences } from "@oh-my-pi/pi-coding-agent/tools/browser/launch";
 import { type BrowserHandle, releaseBrowser } from "@oh-my-pi/pi-coding-agent/tools/browser/registry";
 import * as piUtils from "@oh-my-pi/pi-utils";
 
@@ -68,5 +68,31 @@ describe("headless Chromium profile cleanup (issue #7058)", () => {
 		await releaseBrowser(handle, { kill: false });
 
 		expect(fs.existsSync(dir)).toBe(false);
+	});
+});
+
+describe("owned Chromium profile preferences", () => {
+	it("disables password leak detection while keeping a reused profile's other preferences", async () => {
+		const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-chrome-profile-test-"));
+		const file = path.join(dir, "Default", "Preferences");
+		try {
+			await Bun.write(
+				file,
+				JSON.stringify({ intl: { accept_languages: "en-US" }, profile: { exit_type: "Normal" } }),
+			);
+			await seedOwnedProfilePreferences(dir);
+			expect(JSON.parse(await Bun.file(file).text())).toEqual({
+				intl: { accept_languages: "en-US" },
+				profile: { exit_type: "Normal", password_manager_leak_detection: false },
+			});
+
+			await fs.promises.rm(path.join(dir, "Default"), { recursive: true });
+			await seedOwnedProfilePreferences(dir);
+			expect(JSON.parse(await Bun.file(file).text())).toEqual({
+				profile: { password_manager_leak_detection: false },
+			});
+		} finally {
+			await fs.promises.rm(dir, { recursive: true, force: true });
+		}
 	});
 });

@@ -17,7 +17,7 @@ import { daemonRuntimeDir } from "../../launch/paths";
 import type { DaemonSnapshot } from "@oh-my-pi/pi-tui/tools/daemon";
 import { throwIfAborted } from "../tool-errors";
 import { probeCdpStatus } from "./attach";
-import { resolveSharedBrowserLaunchSpec } from "./launch";
+import { resolveSharedBrowserLaunchSpec, seedOwnedProfilePreferences } from "./launch";
 import type { SharedTargetScope } from "./orphan-registry";
 
 /** Chrome prints this on stderr once the CDP listener is up; the broker's ready probe captures the line. */
@@ -115,6 +115,15 @@ export async function ensureSharedBrowser(opts: {
 			// matched): replace it rather than handing out a dead endpoint.
 			await stopQuietly(client, name, "Shared browser", opts.signal);
 			continue;
+		}
+		// Only while no Chrome runs on the profile: a live one reads prefs at startup only.
+		try {
+			await seedOwnedProfilePreferences(userDataDir);
+		} catch (error) {
+			logger.warn("Could not seed shared browser profile preferences", {
+				userDataDir,
+				error: error instanceof Error ? error.message : String(error),
+			});
 		}
 		try {
 			const started = await client.request(

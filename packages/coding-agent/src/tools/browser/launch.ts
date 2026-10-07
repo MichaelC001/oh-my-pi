@@ -4,6 +4,7 @@ import * as path from "node:path";
 import {
 	$which,
 	getPuppeteerDir,
+	isEnoent,
 	isRecord,
 	logger,
 	removeWithRetries,
@@ -559,6 +560,7 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 		launchArgs.push(`--user-data-dir=${userDataDir}`);
 	}
 	try {
+		if (userDataDir) await seedOwnedProfilePreferences(userDataDir);
 		const executablePath = await ensureChromiumExecutable();
 		const browser = await puppeteer.launch({
 			headless: opts.headless,
@@ -575,6 +577,36 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 		if (userDataDir) await removeUserDataDir(userDataDir);
 		throw error;
 	}
+}
+
+/**
+ * Pin automation-safe preferences in a Chromium profile OMP owns. Password leak
+ * detection answers a password form submit with a tab-modal "Change your
+ * password" dialog; while it is open Chromium drops `Input.dispatchMouseEvent`
+ * input for the tab, and a hidden browser offers no way to close it. Chromium
+ * reads `Preferences` only at startup and rewrites it from memory, so call this
+ * before a Chromium process starts on the profile.
+ */
+export async function seedOwnedProfilePreferences(userDataDir: string): Promise<void> {
+	const file = path.join(userDataDir, "Default", "Preferences");
+	let prefs: Record<string, unknown> = {};
+	try {
+		const parsed: unknown = JSON.parse(await fs.promises.readFile(file, "utf8"));
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) prefs = parsed as Record<string, unknown>;
+	} catch (error) {
+		// Fresh profiles have no file yet; Chromium discards an unparseable one on startup anyway.
+		if (!isEnoent(error) && !(error instanceof SyntaxError)) throw error;
+	}
+	const current = prefs.profile;
+	const profile: Record<string, unknown> =
+		current && typeof current === "object" && !Array.isArray(current) ? (current as Record<string, unknown>) : {};
+	if (profile.password_manager_leak_detection === false) return;
+	profile.password_manager_leak_detection = false;
+	prefs.profile = profile;
+	await fs.promises.mkdir(path.dirname(file), { recursive: true });
+	const staged = `${file}.omp-${process.pid}`;
+	await Bun.write(staged, JSON.stringify(prefs));
+	await fs.promises.rename(staged, file);
 }
 
 /** Fully resolved executable and argv for a broker-spawned shared Chromium. */
