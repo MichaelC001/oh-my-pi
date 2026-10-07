@@ -19,6 +19,10 @@
 - Added `PI_NATIVES_DIR` support to `getNativesDir()` for configuring the native addon directory.
 - Added `ZipPackage` for lazily reading ZIP-based document packages with a total decompressed-size limit, along with `DocxImage.readBytes()` for accessing raw DOCX image data.
 
+### Fixed
+
+- Fixed archive extraction failing on Windows without the symlink privilege: symlink entries now degrade to a directory junction or an in-archive file copy instead of failing the whole archive with `EPERM`, and directory symlink entries are extracted instead of being skipped
+
 ## [18.8.0] - 2026-10-07
 
 ### Added
