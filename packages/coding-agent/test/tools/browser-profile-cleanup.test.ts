@@ -95,4 +95,21 @@ describe("owned Chromium profile preferences", () => {
 			await fs.promises.rm(dir, { recursive: true, force: true });
 		}
 	});
+
+	it("warns instead of failing the launch and leaves no staged file when the write fails", async () => {
+		const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-chrome-profile-test-"));
+		const renameSpy = spyOn(fs.promises, "rename").mockRejectedValue(
+			Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" }),
+		);
+		const warnSpy = spyOn(piUtils.logger, "warn");
+		try {
+			await expect(seedOwnedProfilePreferences(dir)).resolves.toBeUndefined();
+			expect(warnSpy).toHaveBeenCalledTimes(1);
+			expect(await fs.promises.readdir(path.join(dir, "Default"))).toEqual([]);
+		} finally {
+			renameSpy.mockRestore();
+			warnSpy.mockRestore();
+			await fs.promises.rm(dir, { recursive: true, force: true });
+		}
+	});
 });

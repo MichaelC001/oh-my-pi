@@ -585,28 +585,41 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
  * password" dialog; while it is open Chromium drops `Input.dispatchMouseEvent`
  * input for the tab, and a hidden browser offers no way to close it. Chromium
  * reads `Preferences` only at startup and rewrites it from memory, so call this
- * before a Chromium process starts on the profile.
+ * before a Chromium process starts on the profile. Best-effort: the preference
+ * only suppresses a dialog, so a failure is logged and never blocks the launch.
  */
 export async function seedOwnedProfilePreferences(userDataDir: string): Promise<void> {
-	const file = path.join(userDataDir, "Default", "Preferences");
+	try {
+		await writeOwnedProfilePreferences(path.join(userDataDir, "Default", "Preferences"));
+	} catch (error) {
+		logger.warn("Could not seed browser profile preferences", {
+			userDataDir,
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+}
+
+async function writeOwnedProfilePreferences(file: string): Promise<void> {
 	let prefs: Record<string, unknown> = {};
 	try {
 		const parsed: unknown = JSON.parse(await fs.promises.readFile(file, "utf8"));
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) prefs = parsed as Record<string, unknown>;
+		if (isRecord(parsed)) prefs = parsed;
 	} catch (error) {
 		// Fresh profiles have no file yet; Chromium discards an unparseable one on startup anyway.
 		if (!isEnoent(error) && !(error instanceof SyntaxError)) throw error;
 	}
-	const current = prefs.profile;
-	const profile: Record<string, unknown> =
-		current && typeof current === "object" && !Array.isArray(current) ? (current as Record<string, unknown>) : {};
+	const profile = isRecord(prefs.profile) ? prefs.profile : {};
 	if (profile.password_manager_leak_detection === false) return;
 	profile.password_manager_leak_detection = false;
 	prefs.profile = profile;
-	await fs.promises.mkdir(path.dirname(file), { recursive: true });
 	const staged = `${file}.omp-${process.pid}`;
 	await Bun.write(staged, JSON.stringify(prefs));
-	await fs.promises.rename(staged, file);
+	try {
+		await fs.promises.rename(staged, file);
+	} catch (error) {
+		await fs.promises.rm(staged, { force: true });
+		throw error;
+	}
 }
 
 /** Fully resolved executable and argv for a broker-spawned shared Chromium. */

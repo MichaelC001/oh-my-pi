@@ -117,14 +117,7 @@ export async function ensureSharedBrowser(opts: {
 			continue;
 		}
 		// Only while no Chrome runs on the profile: a live one reads prefs at startup only.
-		try {
-			await seedOwnedProfilePreferences(userDataDir);
-		} catch (error) {
-			logger.warn("Could not seed shared browser profile preferences", {
-				userDataDir,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
+		await seedOwnedProfilePreferences(userDataDir);
 		try {
 			const started = await client.request(
 				{
