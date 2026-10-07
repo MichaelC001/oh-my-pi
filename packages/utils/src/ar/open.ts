@@ -229,10 +229,14 @@ export async function extractArchive(
 			} else {
 				// Resolve through the archive, not the extraction order: this
 				// link may target another link that has not materialized yet.
-				const extracted = await archive.readFile(link.path);
-				await Bun.write(outputPath, extracted.bytes);
-				const permissions = (extracted.mode ?? 0) & 0o777;
-				if (permissions) await fs.chmod(outputPath, permissions);
+				// A dangling target cannot be copied without the symlink
+				// privilege; skip the entry so the rest still extracts.
+				const extracted = await archive.readFile(link.path).catch(() => undefined);
+				if (extracted) {
+					await Bun.write(outputPath, extracted.bytes);
+					const permissions = (extracted.mode ?? 0) & 0o777;
+					if (permissions) await fs.chmod(outputPath, permissions);
+				}
 			}
 		}
 		count++;

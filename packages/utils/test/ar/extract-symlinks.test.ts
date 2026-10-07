@@ -3,6 +3,7 @@ import * as fsSync from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { arFixture } from "./fixtures";
 import { extractArchive } from "../../src/ar/open";
 
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
@@ -116,6 +117,38 @@ describe("extractArchive symlink handling", () => {
 		expect(count).toBe(4);
 		expect(fsSync.statSync(path.join(dest, "alias")).isDirectory()).toBe(true);
 		expect(fsSync.readFileSync(path.join(dest, "link.txt"), "utf8")).toBe("hello through a link\n");
+	});
+
+	test.skipIf(process.platform !== "win32")("extracts directory aliases and skips dangling links on Windows EPERM", async () => {
+		if (!platformDescriptor) throw new Error("process.platform descriptor is unavailable");
+		Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
+		const realSymlink = fsPromises.symlink;
+		vi.spyOn(fsPromises, "symlink").mockImplementation(async (target, outputPath, type) => {
+			if (type === "junction") return realSymlink(target, outputPath, "junction");
+			const error = new Error("operation not permitted") as NodeJS.ErrnoException;
+			error.code = "EPERM";
+			throw error;
+		});
+
+		const dest = fsSync.mkdtempSync(path.join(os.tmpdir(), "omp-ar-dangling-"));
+		await extractArchive({ bytes: await arFixture("tar-links.tar"), format: "tar" }, dest);
+
+		// Real members still land; the directory alias survives as a junction
+		// and the dangling file link is skipped instead of aborting the run.
+		expect(fsSync.readFileSync(path.join(dest, "pkg/hard.txt"), "utf8")).toBe("shared content\n");
+		expect(fsSync.statSync(path.join(dest, "pkg/current")).isDirectory()).toBe(true);
+		expect(fsSync.existsSync(path.join(dest, "pkg/dangling"))).toBe(false);
+	});
+
+	test.skipIf(process.platform === "win32")("materializes tar directory aliases as real symlinks", async () => {
+		// The link-before-isDirectory reorder: entries that are BOTH directory
+		// and a link used to be dropped from the link queue entirely, so
+		// directory aliases silently never appeared on extraction.
+		const dest = fsSync.mkdtempSync(path.join(os.tmpdir(), "omp-ar-alias-"));
+		const count = await extractArchive({ bytes: await arFixture("tar-links.tar"), format: "tar" }, dest);
+		expect(count).toBeGreaterThan(0);
+		expect(fsSync.statSync(path.join(dest, "pkg/current")).isDirectory()).toBe(true);
+		expect(fsSync.lstatSync(path.join(dest, "pkg/current")).isSymbolicLink()).toBe(true);
 	});
 
 	test("degrades directory symlinks to junctions and file symlinks to copies on Windows EPERM", async () => {
