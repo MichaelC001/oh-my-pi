@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Sped up external commands in the embedded shell on glibc 2.29+ Linux: launching one no longer copies the host process's memory mappings (about 9 ms → 0.8 ms per launch with omp at ~450 MB RSS); commands run after `ulimit`/`umask` or with redirects above fd 2 still launch the old way ([#14847](https://github.com/can1357/oh-my-pi/issues/14847), [#14858](https://github.com/can1357/oh-my-pi/pull/14858) by [@farnoy](https://github.com/farnoy))
+
 ## [18.8.4] - 2026-10-08
 
 ### Fixed
