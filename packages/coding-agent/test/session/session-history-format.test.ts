@@ -429,4 +429,50 @@ describe("formatSessionHistoryMarkdown", () => {
 		expect(mid).toContain(`\`\`\`diff\n${midDiff}\n\`\`\``);
 		expect(mid).not.toContain("elided");
 	});
+	it("transforms one-line tool previews before truncating them", () => {
+		const secret = `SECRET_${"x".repeat(80)}`;
+		const transform = (text: string): string => text.replace(secret, "[redacted]");
+		const output = formatSessionHistoryMarkdown(
+			[
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "c1",
+							name: "bash",
+							arguments: {
+								command: `${"p".repeat(100)}${secret}`,
+								[INTENT_FIELD]: `${"i".repeat(65)}${secret}`,
+							},
+						},
+					],
+					timestamp: 1,
+				},
+			],
+			{ includeToolIntent: true, transformExpandedToolIO: transform },
+		);
+
+		expect(output).toContain("[redacted]");
+		expect(output).not.toContain(secret.slice(0, 16));
+	});
+
+	it("transforms execution-source previews before truncating them", () => {
+		const secret = `SECRET_${"x".repeat(80)}`;
+		const output = formatSessionHistoryMarkdown(
+			[
+				{
+					role: "bashExecution",
+					command: `${"p".repeat(100)}${secret}`,
+					output: "",
+					exitCode: 0,
+					timestamp: 1,
+				},
+			],
+			{ transformExpandedToolIO: text => text.replace(secret, "[redacted]") },
+		);
+
+		expect(output).toContain("[redacted]");
+		expect(output).not.toContain(secret.slice(0, 16));
+	});
 });

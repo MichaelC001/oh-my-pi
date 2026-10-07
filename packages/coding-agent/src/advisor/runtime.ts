@@ -1818,12 +1818,16 @@ function obfuscateAdvisorMessage(
 		}
 		case "bashExecution": {
 			const msg = message as AgentMessage & { command: string };
-			const command = obfuscator.obfuscate(formatExecutionSourcePreview(msg.command), sharedRegexSecretValues);
+			const command = formatExecutionSourcePreview(msg.command, text =>
+				obfuscator.obfuscate(text, sharedRegexSecretValues),
+			);
 			return command === msg.command ? message : ({ ...(message as object), command } as AgentMessage);
 		}
 		case "pythonExecution": {
 			const msg = message as AgentMessage & { code: string };
-			const code = obfuscator.obfuscate(formatExecutionSourcePreview(msg.code), sharedRegexSecretValues);
+			const code = formatExecutionSourcePreview(msg.code, text =>
+				obfuscator.obfuscate(text, sharedRegexSecretValues),
+			);
 			return code === msg.code ? message : ({ ...(message as object), code } as AgentMessage);
 		}
 		case "branchSummary": {
