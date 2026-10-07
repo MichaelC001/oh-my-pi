@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Plugin registry discovery warnings (unparsable registry, invalid plugin ids, missing `installPath`) are now logged instead of silently dropped.
+
 ## [18.8.0] - 2026-10-07
 
 ### Added

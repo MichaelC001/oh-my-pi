@@ -8,6 +8,7 @@ import {
 	getConfigDirName,
 	getPluginsDir,
 	getProjectDir,
+	logger,
 	normalizePathForComparison,
 	parseFrontmatter,
 	tryParseJson,
@@ -1355,6 +1356,8 @@ export async function listClaudePluginRoots(
 
 	const result = { roots, warnings };
 	pluginRootsCache.set(cacheKey, result);
+	// Log once per computation; cache hits return early above, so this never repeats.
+	for (const warning of warnings) logger.warn(warning);
 	return result;
 }
 
