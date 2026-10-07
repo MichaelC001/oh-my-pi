@@ -174,7 +174,7 @@
 - Added `omp usage accounts` to list OAuth account provider and identity keys without exposing tokens, making account-pool configuration easier.
 ### Added
 
-- `queue_update` events and the `get_state` queue snapshot now carry a `liveSteered` count: the leading `steering` entries are live steering already sent into the streaming response, which `remove_queued_message` cannot reach (refs #13798)
+- `queue_update` events and the `get_state` queue snapshot now carry a `liveSteered` count: the leading `steering` entries are live steering already sent into the streaming response, which `remove_queued_message` cannot reach (refs #13798) ([#14821](https://github.com/can1357/oh-my-pi/pull/14821) by [@jchanghong023](https://github.com/jchanghong023)).
 
 ### Fixed
 
