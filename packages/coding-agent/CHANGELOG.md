@@ -8,6 +8,7 @@
 
 ### Changed
 
+- Claude saved-reset salvage now plans from the reset inventory in the usage reports instead of listing every Claude account live from every session every few minutes, which tripped Anthropic's usage rate limit; redeeming still re-checks the grant live
 - Inside a Tern pane, browser opens with `headed: false` now show as a Tern picture-in-picture too; only `app.tern: false` (or `browser.tern` / `PI_BROWSER_TERN=0`) opens Chromium instead
 - Inside a Tern pane, `/fork` opens the fork in a new pane beside the original, which keeps the original session
 - Inside a Tern pane, the empty composer shows the session title in quotes and italics, or "What are we cooking?" before the session has one
