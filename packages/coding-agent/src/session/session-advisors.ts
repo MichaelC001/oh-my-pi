@@ -2165,10 +2165,13 @@ export class SessionAdvisors {
 			return declineUsageLimit();
 		}
 
-		// A refusal judges this context, not the model's health: skip the cooldown
-		// (it would also hide the model from other chains) and pin the switch instead.
-		const classifierRefusal = assistantFailure !== undefined && isClassifierRefusal(assistantFailure);
-		if (!classifierRefusal) this.#host.noteRetryFallbackCooldown(currentSelector, retryAfterMs, message);
+		// A refusal by the advisor's primary judges this context, not the model's health:
+		// skip its cooldown and pin the switch. A refusing fallback gets the usual cooldown.
+		const primaryRefused =
+			assistantFailure !== undefined &&
+			isClassifierRefusal(assistantFailure) &&
+			(advisor.retryFallback === undefined || advisor.retryFallback.originalSelector === currentSelector);
+		if (!primaryRefused) this.#host.noteRetryFallbackCooldown(currentSelector, retryAfterMs, message);
 		for (const role of chainKeys) {
 			for (const selector of this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
 				if (this.#host.isRetryFallbackSelectorSuppressed(selector)) continue;
@@ -2185,14 +2188,14 @@ export class SessionAdvisors {
 				const nextThinkingLevel = this.#setAdvisorModel(advisor, candidate, requestedThinkingLevel);
 				if (advisor.retryFallback) {
 					advisor.retryFallback.lastAppliedThinkingLevel = nextThinkingLevel;
-					advisor.retryFallback.pinned ||= classifierRefusal;
+					advisor.retryFallback.pinned ||= primaryRefused;
 				} else {
 					advisor.retryFallback = {
 						role,
 						originalSelector: currentSelector,
 						originalThinkingLevel,
 						lastAppliedThinkingLevel: nextThinkingLevel,
-						pinned: classifierRefusal,
+						pinned: primaryRefused,
 					};
 				}
 				advisor.retryFallbackPendingSuccess = true;

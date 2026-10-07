@@ -25,6 +25,7 @@ describe("advisor classifier-refusal fallback", () => {
 	let modelRegistry: ModelRegistry;
 	let advisorPrimary: Model;
 	let advisorFallback: Model;
+	let secondFallback: Model;
 	let session: AgentSession | undefined;
 
 	beforeAll(() => {
@@ -32,12 +33,15 @@ describe("advisor classifier-refusal fallback", () => {
 		authStorage = createInMemoryAuthStorage();
 		authStorage.keys.setRuntime("anthropic", "test-key");
 		authStorage.keys.setRuntime("google", "test-key");
+		authStorage.keys.setRuntime("openai", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 		const primary = getBundledModel("anthropic", "claude-sonnet-4-5");
 		const fallback = getBundledModel("google", "gemini-2.5-flash");
-		if (!primary || !fallback) throw new Error("Expected bundled advisor models to exist");
+		const second = getBundledModel("openai", "gpt-4o");
+		if (!primary || !fallback || !second) throw new Error("Expected bundled advisor models to exist");
 		advisorPrimary = primary;
 		advisorFallback = fallback;
+		secondFallback = second;
 	});
 
 	afterAll(() => {
@@ -51,7 +55,7 @@ describe("advisor classifier-refusal fallback", () => {
 		modelRegistry.clearSuppressedSelectors();
 	});
 
-	async function startSession(primaryFailure: "refusal" | "overloaded") {
+	async function startSession(primaryFailure: "refusal" | "overloaded", scenario: { fallbackRefuses?: boolean } = {}) {
 		const runtime = new ExtensionRuntime();
 		const extension = await loadExtensionFromFactory(
 			pi => {
@@ -88,7 +92,12 @@ describe("advisor classifier-refusal fallback", () => {
 			"compaction.autoContinue": false,
 			"advisor.syncBacklog": "1",
 			"retry.baseDelayMs": 5,
-			"retry.fallbackChains": { advisor: [`${advisorFallback.provider}/${advisorFallback.id}`] },
+			"retry.fallbackChains": {
+				advisor: [
+					`${advisorFallback.provider}/${advisorFallback.id}`,
+					`${secondFallback.provider}/${secondFallback.id}`,
+				],
+			},
 		});
 		settings.setModelRole("advisor", `${advisorPrimary.provider}/${advisorPrimary.id}`);
 		session = new AgentSession({
@@ -100,21 +109,22 @@ describe("advisor classifier-refusal fallback", () => {
 			advisorTools: [],
 			advisorStreamFn: (model, context, options) => {
 				advisorRequests.push(model.id);
-				const primaryFails =
-					model.id === advisorPrimary.id &&
-					(primaryFailure === "refusal" ? controls.primaryRefuses : !providerFailed);
-				if (!primaryFails) {
-					advisorMock.push({ content: ["advisor ok"] });
-				} else if (primaryFailure === "refusal") {
+				const refuses =
+					(model.id === advisorPrimary.id && primaryFailure === "refusal" && controls.primaryRefuses) ||
+					(model.id === advisorFallback.id && scenario.fallbackRefuses === true);
+				const overloads = model.id === advisorPrimary.id && primaryFailure === "overloaded" && !providerFailed;
+				if (refuses) {
 					advisorMock.push({
 						content: [],
 						stopReason: "error",
 						stopDetails: { type: "refusal", category: "cyber", explanation: "Declined." },
 						errorMessage: "Refusal (cyber): Declined.",
 					});
-				} else {
+				} else if (overloads) {
 					providerFailed = true;
 					advisorMock.push({ throw: "overloaded_error: provider returned error 503" });
+				} else {
+					advisorMock.push({ content: ["advisor ok"] });
 				}
 				return advisorMock.stream(model, context, options);
 			},
@@ -175,5 +185,29 @@ describe("advisor classifier-refusal fallback", () => {
 
 		expect(advisorRequests.filter(id => id === advisorPrimary.id)).toHaveLength(refusals + 1);
 		expect(s.getAdvisorAgent()?.state.model.id).toBe(advisorPrimary.id);
+	});
+
+	it("returns to a primary that only overloaded when a later fallback refuses", async () => {
+		const { s, advisorRequests, review } = await startSession("overloaded", { fallbackRefuses: true });
+		expect(advisorRequests).toContain(advisorFallback.id);
+		expect(s.getAdvisorAgent()?.state.model.id).toBe(secondFallback.id);
+
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + PAST_COOLDOWN_MS);
+		await review("turn after the cooldown window");
+
+		expect(advisorRequests.at(-1)).toBe(advisorPrimary.id);
+		expect(s.getAdvisorAgent()?.state.model.id).toBe(advisorPrimary.id);
+	});
+
+	it("stays pinned when the primary refuses and a fallback refuses too", async () => {
+		const { s, advisorRequests, review } = await startSession("refusal", { fallbackRefuses: true });
+		const primaryRequests = advisorRequests.filter(id => id === advisorPrimary.id).length;
+		expect(s.getAdvisorAgent()?.state.model.id).toBe(secondFallback.id);
+
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + PAST_COOLDOWN_MS);
+		await review("turn after the cooldown window");
+
+		expect(advisorRequests.filter(id => id === advisorPrimary.id)).toHaveLength(primaryRequests);
+		expect(s.getAdvisorAgent()?.state.model.id).toBe(secondFallback.id);
 	});
 });
