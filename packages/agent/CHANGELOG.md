@@ -28,6 +28,10 @@
 
 - Added the public `validateAgentToolArguments()` API for consistent, lenient-aware validation of agent tool arguments across agent and coding-agent workflows.
 
+### Fixed
+
+- Fixed `queue_update` events going stale while a queued steer was adopted into the running turn as live steering, withdrawn by the interrupt path, or landed in the transcript; those transitions now notify queue listeners like every other queue mutator
+
 ## [18.8.0] - 2026-10-07
 
 ### Changed
@@ -63,9 +67,6 @@
 - Fixed the failed V2 remote compaction warning claiming a V1 fallback on Codex, where V1 does not run ([#14245](https://github.com/can1357/oh-my-pi/pull/14245) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed Anthropic native compaction being rejected with `Invalid signature in thinking block` (or silently dropping the summarized thinking) on models with preserved thinking ([#14251](https://github.com/can1357/oh-my-pi/pull/14251) by [@will-bogusz](https://github.com/will-bogusz))
 
-### Fixed
-
-- Fixed `queue_update` events going stale while a queued steer was adopted into the running turn as live steering, withdrawn by the interrupt path, or landed in the transcript; those transitions now notify queue listeners like every other queue mutator ([#14268](https://github.com/can1357/oh-my-pi/pull/14268) by [@jchanghong023](https://github.com/jchanghong023)).
 
 ## [18.6.1] - 2026-10-04
 

@@ -172,6 +172,11 @@
 
 - Added account pools for task agents, allowing an agent and its related work—including advisors, title generation, subagents, and resumed sessions—to use only specified OAuth accounts and fail rather than fall back to another account or an API key.
 - Added `omp usage accounts` to list OAuth account provider and identity keys without exposing tokens, making account-pool configuration easier.
+### Added
+
+- `queue_update` events and the `get_state` queue snapshot now carry a `liveSteered` count: the leading `steering` entries are live steering already sent into the streaming response, which `remove_queued_message` cannot reach (refs #13798)
+
+### Fixed
 
 ### Changed
 
@@ -409,7 +414,6 @@
 - Fixed long `/btw` answers in Tern being clipped with no way to scroll: `/btw` now answers in the scrollable BTW history sheet ([#14331](https://github.com/can1357/oh-my-pi/pull/14331) by [@H4vC](https://github.com/H4vC))
 - Fixed `/btw` answers longer than 4 KiB being cut off with `[…truncated]` once they finished ([#14331](https://github.com/can1357/oh-my-pi/pull/14331) by [@H4vC](https://github.com/H4vC))
 - In Tern, Esc puts the BTW history sheet away while an answer keeps streaming (`/btw` reopens it); `x` cancels the answer ([#14331](https://github.com/can1357/oh-my-pi/pull/14331) by [@H4vC](https://github.com/H4vC))
-- `queue_update` events and the `get_state` queue snapshot now carry a `liveSteered` count: the leading `steering` entries are live steering already sent into the streaming response, which `remove_queued_message` cannot reach. The events also fire when steering is adopted live, withdrawn by the interrupt path, or lands in the transcript, so queue views no longer go stale while a steer is in flight ([#14268](https://github.com/can1357/oh-my-pi/pull/14268) by [@jchanghong023](https://github.com/jchanghong023)).
 
 ## [18.6.0] - 2026-10-03
 
