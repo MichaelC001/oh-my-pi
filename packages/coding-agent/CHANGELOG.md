@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed OpenRouter Decisions (Jev) judge calls returning 404 when `models.yml` sets a provider-wide OpenRouter `baseUrl` (such as a relay at `.../api/v1`); judge models now use the matching `.../api/alpha` root on the same host instead of `.../api/v1/decisions`.
+- Fixed OpenRouter Decisions (Jev) judge calls returning 404 when `models.yml` sets a provider-wide OpenRouter `baseUrl` (such as a relay at `.../api/v1`); judge models now use the matching `.../api/alpha` root on the same host instead of `.../api/v1/decisions` ([#14848](https://github.com/can1357/oh-my-pi/pull/14848) by [@jerryfane](https://github.com/jerryfane))
 
 ## [18.8.2] - 2026-10-07
 
