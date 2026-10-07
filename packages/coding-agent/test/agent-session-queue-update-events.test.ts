@@ -196,4 +196,53 @@ describe("AgentSession queue_update events", () => {
 		await target.abort();
 		await running;
 	});
+
+	it("emits the queue change when a live-steered message lands in the transcript", async () => {
+		// The other half of the claim lifecycle: without an interrupt, the
+		// finished turn records the steered message, so it stops counting as
+		// pending input and queue listeners must hear that arrival too.
+		const streaming = Promise.withResolvers<void>();
+		const claimed = Promise.withResolvers<void>();
+		const followUpStream = createMockModel({ responses: [{ content: ["answered"] }] }).stream;
+		let calls = 0;
+		const target = createSession([{ content: ["answered"] }], "all", async (model, context, options) => {
+			// Later turns deliver the claimed steer as ordinary input.
+			if (calls++ > 0) return followUpStream(model, context, options);
+			const live = options?.liveSteering;
+			const signal = options?.signal;
+			if (!live || !signal) throw new Error("live steering was not offered");
+			const stream = new AssistantMessageEventStream();
+			streaming.resolve();
+			await live.wait(signal);
+			if (!(await live.claim(signal))) throw new Error("steer was not claimed");
+			claimed.resolve();
+			const partial = {
+				role: "assistant" as const,
+				content: [{ type: "text" as const, text: "ok" }],
+				timestamp: Date.now(),
+				provider: "mock",
+				model: "mock",
+			};
+			stream.push({ type: "start", partial });
+			stream.push({ type: "done", reason: "stop", message: partial });
+			return stream;
+		});
+		const updates = collectQueueUpdates(target);
+		const running = target.prompt("start");
+		await streaming.promise;
+		await target.steer("use tabs");
+		await claimed.promise;
+		expect(target.getQueuedMessages()).toEqual({ steering: ["use tabs"], followUp: [], liveSteered: 1 });
+
+		await running;
+
+		// The transcript-arrival transition must be announced: the recorded
+		// steer leaves the live-steered set (liveSteered back to 0) while the
+		// visible queue is momentarily empty. This synthetic provider never
+		// integrates the steer into its response, so the agent afterwards
+		// restores it to the steering queue for a later turn — the arrival
+		// notification itself is this test's contract, not that restore.
+		expect(updates).toContainEqual({ steering: [], followUp: [], liveSteered: 0 });
+		expect(target.getQueuedMessages().liveSteered).toBe(0);
+	});
 });
