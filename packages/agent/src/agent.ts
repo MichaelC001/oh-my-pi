@@ -1116,7 +1116,6 @@ export class Agent {
 			suppress(message, controller);
 			for (const context of additional ?? []) suppress(context, controller);
 		}
-		this.#liveSteered = [];
 		// Every snapshot counts live-steered messages as pending, so clearing
 		// them is a queue change even when the caller re-queues them right after.
 		const hadLiveSteered = this.#liveSteered.length > 0;
