@@ -973,3 +973,4 @@ export type {
 	GhRunWatchFailedLogDetails,
 	GhRunWatchViewDetails,
 } from "@oh-my-pi/pi-tui/tools/github";
+export { withFileMutationQueue } from "./file-mutation-queue";

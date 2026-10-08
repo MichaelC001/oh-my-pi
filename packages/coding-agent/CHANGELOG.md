@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed missing `withFileMutationQueue` export from the tools barrel and legacy Pi compatibility shim, unblocking plugins like `pi-wayfinder-guard` (fixing [#12830](https://github.com/can1357/oh-my-pi/issues/12830) by [@twotnguyen](https://github.com/twotnguyen))
 - Fixed relative file links in Tern assistant replies opening against the folder omp was started in after `/wt` or `/move`; they now open the file in the session's working directory ([#14879](https://github.com/can1357/oh-my-pi/pull/14879) by [@H4vC](https://github.com/H4vC))
 
 ## [18.8.3] - 2026-10-07
