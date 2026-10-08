@@ -456,6 +456,43 @@ export class SecretObfuscator {
 		this.#obfuscating = enabled;
 	}
 
+	/**
+	 * End (exclusive) of the furthest secret that starts before `limit`, or
+	 * `limit` when no secret crosses it. A caller redacting only a prefix of
+	 * `text` redacts through this index so the prefix boundary never severs a
+	 * secret, while text past every such secret stays unscanned by
+	 * {@link obfuscate} and mints nothing. Checks configured literals,
+	 * `sharedRegexSecretValues` and regex entries; reads no mutable state
+	 * beyond the literal caches and mints no placeholders.
+	 */
+	secretSpanEnd(text: string, limit: number, sharedRegexSecretValues?: ReadonlySet<string>): number {
+		let end = limit;
+		if (!this.obfuscates()) return end;
+		const extendThrough = (literal: string): void => {
+			if (literal.length === 0) return;
+			for (let at = text.indexOf(literal); at !== -1 && at < limit; at = text.indexOf(literal, at + 1)) {
+				end = Math.max(end, at + literal.length);
+			}
+		};
+		this.#syncLiteralCaches();
+		for (const literal of this.#configuredLiterals) extendThrough(literal);
+		for (const value of sharedRegexSecretValues ?? EMPTY_SECRET_VALUES) extendThrough(value);
+		for (const entry of this.#regexEntries) {
+			entry.regex.lastIndex = 0;
+			for (;;) {
+				const match = entry.regex.exec(text);
+				if (match === null || match.index >= limit) break;
+				if (match[0].length === 0) {
+					entry.regex.lastIndex++;
+					continue;
+				}
+				end = Math.max(end, match.index + match[0].length);
+			}
+			entry.regex.lastIndex = 0;
+		}
+		return end;
+	}
+
 	/** Obfuscate all secrets in text. Bidirectional placeholders for obfuscate mode, one-way for replace. */
 	obfuscate(text: string, sharedRegexSecretValues?: ReadonlySet<string>): string {
 		if (!this.obfuscates()) return text;

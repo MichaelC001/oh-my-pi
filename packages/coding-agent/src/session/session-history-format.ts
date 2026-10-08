@@ -62,7 +62,7 @@ export interface HistoryFormatOptions {
 	 * secret redaction here: a cut through a secret leaves a fragment that no
 	 * later whole-transcript pass can recognize.
 	 */
-	transformExpandedToolIO?: (text: string) => string;
+	transformExpandedToolIO?: ToolIOTransform;
 	/**
 	 * Chunked rendering support: a caller formatting one logical transcript in
 	 * several calls (the advisor's chunked delta render) passes a result index
@@ -91,8 +91,6 @@ const EXPANDED_TOOL_IO_MAX_LINES = 80;
 const EXPANDED_DIFF_MAX_LINES = 300;
 const EXPANDED_ASK_FIELD_MAX_BYTES = 2 * 1024;
 const EXPANDED_ASK_FIELD_MAX_LINES = 20;
-/** Longest one-line preview window `transform` ever scans. */
-const PREVIEW_TRANSFORM_SCAN_MAX = 8 * 1024;
 
 /** Per-tool preference order for the most informative scalar argument. */
 const PRIMARY_ARG_KEYS = [
@@ -120,22 +118,34 @@ function oneLine(text: string, max = PRIMARY_ARG_MAX): string {
 }
 
 /**
- * {@link oneLine}, redacting with `transform` before the cut so a secret the
- * cut lands in is recognized whole. Scans only through the end of the token
- * holding the last visible character: text past it is never shown, and
- * scanning it would mint regex placeholders for content the reader never sees.
+ * Redaction applied to tool I/O before any cut. With `secretSpanEnd` (see
+ * `SecretObfuscator.secretSpanEnd`) one-line previews redact only through the
+ * last secret that starts in the visible part, so hidden text mints nothing;
+ * without it they redact the whole text.
  */
-function previewLine(text: string, transform?: (text: string) => string, max = PRIMARY_ARG_MAX): string {
+export interface ToolIOTransform {
+	(text: string): string;
+	secretSpanEnd?: (text: string, limit: number) => number;
+}
+
+/**
+ * {@link oneLine}, redacting with `transform` before the cut. The redacted
+ * window always reaches past every secret that starts in the visible part (and
+ * on to the end of that token, so a regex's trailing context is present): a
+ * cut inside a secret leaves a fragment no later pass can recognize.
+ */
+function previewLine(text: string, transform?: ToolIOTransform, max = PRIMARY_ARG_MAX): string {
 	if (!transform) return oneLine(text, max);
 	const flat = text.replace(/\s+/g, " ").trim();
-	if (flat.length <= max) return transform(flat);
-	const tokenEnd = flat.indexOf(" ", max - 2);
-	const end = Math.min(tokenEnd === -1 ? flat.length : tokenEnd, PREVIEW_TRANSFORM_SCAN_MAX);
+	if (flat.length <= max || !transform.secretSpanEnd) return oneLine(transform(flat), max);
+	const spanEnd = transform.secretSpanEnd(flat, max - 1);
+	const tokenEnd = flat.indexOf(" ", spanEnd);
+	const end = tokenEnd === -1 ? flat.length : tokenEnd;
 	const redacted = transform(flat.slice(0, end));
 	return end < flat.length || redacted.length > max ? `${redacted.slice(0, max - 1)}…` : redacted;
 }
 
-export function formatExecutionSourcePreview(source: string, transform?: (text: string) => string): string {
+export function formatExecutionSourcePreview(source: string, transform?: ToolIOTransform): string {
 	return previewLine(source, transform);
 }
 
@@ -167,7 +177,7 @@ function primaryArgValue(value: unknown): string {
 export function formatToolCallPrimaryArg(
 	name: string,
 	args: Record<string, unknown> | undefined,
-	transform?: (text: string) => string,
+	transform?: ToolIOTransform,
 ): string {
 	return previewLine(primaryArgText(name, args), transform);
 }
@@ -222,7 +232,7 @@ function primaryArgText(name: string, args: Record<string, unknown> | undefined)
 
 export function formatToolCallIntentPreview(
 	args: Record<string, unknown> | undefined,
-	transform?: (text: string) => string,
+	transform?: ToolIOTransform,
 ): string | undefined {
 	const intent = args?.[INTENT_FIELD];
 	return typeof intent === "string" && intent.trim() ? previewLine(intent, transform, 80) : undefined;
@@ -340,7 +350,7 @@ function toolCallLine(
 	includeToolIntent?: boolean,
 	expandEditDiffs?: boolean,
 	expandToolIO?: boolean,
-	transformExpandedToolIO?: (text: string) => string,
+	transformExpandedToolIO?: ToolIOTransform,
 ): string {
 	const head = `→ ${name}(${formatToolCallPrimaryArg(name, args, transformExpandedToolIO)})`;
 	const rawResultText = result ? contentToText(result.content) : undefined;
@@ -396,7 +406,7 @@ function executionLine(
 	kind: "bash" | "python",
 	source: string,
 	msg: BashExecutionMessage | PythonExecutionMessage,
-	transform?: (text: string) => string,
+	transform?: ToolIOTransform,
 ): string {
 	const status = msg.cancelled
 		? "cancelled"
@@ -440,7 +450,7 @@ const LEGACY_IMAGE_ATTACHMENT_INDEX = /`\[Image #(\d+)\]`/;
 const LEGACY_IMAGE_ATTACHMENT_PATH = /^Source path: `(.+)`$/m;
 
 /** One-liner for custom/hook messages: `[irc] A → B: body…`. */
-function customOneLiner(msg: CustomMessage | HookMessage, transform?: (text: string) => string): string {
+function customOneLiner(msg: CustomMessage | HookMessage, transform?: ToolIOTransform): string {
 	const details = (msg.details ?? {}) as Record<string, unknown>;
 	const str = (key: string): string => (typeof details[key] === "string" ? (details[key] as string) : "");
 	switch (msg.customType) {

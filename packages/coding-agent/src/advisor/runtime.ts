@@ -15,7 +15,7 @@ import {
 	formatSessionHistoryMarkdown,
 	PRIMARY_CONTEXT_CUSTOM_TYPES,
 } from "../session/session-history-format";
-import { ADVISOR_RENDER_OPTIONS, renderAdvisorDeltaChunks } from "./delta-split";
+import { ADVISOR_RENDER_OPTIONS, advisorToolIOTransform, renderAdvisorDeltaChunks } from "./delta-split";
 import { fingerprintMessage } from "./message-fingerprint";
 
 /**
@@ -938,7 +938,7 @@ export class AdvisorRuntime {
 			md = formatSessionHistoryMarkdown(this.#obfuscatePrimaryContextMessages(obfuscator, delta), {
 				...ADVISOR_RENDER_OPTIONS,
 				includeThinking,
-				transformExpandedToolIO: text => obfuscator.obfuscate(text, this.#advisorRegexSecretValues),
+				transformExpandedToolIO: advisorToolIOTransform(obfuscator, this.#advisorRegexSecretValues),
 			});
 			md = obfuscator.obfuscate(md, this.#advisorRegexSecretValues);
 		}
@@ -1818,15 +1818,17 @@ function obfuscateAdvisorMessage(
 		}
 		case "bashExecution": {
 			const msg = message as AgentMessage & { command: string };
-			const command = formatExecutionSourcePreview(msg.command, text =>
-				obfuscator.obfuscate(text, sharedRegexSecretValues),
+			const command = formatExecutionSourcePreview(
+				msg.command,
+				advisorToolIOTransform(obfuscator, sharedRegexSecretValues),
 			);
 			return command === msg.command ? message : ({ ...(message as object), command } as AgentMessage);
 		}
 		case "pythonExecution": {
 			const msg = message as AgentMessage & { code: string };
-			const code = formatExecutionSourcePreview(msg.code, text =>
-				obfuscator.obfuscate(text, sharedRegexSecretValues),
+			const code = formatExecutionSourcePreview(
+				msg.code,
+				advisorToolIOTransform(obfuscator, sharedRegexSecretValues),
 			);
 			return code === msg.code ? message : ({ ...(message as object), code } as AgentMessage);
 		}
