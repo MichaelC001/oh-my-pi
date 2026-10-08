@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- A classifier refusal now keeps walking `retry.fallbackChains` when the retry budget is already spent, instead of ending the turn on the model it started on with the rest of the chain untried.
+- A classifier refusal now keeps walking `retry.fallbackChains` when the retry budget is already spent, instead of ending the turn on the model it started on with the rest of the chain untried ([#14905](https://github.com/can1357/oh-my-pi/pull/14905) by [@sjawhar](https://github.com/sjawhar)).
 
 ### Changed
 
