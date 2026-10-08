@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { formatBytes } from "../format";
+import { hasFsCode } from "../fs-error";
 import { UTF8_DECODER } from "./bytes";
 import { ArchiveError } from "./error";
 import { type ArchiveLimits, assertInMemorySize, DEFAULT_ARCHIVE_LIMITS } from "./limits";
@@ -220,7 +221,7 @@ export async function extractArchive(
 		try {
 			await fs.symlink(relativeTarget, outputPath, linkType);
 		} catch (error) {
-			if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+			if (process.platform !== "win32" || !hasFsCode(error, "EPERM")) throw error;
 			// Windows without the symlink privilege: degrade to a directory
 			// junction or a file copy so extraction still yields usable
 			// content instead of failing the whole archive.
