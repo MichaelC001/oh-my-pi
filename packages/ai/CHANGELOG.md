@@ -5,7 +5,7 @@
 ### Added
 
 - Auth gateway route option `excludeProviders` leaves those providers' accounts out of `/v1/usage` and `/v1/credentials/check` ([#14755](https://github.com/can1357/oh-my-pi/pull/14755) by [@will-bogusz](https://github.com/will-bogusz))
-- Exported `matchesReplacementCredential`, which tells whether storing a credential replaces an existing account row or adds a new one ([#14901](https://github.com/can1357/oh-my-pi/pull/14901) by [@will-bogusz](https://github.com/will-bogusz))
+- Exported `matchesReplacementCredential` and `isSameOAuthAccount`, which tell whether storing a credential replaces an existing account row and whether two credentials belong to the same account ([#14901](https://github.com/can1357/oh-my-pi/pull/14901) by [@will-bogusz](https://github.com/will-bogusz))
 ### Breaking Changes
 
 - `AuthBrokerClient.notifyUsageStale` and `UsageLedgerStore.invalidateUsageCache` (including `RemoteAuthCredentialStore.invalidateUsageCache`) now take an optional leading `provider` argument: the signature is `(provider?: string, signal?: AbortSignal)` instead of `(signal?: AbortSignal)` ([#14761](https://github.com/can1357/oh-my-pi/pull/14761) by [@will-bogusz](https://github.com/will-bogusz))

@@ -53,6 +53,7 @@ import type { UsageLogger } from "./usage";
 import { defaultRankingStrategy, defaultUsageProvider } from "./usage/registry";
 
 export {
+	isSameOAuthAccount,
 	isSqliteBusyError,
 	isSqliteCorruptionError,
 	matchesReplacementCredential,

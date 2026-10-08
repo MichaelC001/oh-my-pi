@@ -156,12 +156,27 @@ describe("auth-broker migrate", () => {
 		},
 	);
 
-	test("keeps the broker's newer token for an account it holds under an email-less key", async () => {
-		// The broker's row predates email recovery, so it is keyed by account; the
-		// local row for the same account carries the email and an older token.
-		const account = { type: "oauth" as const, accountId: "acct-3333", orgId: TEAM_ORG, orgName: "Team" };
-		await brokerStore!.upsertAuthCredential("anthropic", {
-			...account,
+	test.each([
+		{
+			// Stored before its email was recovered, so keyed by account: uploading the
+			// local row would claim it and overwrite the broker's token.
+			held: "an email-less row keyed by account",
+			provider: "anthropic",
+			onBroker: { accountId: "acct-3333", orgId: TEAM_ORG, orgName: "Team" },
+			local: { email: "alice@example.com", accountId: "acct-3333", orgId: TEAM_ORG, orgName: "Team" },
+		},
+		{
+			// Only the local row carries an account id, so the store keys the two apart:
+			// uploading would add a second row for the same account.
+			held: "a row keyed by email while the local one is keyed by account",
+			provider: "google-antigravity",
+			onBroker: { email: "alice@gmail.com", projectId: "aicode-consumers" },
+			local: { email: "alice@gmail.com", accountId: "acct-4444", projectId: "aicode-consumers" },
+		},
+	])("keeps the broker's newer token for an account it holds as $held", async ({ provider, onBroker, local }) => {
+		await brokerStore!.upsertAuthCredential(provider, {
+			type: "oauth",
+			...onBroker,
 			access: "access-broker",
 			refresh: "refresh-broker-newer",
 			expires: Date.now() + 7_200_000,
@@ -169,12 +184,12 @@ describe("auth-broker migrate", () => {
 		await brokerStorage!.credentials.reload();
 		const localStore = await SqliteAuthCredentialStore.open(getAgentDbPath());
 		try {
-			await localStore.upsertAuthCredential("anthropic", {
-				...account,
+			await localStore.upsertAuthCredential(provider, {
+				type: "oauth",
+				...local,
 				access: "access-local",
 				refresh: "refresh-local-stale",
 				expires: Date.now() + 3_600_000,
-				email: "alice@example.com",
 			});
 		} finally {
 			localStore.close();
@@ -182,7 +197,7 @@ describe("auth-broker migrate", () => {
 
 		const output = await runMigrateCapturingStdout();
 		expect(output).toContain("already on broker");
-		expect(brokerStore!.listAuthCredentials("anthropic")).toHaveLength(1);
-		expect(brokerStore!.getOAuth("anthropic")?.refresh).toBe("refresh-broker-newer");
+		expect(brokerStore!.listAuthCredentials(provider)).toHaveLength(1);
+		expect(brokerStore!.getOAuth(provider)?.refresh).toBe("refresh-broker-newer");
 	});
 });

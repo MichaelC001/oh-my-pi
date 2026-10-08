@@ -23,6 +23,7 @@ import {
 	AuthStorage,
 	getEnvApiKey,
 	getOAuthProviders,
+	isSameOAuthAccount,
 	listProvidersWithEnvKey,
 	matchesReplacementCredential,
 	type OAuthCredential,
@@ -543,23 +544,25 @@ function credentialIdentity(provider: string, credential: AuthCredential): strin
 
 /**
  * Whether the broker already holds this credential, so re-runs are idempotent.
- * An OAuth row counts as held when uploading it would replace a broker row under
- * the store's own identity match: an upload then only ever adds an account and
- * never overwrites the broker's newer refresh token with a stale local one. API
- * keys collapse to a single one per provider.
+ * An OAuth row is held when uploading it would replace a broker row (the store's
+ * own identity match), so no upload overwrites the broker's newer refresh token,
+ * or when a broker row is the same account stored under another identity key, so
+ * no upload duplicates it. API keys collapse to a single one per provider.
  */
 function brokerAlreadyHas(
 	existing: readonly AuthCredentialSnapshotEntry[],
 	provider: string,
 	credential: AuthCredential,
 ): boolean {
-	return existing.some(
-		entry =>
-			entry.provider === provider &&
-			(credential.type === "api_key"
-				? entry.credential.type === "api_key"
-				: matchesReplacementCredential(provider, entry.credential, entry.identityKey, credential)),
-	);
+	return existing.some(entry => {
+		if (entry.provider !== provider) return false;
+		if (credential.type === "api_key") return entry.credential.type === "api_key";
+		return (
+			entry.credential.type === "oauth" &&
+			(matchesReplacementCredential(provider, entry.credential, entry.identityKey, credential) ||
+				isSameOAuthAccount(entry.credential, credential))
+		);
+	});
 }
 
 async function runMigrate(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
