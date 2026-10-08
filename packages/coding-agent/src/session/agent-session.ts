@@ -1738,6 +1738,7 @@ export class AgentSession implements SettingsScope {
 			streamingEditAbortTriggered: () => this.#streamingEditGuard.abortTriggered,
 			promptGeneration: () => this.#promptGeneration,
 			promptSequence: () => this.#promptSequence,
+			unexpectedStopAbortSignal: () => this.#postPromptTasksAbortController.signal,
 			sessionId: () => this.sessionId,
 			emitSessionEvent: event => this.#emitSessionEvent(event),
 			scheduleAgentContinue: options => this.#scheduleAgentContinue(options),

@@ -235,6 +235,14 @@ export interface TurnRecoveryHost {
 	streamingEditAbortTriggered(): boolean;
 	promptGeneration(): number;
 	promptSequence(): number;
+	/**
+	 * Live post-prompt abort signal; aborted when the user interrupts (Esc),
+	 * the turn is superseded, or the session is torn down. The unexpected-stop
+	 * judge wait links its timeout to this signal so a slow verdict never
+	 * blocks the abort drain. Optional so partial test stubs that never reach
+	 * the judge path need not provide it.
+	 */
+	unexpectedStopAbortSignal?(): AbortSignal;
 	sessionId(): string;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
 	scheduleAgentContinue(options: {
@@ -1071,6 +1079,12 @@ export class TurnRecovery {
 		} else {
 			const controller = new AbortController();
 			const timeout = setTimeout(() => controller.abort(), UNEXPECTED_STOP_TIMEOUT_MS);
+			// Esc/session teardown must interrupt the extended judge wait: link the
+			// live session abort so abort() drains agent_end maintenance instead of
+			// blocking on a verdict the user no longer wants.
+			const sessionSignal = this.#host.unexpectedStopAbortSignal?.();
+			const onSessionAbort = (): void => controller.abort();
+			sessionSignal?.addEventListener("abort", onSessionAbort, { once: true });
 			let classification: boolean | undefined;
 			try {
 				classification = await classifyUnexpectedStop(text, {
@@ -1085,9 +1099,12 @@ export class TurnRecovery {
 				});
 			} finally {
 				clearTimeout(timeout);
+				sessionSignal?.removeEventListener("abort", onSessionAbort);
 			}
 
-			if (classification !== true) {
+			// The classifier maps aborts to undefined (no-retry); a session abort
+			// during the wait must also skip the retry counter and the nudge.
+			if (classification !== true || sessionSignal?.aborted === true) {
 				this.#unexpectedStopRetryCount = 0;
 				return false;
 			}
