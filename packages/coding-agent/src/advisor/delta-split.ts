@@ -23,14 +23,14 @@ import { formatSessionHistoryMarkdown, type ToolIOTransform } from "../session/s
 
 /**
  * Obfuscation surface the split renderer needs: a text redaction pass, plus
- * the optional secret-span probe that keeps one-line previews from scanning
- * text they hide. Narrowed from the full SecretObfuscator class so tests can
+ * the optional prefix probe that keeps one-line previews from scanning text
+ * they hide. Narrowed from the full SecretObfuscator class so tests can
  * satisfy the contract with a typed helper instead of an `as any` escape. A
  * SecretObfuscator instance is structurally assignable.
  */
 export interface AdvisorObfuscator {
 	obfuscate(text: string, sharedRegexSecretValues?: ReadonlySet<string>): string;
-	secretSpanEnd?(text: string, limit: number, sharedRegexSecretValues?: ReadonlySet<string>): number;
+	redactionPrefixEnd?(text: string, limit: number, sharedRegexSecretValues?: ReadonlySet<string>): number;
 }
 
 /** The advisor's tool-I/O redaction, sharing one batch's regex secret values. */
@@ -39,8 +39,9 @@ export function advisorToolIOTransform(
 	sharedRegexSecretValues: ReadonlySet<string>,
 ): ToolIOTransform {
 	const transform: ToolIOTransform = text => obfuscator.obfuscate(text, sharedRegexSecretValues);
-	if (obfuscator.secretSpanEnd) {
-		transform.secretSpanEnd = (text, limit) => obfuscator.secretSpanEnd!(text, limit, sharedRegexSecretValues);
+	if (obfuscator.redactionPrefixEnd) {
+		transform.redactionPrefixEnd = (text, limit) =>
+			obfuscator.redactionPrefixEnd!(text, limit, sharedRegexSecretValues);
 	}
 	return transform;
 }

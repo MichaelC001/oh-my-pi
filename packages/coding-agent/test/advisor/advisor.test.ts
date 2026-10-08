@@ -2480,13 +2480,15 @@ describe("advisor", () => {
 		});
 
 		it("redacts preview secrets that cross the cut at a space or run past any fixed window", async () => {
-			// Reviewer repro: a two-word plain secret straddling the cut, and a regex
-			// secret longer than 8 KiB starting inside the visible part.
+			// Reviewer repro: a two-word plain secret straddling the cut, a regex
+			// secret longer than 8 KiB starting inside the visible part, and a regex
+			// whose lookahead context lies past the cut (the secret itself fits).
 			const spaced = "SECRETONE SECRETTWO";
 			const longToken = `tok_${"z".repeat(9 * 1024)}`;
 			const obfuscator = new SecretObfuscator([
 				{ type: "plain", content: spaced },
 				{ type: "regex", content: "tok_[a-z0-9]+" },
+				{ type: "regex", content: "LOOKSECRET(?= LOOKTAIL)" },
 			]);
 			const promptInputs: Array<string | AgentMessage[]> = [];
 			const agent = makeAgent(promptInputs);
@@ -2500,12 +2502,26 @@ describe("advisor", () => {
 							name: "bash",
 							arguments: { command: `${"p".repeat(110)}${spaced} suffix` },
 						},
+						{
+							type: "toolCall",
+							id: "c2",
+							name: "bash",
+							arguments: { command: `${"r".repeat(109)}LOOKSECRET LOOKTAIL suffix` },
+						},
 					],
 					timestamp: 1,
 				} as unknown as AgentMessage,
 				{
 					role: "toolResult",
 					toolCallId: "c1",
+					toolName: "bash",
+					content: "ok",
+					isError: false,
+					timestamp: 2,
+				} as unknown as AgentMessage,
+				{
+					role: "toolResult",
+					toolCallId: "c2",
 					toolName: "bash",
 					content: "ok",
 					isError: false,
@@ -2528,6 +2544,7 @@ describe("advisor", () => {
 			expect(rendered).toContain(`→ bash(${"p".repeat(110)}`);
 			expect(rendered).toContain(`→ user-bash! ${"q".repeat(100)}`);
 			expect(rendered).not.toContain("SECRETONE");
+			expect(rendered).not.toContain("LOOKSECRET");
 			expect(rendered).not.toContain("tok_zzz");
 		});
 

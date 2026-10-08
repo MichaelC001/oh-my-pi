@@ -118,29 +118,25 @@ function oneLine(text: string, max = PRIMARY_ARG_MAX): string {
 }
 
 /**
- * Redaction applied to tool I/O before any cut. With `secretSpanEnd` (see
- * `SecretObfuscator.secretSpanEnd`) one-line previews redact only through the
- * last secret that starts in the visible part, so hidden text mints nothing;
- * without it they redact the whole text.
+ * Redaction applied to tool I/O before any cut. With `redactionPrefixEnd`
+ * (see `SecretObfuscator.redactionPrefixEnd`) one-line previews redact only a
+ * prefix that provably redacts the visible part exactly as the whole text
+ * would, so hidden text mints nothing; without it they redact the whole text.
  */
 export interface ToolIOTransform {
 	(text: string): string;
-	secretSpanEnd?: (text: string, limit: number) => number;
+	redactionPrefixEnd?: (text: string, limit: number) => number;
 }
 
 /**
- * {@link oneLine}, redacting with `transform` before the cut. The redacted
- * window always reaches past every secret that starts in the visible part (and
- * on to the end of that token, so a regex's trailing context is present): a
- * cut inside a secret leaves a fragment no later pass can recognize.
+ * {@link oneLine}, redacting with `transform` before the cut: a cut inside a
+ * secret leaves a fragment no later pass can recognize.
  */
 function previewLine(text: string, transform?: ToolIOTransform, max = PRIMARY_ARG_MAX): string {
 	if (!transform) return oneLine(text, max);
 	const flat = text.replace(/\s+/g, " ").trim();
-	if (flat.length <= max || !transform.secretSpanEnd) return oneLine(transform(flat), max);
-	const spanEnd = transform.secretSpanEnd(flat, max - 1);
-	const tokenEnd = flat.indexOf(" ", spanEnd);
-	const end = tokenEnd === -1 ? flat.length : tokenEnd;
+	if (flat.length <= max || !transform.redactionPrefixEnd) return oneLine(transform(flat), max);
+	const end = transform.redactionPrefixEnd(flat, max - 1);
 	const redacted = transform(flat.slice(0, end));
 	return end < flat.length || redacted.length > max ? `${redacted.slice(0, max - 1)}…` : redacted;
 }
