@@ -292,6 +292,12 @@ export interface TurnRecoveryOptions {
 	initialRetryFallback?: InitialRetryFallbackState;
 	/** Skip construction-time fallback-chain validation; the owner runs {@link TurnRecovery.validateRetryFallbackChains}. */
 	deferFallbackChainValidation?: boolean;
+	/**
+	 * Override for the unexpected-stop judge verdict budget (default 15s).
+	 * Test seam so the slow-verdict boundary runs in milliseconds instead of
+	 * seconds; production never sets it.
+	 */
+	unexpectedStopJudgeTimeoutMs?: number;
 }
 
 type PendingRetryError = {
@@ -315,6 +321,7 @@ type UsageLimitOutcome = {
 /** Owns terminal-stop recovery, automatic retries, and fallback routing. */
 export class TurnRecovery {
 	readonly #host: TurnRecoveryHost;
+	readonly #unexpectedStopJudgeTimeoutMs: number;
 	#retryAbortController: AbortController | undefined;
 	#retryAttempt = 0;
 	#requestBodyReadTimeoutRecoveryPromptSequence: number | undefined;
@@ -373,6 +380,7 @@ export class TurnRecovery {
 
 	constructor(host: TurnRecoveryHost, options: TurnRecoveryOptions = {}) {
 		this.#host = host;
+		this.#unexpectedStopJudgeTimeoutMs = options.unexpectedStopJudgeTimeoutMs ?? UNEXPECTED_STOP_TIMEOUT_MS;
 		if (options.initialRetryFallback) {
 			this.#activeRetryFallback = {
 				...options.initialRetryFallback,
@@ -1078,7 +1086,7 @@ export class TurnRecovery {
 			return false;
 		} else {
 			const controller = new AbortController();
-			const timeout = setTimeout(() => controller.abort(), UNEXPECTED_STOP_TIMEOUT_MS);
+			const timeout = setTimeout(() => controller.abort(), this.#unexpectedStopJudgeTimeoutMs);
 			// Esc/session teardown must interrupt the extended judge wait: link the
 			// live session abort so abort() drains agent_end maintenance instead of
 			// blocking on a verdict the user no longer wants.

@@ -1760,6 +1760,7 @@ export class AgentSession implements SettingsScope {
 		this.#recovery = new TurnRecovery(recoveryHost, {
 			initialRetryFallback: config.initialRetryFallback,
 			deferFallbackChainValidation: this.#fallbackChainValidationDeferred,
+			unexpectedStopJudgeTimeoutMs: config.unexpectedStopJudgeTimeoutMs,
 		});
 		this.#detachUsageBeforeQueueDequeue = this.agent.addBeforeQueuedMessageDequeueHook(async signal => {
 			if (
