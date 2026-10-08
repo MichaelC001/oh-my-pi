@@ -535,6 +535,31 @@ describe("FileSessionStorage.writeTextSync", () => {
 		storage.writeTextSync(sessionPath, "replacement\n");
 		expect(fs.readFileSync(sessionPath, "utf8")).toBe("replacement\n");
 	});
+
+	it("publishes and appends once when by-name stat reports a different identity than the handle", async () => {
+		// Windows FSLogix profile disks report a different dev/ino from a path
+		// stat than from an fstat of an open handle to the same file.
+		const realStat = fs.statSync;
+		vi.spyOn(fs, "statSync").mockImplementation(((p: fs.PathLike, opts?: fs.StatSyncOptions) => {
+			const s = realStat(p, opts as never) as fs.Stats | fs.BigIntStats | undefined;
+			if (opts?.bigint && s) (s as fs.BigIntStats).dev += 1n;
+			return s;
+		}) as typeof fs.statSync);
+		const storage = new FileSessionStorage();
+		const sessionPath = path.join(tempDir, "session.jsonl");
+		const lockPath = path.join(tempDir, ".session.jsonl.lock");
+
+		storage.writeTextSync(sessionPath, "original\n");
+		expect(fs.readFileSync(sessionPath, "utf8")).toBe("original\n");
+		expect(fs.existsSync(lockPath)).toBe(false);
+
+		const writer = storage.openWriter(sessionPath);
+		writer.appendSync!("a\n");
+		writer.appendSync!("b\n");
+		expect(fs.readFileSync(sessionPath, "utf8")).toBe("original\na\nb\n");
+		expect(fs.existsSync(lockPath)).toBe(false);
+		await writer.close();
+	});
 });
 
 describe("FileSessionStorage line streaming", () => {
