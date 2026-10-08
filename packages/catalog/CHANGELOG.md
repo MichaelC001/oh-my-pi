@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `openrouterDecisionsBaseUrl` deriving a malformed OpenRouter Decisions root when the chat `baseUrl` has a trailing slash (such as `.../api/v1/`); it now strips trailing slashes before mapping `/v1` to `/alpha`, and is exported so provider-wide `baseUrl` overrides can reuse it ([#14848](https://github.com/can1357/oh-my-pi/pull/14848) by [@jerryfane](https://github.com/jerryfane))
+
 ## [18.8.2] - 2026-10-07
 
 ### Fixed
