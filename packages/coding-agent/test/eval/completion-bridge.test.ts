@@ -641,6 +641,20 @@ describe("runEvalCompletion", () => {
 		expect(opts.reasoning).toBe(Effort.High);
 	});
 
+	it.each(["p/slow:max", "P/Slow:max", "P/slow:max"])(
+		"preserves the tier effort for the case-insensitive literal selector %s",
+		async selector => {
+			const model = makeReasoningModel("Slow:max");
+			const session = makeSession({ available: [model], roles: { slow: selector } });
+			const spy = vi.spyOn(ai, "completeSimple").mockResolvedValue(assistant({ text: "literal answer" }));
+
+			const result = await runEvalCompletionAndWait({ prompt: "q", model: "slow" }, { session });
+			expect(result.text).toBe("literal answer");
+			expect(spy.mock.calls[0]?.[0]).toMatchObject({ id: "Slow:max" });
+			expect(spy.mock.calls[0]?.[2]).toMatchObject({ reasoning: Effort.High });
+		},
+	);
+
 	it("honors a valid short qualified p/a:max selector on a slow primary", async () => {
 		const model = makeReasoningModel("a");
 		const spy = vi.spyOn(ai, "completeSimple").mockResolvedValue(assistant({ text: "ok" }));

@@ -253,10 +253,16 @@ function resolveTierCandidates(tier: CompletionTier, session: ToolSession): Comp
 		const configuredEffort =
 			tier === "slow"
 				? extractExplicitThinkingSelector(selector, session.settings, {
-						isLiteralModelId: (provider, id) =>
-							provider === undefined
-								? available.some(candidate => candidate.id.toLowerCase() === id.toLowerCase())
-								: available.some(candidate => candidate.provider === provider && candidate.id === id),
+						isLiteralModelId: (provider, id) => {
+							const normalizedProvider = provider?.trim().toLowerCase();
+							const normalizedId = id.trim().toLowerCase();
+							return available.some(
+								candidate =>
+									(normalizedProvider === undefined ||
+										candidate.provider.trim().toLowerCase() === normalizedProvider) &&
+									candidate.id.trim().toLowerCase() === normalizedId,
+							);
+						},
 					})
 				: undefined;
 		return { model, selector, configuredEffort };
