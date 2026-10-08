@@ -305,7 +305,11 @@ export class TurnRecovery {
 	readonly #host: TurnRecoveryHost;
 	#retryAbortController: AbortController | undefined;
 	#retryAttempt = 0;
-	/** Selectors a classifier refusal has already moved off this turn; see the walk bound below. */
+	/**
+	 * Selectors a classifier refusal has already moved off in the current retry saga; see the walk
+	 * bound below. Cleared in `resolveRetry()`, which every end of a saga goes through (an answer,
+	 * the exhausted budget, a cancelled wait, an abort), so no turn inherits another turn's walk.
+	 */
 	readonly #refusalWalkTried = new Set<string>();
 	#requestBodyReadTimeoutRecoveryPromptSequence: number | undefined;
 	#retryPromise: Promise<void> | undefined;
@@ -518,9 +522,6 @@ export class TurnRecovery {
 				role: this.#activeRetryFallback.role,
 			});
 		}
-		// The turn produced an answer, so the refusal walk is over. Cleared before the
-		// early return below, which a turn that needed no retries takes.
-		this.#refusalWalkTried.clear();
 		if (this.#retryAttempt === 0) {
 			return;
 		}
@@ -544,7 +545,6 @@ export class TurnRecovery {
 		if (message.stopReason !== "error" || this.#retryAttempt === 0 || compaction.continuationScheduled) return;
 		const attempt = this.#retryAttempt;
 		this.#retryAttempt = 0;
-		this.#refusalWalkTried.clear();
 		await this.#host.emitSessionEvent({
 			type: "auto_retry_end",
 			success: false,
@@ -793,8 +793,9 @@ export class TurnRecovery {
 		return this.#parseRetryAfterMsFromError(errorMessage);
 	}
 
-	/** Resolve the pending retry promise */
+	/** Resolve the pending retry promise; the saga is over, and so is its refusal walk. */
 	resolveRetry(): void {
+		this.#refusalWalkTried.clear();
 		if (this.#retryResolve) {
 			this.#retryResolve();
 			this.#retryResolve = undefined;
