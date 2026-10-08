@@ -541,8 +541,9 @@ describe("FileSessionStorage.writeTextSync", () => {
 		// stat than from an fstat of an open handle to the same file.
 		const realStat = fs.statSync;
 		const statSpy = vi.spyOn(fs, "statSync").mockImplementation(((p: fs.PathLike, opts?: fs.StatSyncOptions) => {
-			const s = realStat(p, opts as never) as fs.Stats | fs.BigIntStats | undefined;
-			if (opts?.bigint && s) (s as fs.BigIntStats).dev += 1n;
+			if (!opts?.bigint) return realStat(p, { ...opts, bigint: false });
+			const s = realStat(p, { bigint: true });
+			s.dev += 1n;
 			return s;
 		}) as typeof fs.statSync);
 		const storage = new FileSessionStorage();
