@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Fixed user messages showing as empty blank padding bars and leaving moving OSC 133 prompt markers across terminal rows in the overflow transcript emergency layout ([#13835](https://github.com/can1357/oh-my-pi/issues/13835))
+- Fixed user messages showing as empty blank padding bars and leaving moving OSC 133 prompt markers across terminal rows in the overflow transcript emergency layout ([#14910](https://github.com/can1357/oh-my-pi/pull/14910) by [@twotnguyen](https://github.com/twotnguyen))
 - Fixed relative file links in Tern assistant replies opening against the folder omp was started in; they now open the file in the session's working directory ([#14879](https://github.com/can1357/oh-my-pi/pull/14879) by [@H4vC](https://github.com/H4vC))
 - Fixed Tern modals with no clickable exit: BTW history, git shortcuts and autoresearch gain a Close button, plan review a Cancel button, the agent transcript viewer and `/annotate` review a top-right `esc` that runs Esc, and the `/move` dialog Accept, Cancel and Confirm buttons; new `escCloseButton()` builds the `esc` keycap button ([#14894](https://github.com/can1357/oh-my-pi/pull/14894) by [@H4vC](https://github.com/H4vC))
 
