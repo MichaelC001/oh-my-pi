@@ -213,9 +213,10 @@ export type StatusEventLog = Pick<EvalCellResult, "statusEvents" | "statusEvents
  * Append or replace a status event. Progress snapshots (see
  * {@link statusEventKey}) coalesce in place, preserving first-seen order; every
  * other op is a discrete action and appends. Past {@link MAX_STATUS_EVENTS},
- * the oldest discrete event is dropped and counted; snapshots and `todo`
- * results stay, since agent cards and the session todo panel read them.
- * Renderers already show only the newest events behind an "… N earlier" row.
+ * the oldest discrete event is dropped and counted. Snapshots stay, since agent
+ * cards read them, and so does the newest committed `todo` result, which the
+ * session todo panel refreshes from. Renderers already show only the newest
+ * events behind an "… N earlier" row.
  */
 export function recordStatusEvent(log: StatusEventLog, event: EvalStatusEvent): void {
 	const events = (log.statusEvents ??= []);
@@ -229,10 +230,20 @@ export function recordStatusEvent(log: StatusEventLog, event: EvalStatusEvent): 
 	}
 	events.push(event);
 	if (events.length <= MAX_STATUS_EVENTS) return;
-	const oldest = events.findIndex(e => statusEventKey(e) === undefined && e.op !== "todo");
-	if (oldest < 0) return;
-	events.splice(oldest, 1);
-	log.statusEventsElided = (log.statusEventsElided ?? 0) + 1;
+	for (let i = 0; i < events.length; i++) {
+		const candidate = events[i]!;
+		if (statusEventKey(candidate) !== undefined) continue;
+		if (
+			candidate.op === "todo" &&
+			candidate.committed === true &&
+			!events.some((later, j) => j > i && later.op === "todo" && later.committed === true)
+		) {
+			continue;
+		}
+		events.splice(i, 1);
+		log.statusEventsElided = (log.statusEventsElided ?? 0) + 1;
+		return;
+	}
 }
 
 function eventString(value: unknown): string | undefined {

@@ -33,18 +33,29 @@ describe("eval status event log", () => {
 		expect(log.statusEvents!.at(-1)!.detail).toBe(`call ${calls - 1}`);
 	});
 
-	it("never drops agent snapshots or todo results", () => {
+	it("keeps agent snapshots and the committed todo result behind a flood", () => {
 		const log: StatusEventLog = {};
-		recordStatusEvent(log, { op: "todo", committed: true });
+		recordStatusEvent(log, { op: "todo", committed: true, call: "first" });
 		recordStatusEvent(log, { op: "agent", id: "Scout", status: "running" });
 		for (let i = 0; i < MAX_STATUS_EVENTS * 3; i++) recordStatusEvent(log, { op: "browser", detail: `call ${i}` });
 		recordStatusEvent(log, { op: "agent", id: "Scout", status: "completed" });
 
-		expect(log.statusEvents).toContainEqual({ op: "todo", committed: true });
+		expect(log.statusEvents).toContainEqual({ op: "todo", committed: true, call: "first" });
 		expect(log.statusEvents!.filter(event => event.op === "agent")).toEqual([
 			{ op: "agent", id: "Scout", status: "completed" },
 		]);
 		expect(log.statusEvents).toHaveLength(MAX_STATUS_EVENTS);
+	});
+
+	it("bounds a loop of todo calls while keeping the newest committed one", () => {
+		const log: StatusEventLog = {};
+		const calls = 50_000;
+		for (let i = 0; i < calls; i++) recordStatusEvent(log, { op: "todo", committed: i % 1000 === 0, call: i });
+
+		expect(log.statusEvents).toHaveLength(MAX_STATUS_EVENTS);
+		expect(log.statusEventsElided).toBe(calls - MAX_STATUS_EVENTS);
+		// The newest committed call (49,000) is older than the kept tail but survives.
+		expect(log.statusEvents!.filter(event => event.committed === true).map(event => event.call)).toEqual([49_000]);
 	});
 
 	it("includes dropped events in the rendered earlier-events count", () => {
