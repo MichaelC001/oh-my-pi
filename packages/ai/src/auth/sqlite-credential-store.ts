@@ -235,7 +235,11 @@ function resolveRowCredentialIdentityKey(provider: string, row: AuthRow): string
 	return credential?.type === "oauth" ? resolveCredentialIdentityKey(provider, credential) : null;
 }
 
-function matchesReplacementCredential(
+/**
+ * Whether upserting `incoming` replaces the active row holding `existing` (stored
+ * under `existingIdentityKey`) instead of inserting a new row beside it.
+ */
+export function matchesReplacementCredential(
 	provider: string,
 	existing: AuthCredential | null,
 	existingIdentityKey: string | null,

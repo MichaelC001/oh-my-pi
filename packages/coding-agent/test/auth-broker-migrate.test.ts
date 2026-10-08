@@ -27,7 +27,7 @@ async function runMigrateCapturingStdout(): Promise<string> {
 	return captured;
 }
 
-describe("auth-broker migrate (org-only dedupe)", () => {
+describe("auth-broker migrate", () => {
 	let agentDir = "";
 	let brokerAgentDir = "";
 	let brokerStore: SqliteAuthCredentialStore | undefined;
@@ -111,5 +111,78 @@ describe("auth-broker migrate (org-only dedupe)", () => {
 		const persisted = brokerStore!.getOAuth("anthropic");
 		expect(persisted?.refresh).toBe("refresh-rotated");
 		expect(brokerStore!.listAuthCredentials("anthropic")).toHaveLength(1);
+	});
+
+	test.each([
+		{
+			provider: "google-antigravity",
+			shared: "project",
+			identity: { projectId: "aicode-consumers" },
+			local: ["alice@gmail.com", "bob@gmail.com"],
+		},
+		{
+			provider: "openai-codex",
+			shared: "workspace",
+			identity: { accountId: "ws-team-2222", orgId: "ws-team-2222" },
+			local: ["alice@example.com"],
+		},
+	])(
+		"uploads $provider accounts that only share a $shared id with an account on the broker",
+		async ({ provider, identity, local }) => {
+			const oauth = (email: string, refresh: string) => ({
+				type: "oauth" as const,
+				access: `access-${email}`,
+				refresh,
+				expires: Date.now() + 3_600_000,
+				email,
+				...identity,
+			});
+			await brokerStore!.upsertAuthCredential(provider, oauth("carol@example.com", "refresh-broker-carol"));
+			await brokerStorage!.credentials.reload();
+			const localStore = await SqliteAuthCredentialStore.open(getAgentDbPath());
+			try {
+				for (const email of local) {
+					await localStore.upsertAuthCredential(provider, oauth(email, `refresh-local-${email}`));
+				}
+			} finally {
+				localStore.close();
+			}
+
+			await runMigrateCapturingStdout();
+			expect(brokerStore!.listAuthCredentials(provider).map(row => row.credential)).toMatchObject([
+				{ email: "carol@example.com", refresh: "refresh-broker-carol" },
+				...local.map(email => ({ email, refresh: `refresh-local-${email}` })),
+			]);
+		},
+	);
+
+	test("keeps the broker's newer token for an account it holds under an email-less key", async () => {
+		// The broker's row predates email recovery, so it is keyed by account; the
+		// local row for the same account carries the email and an older token.
+		const account = { type: "oauth" as const, accountId: "acct-3333", orgId: TEAM_ORG, orgName: "Team" };
+		await brokerStore!.upsertAuthCredential("anthropic", {
+			...account,
+			access: "access-broker",
+			refresh: "refresh-broker-newer",
+			expires: Date.now() + 7_200_000,
+		});
+		await brokerStorage!.credentials.reload();
+		const localStore = await SqliteAuthCredentialStore.open(getAgentDbPath());
+		try {
+			await localStore.upsertAuthCredential("anthropic", {
+				...account,
+				access: "access-local",
+				refresh: "refresh-local-stale",
+				expires: Date.now() + 3_600_000,
+				email: "alice@example.com",
+			});
+		} finally {
+			localStore.close();
+		}
+
+		const output = await runMigrateCapturingStdout();
+		expect(output).toContain("already on broker");
+		expect(brokerStore!.listAuthCredentials("anthropic")).toHaveLength(1);
+		expect(brokerStore!.getOAuth("anthropic")?.refresh).toBe("refresh-broker-newer");
 	});
 });

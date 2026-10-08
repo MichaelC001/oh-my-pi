@@ -55,6 +55,7 @@ import { defaultRankingStrategy, defaultUsageProvider } from "./usage/registry";
 export {
 	isSqliteBusyError,
 	isSqliteCorruptionError,
+	matchesReplacementCredential,
 	resolveCredentialIdentityKey,
 	SqliteAuthCredentialStore,
 } from "./auth/sqlite-credential-store";
