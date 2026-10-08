@@ -120,8 +120,8 @@ function oneLine(text: string, max = PRIMARY_ARG_MAX): string {
 /**
  * Redaction applied to tool I/O before any cut. With `redactionPrefixEnd`
  * (see `SecretObfuscator.redactionPrefixEnd`) one-line previews redact only a
- * prefix that provably redacts the visible part exactly as the whole text
- * would, so hidden text mints nothing; without it they redact the whole text.
+ * prefix ending at a clean cut point, whose redaction matches the whole
+ * text's, so hidden text mints nothing; without it they redact the whole text.
  */
 export interface ToolIOTransform {
 	(text: string): string;
@@ -130,7 +130,9 @@ export interface ToolIOTransform {
 
 /**
  * {@link oneLine}, redacting with `transform` before the cut: a cut inside a
- * secret leaves a fragment no later pass can recognize.
+ * secret leaves a fragment no later pass can recognize. Only the redacted
+ * prefix is ever shown, so a replacement shorter than its secret cannot pull
+ * unredacted text from past the prefix into view.
  */
 function previewLine(text: string, transform?: ToolIOTransform, max = PRIMARY_ARG_MAX): string {
 	if (!transform) return oneLine(text, max);

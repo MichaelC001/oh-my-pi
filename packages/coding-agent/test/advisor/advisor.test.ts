@@ -2480,15 +2480,19 @@ describe("advisor", () => {
 		});
 
 		it("redacts preview secrets that cross the cut at a space or run past any fixed window", async () => {
-			// Reviewer repro: a two-word plain secret straddling the cut, a regex
-			// secret longer than 8 KiB starting inside the visible part, and a regex
-			// whose lookahead context lies past the cut (the secret itself fits).
+			// Reviewer repros: a two-word plain secret straddling the cut, a regex
+			// secret longer than 8 KiB starting inside the visible part, a regex
+			// whose lookahead context lies past the cut (the secret itself fits),
+			// and a short replacement that pulls a later secret into view.
 			const spaced = "SECRETONE SECRETTWO";
 			const longToken = `tok_${"z".repeat(9 * 1024)}`;
+			const pulledIn = `SECRET_${"b".repeat(200)}`;
 			const obfuscator = new SecretObfuscator([
 				{ type: "plain", content: spaced },
+				{ type: "plain", content: pulledIn },
 				{ type: "regex", content: "tok_[a-z0-9]+" },
 				{ type: "regex", content: "LOOKSECRET(?= LOOKTAIL)" },
+				{ type: "regex", content: "A{100}(?= x{40}END)", mode: "replace", replacement: "[redacted]" },
 			]);
 			const promptInputs: Array<string | AgentMessage[]> = [];
 			const agent = makeAgent(promptInputs);
@@ -2534,6 +2538,13 @@ describe("advisor", () => {
 					exitCode: 0,
 					timestamp: 3,
 				} as unknown as AgentMessage,
+				{
+					role: "bashExecution",
+					command: `${"A".repeat(100)} ${"x".repeat(40)}END ${pulledIn} suffix`,
+					output: "",
+					exitCode: 0,
+					timestamp: 4,
+				} as unknown as AgentMessage,
 			];
 			const runtime = new AdvisorRuntime(agent, { snapshotMessages: () => messages, obfuscator });
 
@@ -2546,6 +2557,7 @@ describe("advisor", () => {
 			expect(rendered).not.toContain("SECRETONE");
 			expect(rendered).not.toContain("LOOKSECRET");
 			expect(rendered).not.toContain("tok_zzz");
+			expect(rendered).not.toContain("SECRET_b");
 		});
 
 		it("redacts user execution sources in advisor history before cutting their previews", async () => {

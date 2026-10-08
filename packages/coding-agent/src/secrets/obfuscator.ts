@@ -73,6 +73,13 @@ interface CompiledRegexEntry {
 	ignoreCase: boolean;
 }
 
+/** One regex-entry match: the entry's index and the match's range. */
+interface RegexMatchSpan {
+	entry: number;
+	start: number;
+	end: number;
+}
+
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue | undefined };
 export type JsonRecord = { [key: string]: JsonValue | undefined };
 
@@ -457,56 +464,72 @@ export class SecretObfuscator {
 	}
 
 	/**
-	 * Length of the shortest prefix of `text` (at least `limit`) that
-	 * {@link obfuscate} can redact in place of the whole text for everything
-	 * starting before `limit`. The prefix holds every secret that starts there,
-	 * and every regex entry finds exactly the matches before `limit` in it that
-	 * it finds in the whole text, so lookahead and other trailing context
-	 * survive the cut. Text past the prefix stays unscanned and mints nothing;
-	 * when no shorter prefix qualifies the answer is `text.length`. Mints no
-	 * placeholders.
+	 * A clean cut point at or after `limit`: the length of the shortest prefix
+	 * of `text` that {@link obfuscate} redacts exactly as it redacts that part
+	 * of the whole text. No secret occurrence in the whole text (configured
+	 * literal, `sharedRegexSecretValues` value, regex match) straddles the cut,
+	 * and every regex entry finds the same matches in the prefix as in the
+	 * whole text before it, so lookahead and other trailing context survive.
+	 * A caller may therefore show any part of the redacted prefix, however much
+	 * replacements shrink it. Text past the cut stays unredacted and mints
+	 * nothing; the answer is `text.length` when no shorter prefix qualifies.
+	 * Mints no placeholders.
 	 */
 	redactionPrefixEnd(text: string, limit: number, sharedRegexSecretValues?: ReadonlySet<string>): number {
 		if (!this.obfuscates() || text.length <= limit) return text.length;
-		const { key: fullMatches, end: regexEnd } = this.#regexMatchesBefore(text, limit);
-		let end = Math.max(limit, regexEnd);
-		const extendThrough = (literal: string): void => {
+		const fullMatches = this.#regexMatches(text);
+		const spans = fullMatches.map((match): [number, number] => [match.start, match.end]);
+		const addOccurrences = (literal: string): void => {
 			if (literal.length === 0) return;
-			for (let at = text.indexOf(literal); at !== -1 && at < limit; at = text.indexOf(literal, at + 1)) {
-				end = Math.max(end, at + literal.length);
+			for (let at = text.indexOf(literal); at !== -1; at = text.indexOf(literal, at + 1)) {
+				spans.push([at, at + literal.length]);
 			}
 		};
 		this.#syncLiteralCaches();
-		for (const literal of this.#configuredLiterals) extendThrough(literal);
-		for (const value of sharedRegexSecretValues ?? EMPTY_SECRET_VALUES) extendThrough(value);
-		// A match can depend on context past its own end (lookahead, `\b`, `$`):
-		// widen until the prefix reproduces the whole text's matches exactly.
-		while (end < text.length && this.#regexMatchesBefore(text.slice(0, end), limit).key !== fullMatches) {
+		for (const literal of this.#configuredLiterals) addOccurrences(literal);
+		for (const value of sharedRegexSecretValues ?? EMPTY_SECRET_VALUES) addOccurrences(value);
+		const matchKey = (matches: readonly RegexMatchSpan[], before: number): string =>
+			matches
+				.filter(match => match.start < before)
+				.map(match => `${match.entry}:${match.start}:${match.end}`)
+				.join(",");
+		let end = limit;
+		for (;;) {
+			// Step past every secret the cut would sever, until none straddles it.
+			for (let moved = true; moved;) {
+				moved = false;
+				for (const [start, spanEnd] of spans) {
+					if (start < end && end < spanEnd) {
+						end = spanEnd;
+						moved = true;
+					}
+				}
+			}
+			if (end >= text.length) return text.length;
+			// A match can depend on context past its own end (lookahead, `\b`, `$`):
+			// the prefix must reproduce the whole text's matches exactly.
+			if (matchKey(this.#regexMatches(text.slice(0, end)), end) === matchKey(fullMatches, end)) return end;
 			end = Math.min(text.length, end * 2);
 		}
-		return end;
 	}
 
-	/** Regex matches starting before `limit`, as a comparable key, and the furthest match end. */
-	#regexMatchesBefore(text: string, limit: number): { key: string; end: number } {
-		let key = "";
-		let end = 0;
-		for (const [index, entry] of this.#regexEntries.entries()) {
-			entry.regex.lastIndex = 0;
+	/** Every non-empty regex-entry match in `text`, in entry order. */
+	#regexMatches(text: string): RegexMatchSpan[] {
+		const matches: RegexMatchSpan[] = [];
+		for (const [entry, { regex }] of this.#regexEntries.entries()) {
+			regex.lastIndex = 0;
 			for (;;) {
-				const match = entry.regex.exec(text);
-				if (match === null || match.index >= limit) break;
+				const match = regex.exec(text);
+				if (match === null) break;
 				if (match[0].length === 0) {
-					entry.regex.lastIndex++;
+					regex.lastIndex++;
 					continue;
 				}
-				const matchEnd = match.index + match[0].length;
-				key += `${index}:${match.index}:${matchEnd},`;
-				end = Math.max(end, matchEnd);
+				matches.push({ entry, start: match.index, end: match.index + match[0].length });
 			}
-			entry.regex.lastIndex = 0;
+			regex.lastIndex = 0;
 		}
-		return { key, end };
+		return matches;
 	}
 
 	/** Obfuscate all secrets in text. Bidirectional placeholders for obfuscate mode, one-way for replace. */
