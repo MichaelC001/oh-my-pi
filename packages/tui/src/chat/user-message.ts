@@ -299,7 +299,10 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 	 * viewport does not leave stale prompt marks on lines it no longer occupies.
 	 */
 	renderTranscriptBlockEmergencyRow(width: number): string | undefined {
-		const lines = super.render(width);
+		return this.#selectEmergencyRow(super.render(width));
+	}
+
+	#selectEmergencyRow(lines: readonly string[]): string | undefined {
 		if (lines.length === 0) return undefined;
 		if (lines.length >= 3) {
 			for (let i = 1; i < lines.length - 1; i++) {
@@ -318,7 +321,7 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 			return lines;
 		}
 		if (this.#allocation === 1) {
-			const emergency = this.renderTranscriptBlockEmergencyRow(width);
+			const emergency = this.#selectEmergencyRow(lines);
 			if (emergency !== undefined) return [emergency];
 		}
 		if (this.#zoneSource === lines && this.#zoneLines !== undefined) {

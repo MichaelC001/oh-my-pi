@@ -619,6 +619,28 @@ describe("TranscriptContainer", () => {
 		expect(row).not.toContain("\x1b]133;B");
 	});
 
+	it("UserMessageComponent reuses measured lines under one-row allocation without duplicate child render", () => {
+		const userMsg = new UserMessageComponent("single render test");
+		userMsg.setTranscriptAllocation(1);
+		let superRenderCalls = 0;
+		const superProto = Object.getPrototypeOf(UserMessageComponent.prototype) as {
+			render: (width: number) => readonly string[];
+		};
+		const origSuperRender = superProto.render;
+		superProto.render = function (this: unknown, width: number) {
+			superRenderCalls++;
+			return origSuperRender.call(this, width);
+		};
+		try {
+			const rows = userMsg.render(80);
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toContain("single render test");
+			expect(superRenderCalls).toBe(1);
+		} finally {
+			superProto.render = origSuperRender;
+		}
+	});
+
 	it("keeps a completed assistant answer visible behind an active prefix", () => {
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Block(["stale active"], false));
