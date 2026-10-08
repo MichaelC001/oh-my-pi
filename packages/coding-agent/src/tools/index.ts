@@ -130,6 +130,7 @@ export * from "./ida";
 export * from "./essential-tools";
 export * from "./eval";
 export * from "./eval-backends";
+export * from "./file-mutation-queue";
 export * from "./file-write-fallback";
 export * from "./gh";
 export * from "./glob";
@@ -973,4 +974,3 @@ export type {
 	GhRunWatchFailedLogDetails,
 	GhRunWatchViewDetails,
 } from "@oh-my-pi/pi-tui/tools/github";
-export { withFileMutationQueue } from "./file-mutation-queue";

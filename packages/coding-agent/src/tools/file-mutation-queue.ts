@@ -1,28 +1,43 @@
-import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 const fileMutationQueues = new Map<string, Promise<void>>();
 
 function getMutationQueueKey(filePath: string): string {
-	const resolvedPath = resolve(filePath);
+	const resolvedPath = path.resolve(filePath);
 	try {
-		return realpathSync.native(resolvedPath);
+		return fs.realpathSync.native(resolvedPath);
 	} catch {
+		let current = resolvedPath;
+		const segments: string[] = [];
+		while (true) {
+			const parent = path.dirname(current);
+			if (parent === current) {
+				break;
+			}
+			segments.unshift(path.basename(current));
+			try {
+				const realParent = fs.realpathSync.native(parent);
+				return path.join(realParent, ...segments);
+			} catch {
+				current = parent;
+			}
+		}
 		return resolvedPath;
 	}
 }
 
 /**
- * Serialize file mutation operations targeting the same file.
+ * Serialize file mutation operations targeting the same file across extensions.
  * Operations for different files still run in parallel.
+ *
+ * Note: Built-in `edit` and `write` tools in oh-my-pi do not take this queue;
+ * this serializes custom tools and extensions against each other.
  */
 export async function withFileMutationQueue<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
 	const key = getMutationQueueKey(filePath);
 	const currentQueue = fileMutationQueues.get(key) ?? Promise.resolve();
-	let releaseNext!: () => void;
-	const nextQueue = new Promise<void>(resolveQueue => {
-		releaseNext = resolveQueue;
-	});
+	const { promise: nextQueue, resolve: releaseNext } = Promise.withResolvers<void>();
 	const chainedQueue = currentQueue.then(
 		() => nextQueue,
 		() => nextQueue,
