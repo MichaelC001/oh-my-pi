@@ -2,12 +2,14 @@ import { afterAll, afterEach, describe, expect, it, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { createMockModel, type MockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { TurnRecovery, type TurnRecoveryHost } from "@oh-my-pi/pi-coding-agent/session/turn-recovery";
 import * as unexpectedStopClassifier from "@oh-my-pi/pi-coding-agent/session/unexpected-stop-classifier";
 import { logger, TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
@@ -343,4 +345,64 @@ describe("AgentSession unexpected stop guard", () => {
 		expect(mock.calls).toHaveLength(1);
 		expect(reminderMessages(session.agent.state.messages)).toHaveLength(0);
 	});
+	it("waits for a slow smart judge instead of dropping its verdict", async () => {
+		const settings = Settings.isolated({ "features.unexpectedStopDetection": "smart" });
+		const appended: unknown[] = [];
+		const scheduled: string[] = [];
+		let observedSignal: AbortSignal | undefined;
+		const release = Promise.withResolvers<boolean | undefined>();
+		const spy = vi.spyOn(unexpectedStopClassifier, "classifyUnexpectedStop").mockImplementation(async (_t, deps) => {
+			observedSignal = deps.signal;
+			return release.promise;
+		});
+		const host = {
+			settings,
+			agent: {
+				state: { messages: [] as AgentMessage[] },
+				appendMessage: (message: unknown) => {
+					appended.push(message);
+				},
+				metadataForProvider: () => undefined,
+			},
+			sessionManager: {},
+			modelRegistry: sharedModelRegistry,
+			model: () => undefined,
+			promptGeneration: () => 7,
+			sessionId: () => "test-session",
+			scheduleAgentContinue: (options: { source: string }) => {
+				scheduled.push(options.source);
+			},
+		} as unknown as TurnRecoveryHost;
+		const recovery = new TurnRecovery(host);
+		const message = {
+			role: "assistant",
+			content: [
+				{ type: "text", text: "Looks like that command syntax didn't work right — let me verify differently." },
+			],
+			stopReason: "stop",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: Date.now(),
+		} as unknown as AssistantMessage;
+
+		const pending = recovery.handleUnexpectedAssistantStop(message);
+		// The judge verdict arrives after the old 4s abort budget (gateway-routed
+		// judge took ~12s in production while the client aborted at 4s). The
+		// handler must still be waiting, not already settled as no-retry.
+		// Integration test exercising the real abort timer: fake timers cannot
+		// drive the platform setTimeout the production code arms.
+		await Bun.sleep(4200);
+		expect(observedSignal?.aborted).toBe(false);
+		release.resolve(true);
+		await expect(pending).resolves.toBe(true);
+		expect(spy).toHaveBeenCalledTimes(1);
+		expect(scheduled).toEqual(["unexpected-stop-retry"]);
+		expect(appended).toHaveLength(1);
+	}, 30000);
 });

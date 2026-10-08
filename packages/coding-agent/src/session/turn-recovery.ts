@@ -89,7 +89,11 @@ import {
 
 const THINKING_LOOP_REDIRECT_TYPE = "thinking-loop-redirect";
 const UNEXPECTED_STOP_MAX_RETRIES = 3;
-const UNEXPECTED_STOP_TIMEOUT_MS = 4000;
+// Gateway-routed judges can take ~12s (observed: bifrost judge YES at 12.2s
+// while the client aborted at 4s, dropping the verdict and skipping the nudge).
+// Matches the 15s judgment-adjacent budgets (auth-gateway strict probe,
+// auto-graph pick) so a slow-but-healthy verdict still lands.
+const UNEXPECTED_STOP_TIMEOUT_MS = 15_000;
 const EMPTY_STOP_MAX_RETRIES = 3;
 const MALFORMED_FUNCTION_CALL_MAX_RETRIES = 3;
 const STREAM_STALL_CONTINUE_MAX_RETRIES = 3;

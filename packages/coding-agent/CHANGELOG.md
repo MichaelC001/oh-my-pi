@@ -9,6 +9,7 @@
 ### Fixed
 
 - Reduced memory growth after one-shot side requests without interrupting ongoing conversations ([#14334](https://github.com/can1357/oh-my-pi/pull/14334) by [@iliaal](https://github.com/iliaal)).
+- Fixed smart unexpected-stop detection dropping slow judge verdicts: the 4s classification budget aborted gateway-routed judges before they answered, so premature stops were identified but never nudged. The budget is now 15s.
 
 ## [18.8.6] - 2026-10-08
 
