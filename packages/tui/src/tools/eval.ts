@@ -71,6 +71,8 @@ export interface EvalCellResult {
 	durationMs?: number;
 	exitCode?: number;
 	statusEvents?: EvalStatusEvent[];
+	/** Discrete events dropped from the front of `statusEvents` (see {@link recordStatusEvent}). */
+	statusEventsElided?: number;
 	hasMarkdown?: boolean;
 }
 
@@ -80,6 +82,8 @@ export interface EvalToolDetails {
 	jsonOutputs?: unknown[];
 	images?: ImageContent[];
 	statusEvents?: EvalStatusEvent[];
+	/** Discrete events dropped from the front of `statusEvents` (see {@link recordStatusEvent}). */
+	statusEventsElided?: number;
 	isError?: boolean;
 	meta?: OutputMeta;
 	/** First backend that produced cells. Kept for transcript compatibility. */
@@ -185,7 +189,7 @@ type AgentEventStatus = "pending" | "running" | "completed" | "failed" | "aborte
 /**
  * Coalescing key of a progress-snapshot event: `agent` and `judge_batch`
  * events keyed by `id`, where only the newest snapshot matters. Discrete
- * actions (everything else) have no key. Shared by {@link upsertStatusEvent}
+ * actions (everything else) have no key. Shared by {@link recordStatusEvent}
  * and the executors' display collectors so both coalesce identically.
  */
 export function statusEventKey(event: { op: string; [key: string]: unknown }): string | undefined {
@@ -196,12 +200,25 @@ export function statusEventKey(event: { op: string; [key: string]: unknown }): s
 }
 
 /**
+ * Discrete status events a log keeps. A cell polling a helper in a loop emits
+ * one event per call (hundreds of thousands), and every live update and the
+ * persisted tool result would otherwise carry them all.
+ */
+export const MAX_STATUS_EVENTS = 200;
+
+/** A status event list plus the count of discrete events dropped from its front. */
+export type StatusEventLog = Pick<EvalCellResult, "statusEvents" | "statusEventsElided">;
+
+/**
  * Append or replace a status event. Progress snapshots (see
  * {@link statusEventKey}) coalesce in place, preserving first-seen order; every
- * other op is a discrete action and simply appends. Keeps the persisted event
- * list bounded even when a subagent or batch emits hundreds of progress ticks.
+ * other op is a discrete action and appends. Past {@link MAX_STATUS_EVENTS},
+ * the oldest discrete event is dropped and counted; snapshots and `todo`
+ * results stay, since agent cards and the session todo panel read them.
+ * Renderers already show only the newest events behind an "… N earlier" row.
  */
-export function upsertStatusEvent(events: EvalStatusEvent[], event: EvalStatusEvent): void {
+export function recordStatusEvent(log: StatusEventLog, event: EvalStatusEvent): void {
+	const events = (log.statusEvents ??= []);
 	const key = statusEventKey(event);
 	if (key !== undefined) {
 		const idx = events.findIndex(e => statusEventKey(e) === key);
@@ -211,6 +228,11 @@ export function upsertStatusEvent(events: EvalStatusEvent[], event: EvalStatusEv
 		}
 	}
 	events.push(event);
+	if (events.length <= MAX_STATUS_EVENTS) return;
+	const oldest = events.findIndex(e => statusEventKey(e) === undefined && e.op !== "todo");
+	if (oldest < 0) return;
+	events.splice(oldest, 1);
+	log.statusEventsElided = (log.statusEventsElided ?? 0) + 1;
 }
 
 function eventString(value: unknown): string | undefined {
@@ -511,13 +533,15 @@ function formatStatusEventExpanded(event: EvalStatusEvent, theme: Theme): string
  * the live edge for `log()` progress loops) behind an "… N earlier" marker,
  * matching the code/output tail-window convention. Collapsed keeps a small
  * fixed window; expanded widens to the viewport-sized preview window.
+ * `elided` counts events already dropped from the log's front.
  */
-function renderStatusEvents(events: EvalStatusEvent[], theme: Theme, expanded: boolean): string[] {
+function renderStatusEvents(events: EvalStatusEvent[], theme: Theme, expanded: boolean, elided = 0): string[] {
 	if (events.length === 0) return [];
 
 	const max = expanded ? Math.max(10, previewWindowRows()) : 3;
-	const hidden = Math.max(0, events.length - max);
-	const visible = hidden > 0 ? events.slice(hidden) : events;
+	const shownFrom = Math.max(0, events.length - max);
+	const hidden = shownFrom + elided;
+	const visible = shownFrom > 0 ? events.slice(shownFrom) : events;
 
 	const lines: string[] = [];
 	if (hidden > 0) {
@@ -605,6 +629,15 @@ function describeStatusEvent(event: EvalStatusEvent): NativeNode {
 		}
 	}
 	return text(spans, { truncate: "end", role: "omp.tool.eval.status" });
+}
+
+/** A status log's events, behind an "… N earlier" row when its front was dropped. */
+function describeStatusLog(log: StatusEventLog): NativeNode[] {
+	const nodes = (log.statusEvents ?? []).map(describeStatusEvent);
+	if (log.statusEventsElided) {
+		nodes.unshift(text([span(`… ${log.statusEventsElided} earlier`, "muted")], { role: "omp.tool.eval.status" }));
+	}
+	return nodes;
 }
 
 /**
@@ -937,7 +970,7 @@ export const evalToolRenderer = {
 						bodies = {
 							key: bodyKey,
 							cells: displayCells.map(({ cell, code, language, agentEvents, otherEvents }, i) => {
-								const statusLines = renderStatusEvents(otherEvents, uiTheme, expanded);
+								const statusLines = renderStatusEvents(otherEvents, uiTheme, expanded, cell.statusEventsElided);
 								const outputContent = formatCellOutputLines(cell, expanded, previewLines, uiTheme, width);
 								const outputLines = [...outputContent.lines];
 								if (!expanded && outputContent.hiddenCount > 0) {
@@ -1031,6 +1064,7 @@ export const evalToolRenderer = {
 			statusEvents,
 			uiTheme,
 			options.renderContext?.expanded ?? options.expanded,
+			details?.statusEventsElided,
 		);
 
 		if (!combinedOutput && statusLines.length === 0) {
@@ -1177,7 +1211,7 @@ export const evalToolRenderer = {
 								cell.status === "running",
 								cell.status === "error",
 							),
-							...(cell.statusEvents ?? []).map(describeStatusEvent),
+							...describeStatusLog(cell),
 							...(i === cellResults.length - 1 ? jsonNodes : []),
 						],
 					},
@@ -1203,7 +1237,7 @@ export const evalToolRenderer = {
 					isPartial,
 					result.isError === true,
 				),
-				...(details?.statusEvents ?? []).map(describeStatusEvent),
+				...describeStatusLog(details ?? {}),
 				...jsonNodes,
 			];
 			cells =
