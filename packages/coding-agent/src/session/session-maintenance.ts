@@ -1341,7 +1341,7 @@ export class SessionMaintenance {
 			// this method, allowing the configured preference order to continue.
 			let snapcompactResult: snapcompact.CompactionResult | undefined;
 			if (snapcompactReady) {
-				const maxFrames = this.#computeSnapcompactMaxFrames(preparation, effectiveSettings);
+				const maxFrames = this.#computeSnapcompactMaxFrames(preparation, effectiveSettings, 0);
 				if (maxFrames < 1) {
 					logger.warn("Snapcompact skipped: kept history alone exceeds the context budget", {
 						model: this.#model?.id,
@@ -1367,6 +1367,7 @@ export class SessionMaintenance {
 							includeThinking: snapcompactIncludeThinking,
 						},
 						effectiveSettings,
+						0,
 					);
 					snapcompactResult = rendered.result;
 					const framePayloadBytes = rendered.framePayloadBytes;
@@ -3650,7 +3651,11 @@ export class SessionMaintenance {
 	 * ~402k frame-token projection always overflows any sub-1M-token window
 	 * (issue #3247).
 	 */
-	#computeSnapcompactMaxFrames(preparation: CompactionPreparation, settings: EngineCompactionSettings): number {
+	#computeSnapcompactMaxFrames(
+		preparation: CompactionPreparation,
+		settings: EngineCompactionSettings,
+		pendingTokens: number,
+	): number {
 		const ctxWindow = this.#model?.contextWindow ?? 0;
 		const shape = snapcompact.resolveShape(this.#model, cfgSnapcompactShape.get(this.#host.settings));
 		if (ctxWindow <= 0) {
@@ -3698,11 +3703,12 @@ export class SessionMaintenance {
 		const SUMMARY_TEMPLATE_TOKENS = 2000;
 		const capReserve = textEdgeTokens + SUMMARY_TEMPLATE_TOKENS;
 		const thresholdTokens = resolveThresholdTokens(ctxWindow, settings);
-		// The trigger counts kept turns without opaque reasoning replay bytes; the
-		// window fit keeps the full count.
+		// The trigger counts kept turns without opaque reasoning replay bytes and
+		// sees the pending prompt too; the window fit keeps the full count.
 		const fixedTokens =
 			nonMessageTokens +
 			this.#tokenizer.countMessages(preparation.recentMessages, { excludeEncryptedReasoning: true }) +
+			pendingTokens +
 			capReserve;
 		const roomBudget = Math.min(
 			SNAPCOMPACT_ARCHIVE_SHARE * (thresholdTokens - fixedTokens),
@@ -3752,9 +3758,10 @@ export class SessionMaintenance {
 	 *   {@link #computeSnapcompactMaxFrames} sizes bytes from a per-shape
 	 *   estimate, and denser frames (CJK prose drawn with fallback glyphs) run
 	 *   heavier, so the fit is `frames × budget / payload`;
-	 * - {@link SNAPCOMPACT_POST_COMPACTION_TARGET} of the threshold: the cap
-	 *   reserves text from an estimate that can run short, so the fit drops the
-	 *   measured excess at the archive's mean frame price.
+	 * - {@link SNAPCOMPACT_POST_COMPACTION_TARGET} of the threshold, counting
+	 *   `pendingTokens` (a pre-prompt pass's prompt, not yet in the session):
+	 *   the cap reserves text from an estimate that can run short, so the fit
+	 *   drops the measured excess at the archive's mean frame price.
 	 * A single frame cannot shrink further, so 60% is a sizing target, not a
 	 * guarantee. The caller still rejects a payload that stays over budget, and
 	 * passes that need the recovery band reject a context above it
@@ -3764,6 +3771,7 @@ export class SessionMaintenance {
 		preparation: CompactionPreparation,
 		options: snapcompact.Options<AgentMessage>,
 		settings: EngineCompactionSettings,
+		pendingTokens: number,
 	): Promise<{ result: snapcompact.CompactionResult; framePayloadBytes: number }> {
 		let result = await snapcompact.compact(preparation, options);
 		let framePayloadBytes = this.#snapcompactFramePayloadBytes(result);
@@ -3780,9 +3788,9 @@ export class SessionMaintenance {
 			if (framePayloadBytes > snapcompact.FRAME_DATA_BYTES_BUDGET) {
 				maxFrames = Math.floor((frames * snapcompact.FRAME_DATA_BYTES_BUDGET) / framePayloadBytes);
 			}
-			const projected = this.#projectSnapcompactContextTokens(preparation, result, {
-				excludeEncryptedReasoning: true,
-			});
+			const projected =
+				this.#projectSnapcompactContextTokens(preparation, result, { excludeEncryptedReasoning: true }) +
+				pendingTokens;
 			if (projected > targetTokens && frames > 1) {
 				const perFrame = this.#snapcompactArchiveFrameTokens(archive) / frames;
 				maxFrames = Math.min(maxFrames, Math.max(1, frames - Math.ceil((projected - targetTokens) / perFrame)));
@@ -3803,7 +3811,8 @@ export class SessionMaintenance {
 	}
 
 	/**
-	 * Whether a rendered archive would leave the compacted context above
+	 * Whether a rendered archive (plus a pre-prompt pass's pending prompt)
+	 * would leave the compacted context above
 	 * `COMPACTION_RECOVERY_BAND × threshold`, the band
 	 * {@link #compactionCreatedHeadroom} requires after a threshold pass.
 	 * Committing such an archive there only re-enters the no-headroom rescue, so
@@ -4849,7 +4858,8 @@ export class SessionMaintenance {
 					});
 					snapcompactBlocker = `snapcompact disabled: unsupported characters for selected snapcompact font (${percent}%); trying the next preferred compaction method.`;
 				} else {
-					const maxFrames = this.#computeSnapcompactMaxFrames(preparation, effectiveSettings);
+					const pendingTokens = options.pendingContextTokens ?? 0;
+					const maxFrames = this.#computeSnapcompactMaxFrames(preparation, effectiveSettings, pendingTokens);
 					if (maxFrames < 1) {
 						logger.warn("Snapcompact skipped: kept history alone exceeds the context budget", {
 							model: this.#model?.id,
@@ -4867,6 +4877,7 @@ export class SessionMaintenance {
 								includeThinking: snapcompactIncludeThinking,
 							},
 							effectiveSettings,
+							pendingTokens,
 						);
 						snapcompactResult = rendered.result;
 						const framePayloadBytes = rendered.framePayloadBytes;
@@ -4928,7 +4939,7 @@ export class SessionMaintenance {
 							} else if (
 								!willRetry &&
 								reason !== "idle" &&
-								this.#snapcompactLeavesNoHeadroom(projectedForReduction, effectiveSettings)
+								this.#snapcompactLeavesNoHeadroom(projectedForReduction + pendingTokens, effectiveSettings)
 							) {
 								logger.warn("Snapcompact archive leaves no room under the compaction trigger", {
 									model: this.#model?.id,
