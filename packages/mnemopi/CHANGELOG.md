@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed the episodic graph linking each new memory to every stored memory with the same time scope (any mention of a date or of words like "today"), which grew `graph_edges` quadratically with the store size; `ctx` links now require lexical or entity overlap ([#15013](https://github.com/can1357/oh-my-pi/pull/15013) by [@tickernelz](https://github.com/tickernelz)).
+- Fixed memory saves slowing down and the memory database growing quadratically with the number of stored memories, because any two memories mentioning a date or words like "today" were linked even when unrelated ([#15013](https://github.com/can1357/oh-my-pi/pull/15013) by [@tickernelz](https://github.com/tickernelz)).
 
 ## [18.8.5] - 2026-10-08
 
