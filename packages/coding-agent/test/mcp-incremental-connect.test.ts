@@ -24,47 +24,43 @@ const FIXTURE_PATH = path.join(import.meta.dir, "fixtures", "many-tools-mcp.ts")
 
 const SERVER_A = "alpha";
 const SERVER_B = "bravo";
-const TOOL_A = `mcp__${SERVER_A}_${manyToolName(0)}`;
-const TOOL_B = `mcp__${SERVER_B}_${manyToolName(0)}`;
 
 function fixtureConfig(delay = 0): MCPStdioServerConfig {
 	return { type: "stdio", command: process.execPath, args: [FIXTURE_PATH, "--delay", String(delay)] };
 }
 
-function expectedToolNames(servers: string[]): string[] {
+type ToolSnapshot = Array<{ name: string; mcpServerName: string }>;
+
+function expectedToolSnapshot(servers: string[]): ToolSnapshot {
 	return servers
-		.flatMap(server => Array.from({ length: MANY_TOOL_COUNT }, (_, index) => `mcp__${server}_${manyToolName(index)}`))
-		.sort();
+		.flatMap(server =>
+			Array.from({ length: MANY_TOOL_COUNT }, (_, index) => ({
+				name: `mcp__${server}_${manyToolName(index)}`,
+				mcpServerName: server,
+			})),
+		)
+		.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function snapshotTools(tools: Array<{ name: string; mcpServerName?: string }>): ToolSnapshot {
+	return tools
+		.map(tool => ({ name: tool.name, mcpServerName: tool.mcpServerName ?? "" }))
+		.sort((left, right) => left.name.localeCompare(right.name));
 }
 
 // These subprocess fixtures use a separate real clock for delayed initialization.
-async function waitFor(predicate: () => boolean): Promise<void> {
+async function waitFor(predicate: () => boolean): Promise<boolean> {
 	const deadline = Date.now() + 10_000;
-	while (!predicate()) {
-		if (Date.now() >= deadline) throw new Error("MCP readiness predicate did not settle within 10 seconds");
-		await Bun.sleep(10);
+	while (true) {
+		if (predicate()) return true;
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) return false;
+		await Bun.sleep(Math.min(10, remaining));
 	}
 }
 
 async function waitForTools(manager: MCPManager, servers: string[]): Promise<void> {
-	const expected = expectedToolNames(servers);
-	const owners: Record<string, string> = Object.fromEntries(
-		servers.flatMap(server => expectedToolNames([server]).map(name => [name, server])),
-	);
-	await waitFor(() => {
-		const tools = manager.getTools();
-		const names = tools.map(tool => tool.name).sort();
-		return (
-			names.length === expected.length &&
-			names.every((name, index) => name === expected[index]) &&
-			tools.every(tool => owners[tool.name] === tool.mcpServerName) &&
-			servers.every(
-				server =>
-					manager.getConnectionStatus(server) === "connected" &&
-					tools.filter(tool => tool.mcpServerName === server).length === MANY_TOOL_COUNT,
-			)
-		);
-	});
+	await waitFor(() => servers.every(server => manager.getTools().some(tool => tool.mcpServerName === server)));
 }
 
 describe("MCP incremental connectServers", () => {
@@ -85,34 +81,34 @@ describe("MCP incremental connectServers", () => {
 		await manager.connectServers({ [SERVER_A]: fixtureConfig() }, {});
 		await waitForTools(manager, [SERVER_A]);
 		expect(manager.getConnectionStatus(SERVER_A)).toBe("connected");
-		const afterA = manager.getTools();
-		expect(afterA.map(t => t.name)).toContain(TOOL_A);
-		expect(afterA).toHaveLength(MANY_TOOL_COUNT);
-		expect(afterA.every(t => t.mcpServerName === SERVER_A)).toBe(true);
+		expect(snapshotTools(manager.getTools())).toEqual(expectedToolSnapshot([SERVER_A]));
 
 		await manager.connectServers({ [SERVER_B]: fixtureConfig(400) }, {});
 		await waitForTools(manager, [SERVER_A, SERVER_B]);
 		expect(manager.getConnectionStatus(SERVER_A)).toBe("connected");
 		expect(manager.getConnectionStatus(SERVER_B)).toBe("connected");
+		expect(snapshotTools(manager.getTools())).toEqual(expectedToolSnapshot([SERVER_A, SERVER_B]));
+	}, 20_000);
 
-		const tools = manager.getTools();
-		expect(tools.map(t => t.name)).toContain(TOOL_A);
-		expect(tools.map(t => t.name)).toContain(TOOL_B);
-		expect(tools).toHaveLength(MANY_TOOL_COUNT * 2);
-		expect(tools.filter(t => t.mcpServerName === SERVER_A)).toHaveLength(MANY_TOOL_COUNT);
-		expect(tools.filter(t => t.mcpServerName === SERVER_B)).toHaveLength(MANY_TOOL_COUNT);
-		expect(tools.map(tool => tool.name).sort()).toEqual(expectedToolNames([SERVER_A, SERVER_B]));
+	it("returns the full union and only newly connected servers for an in-window incremental connect", async () => {
+		await manager.connectServers({ [SERVER_A]: fixtureConfig() }, {}, undefined, 0);
+		const result = await manager.connectServers({ [SERVER_B]: fixtureConfig() }, {}, undefined, 0);
+
+		expect(snapshotTools(result.tools)).toEqual(expectedToolSnapshot([SERVER_A, SERVER_B]));
+		expect(result.connectedServers).toEqual([SERVER_B]);
 	}, 20_000);
 
 	it("applyMcpToggleRuntime enable of B refreshes the A+B union", async () => {
-		await manager.connectServers({ [SERVER_A]: fixtureConfig() }, {});
+		await manager.connectServers({ [SERVER_A]: fixtureConfig() }, {}, undefined, 0);
 		await waitForTools(manager, [SERVER_A]);
-		expect(manager.getTools()).toHaveLength(MANY_TOOL_COUNT);
+		const expectedA = expectedToolSnapshot([SERVER_A]);
+		const expectedAB = expectedToolSnapshot([SERVER_A, SERVER_B]);
+		expect(snapshotTools(manager.getTools())).toEqual(expectedA);
 
-		const refreshed: string[][] = [];
+		const refreshed: ToolSnapshot[] = [];
 		const session: MCPToggleSession = {
 			refreshMCPTools: next => {
-				refreshed.push(next.map(tool => tool.name));
+				refreshed.push(snapshotTools(next));
 			},
 		};
 		manager.setOnToolsChanged(async tools => session.refreshMCPTools(tools));
@@ -128,23 +124,18 @@ describe("MCP incremental connectServers", () => {
 				exaApiKeys: [],
 			}),
 		});
-		await waitForTools(manager, [SERVER_A, SERVER_B]);
-		const expected = expectedToolNames([SERVER_A, SERVER_B]);
-		await waitFor(() => {
-			const names = refreshed.at(-1)?.toSorted();
-			return names?.length === expected.length && names.every((name, index) => name === expected[index]);
-		});
+
+		// The toggle's direct refresh must not lose A while delayed B is still starting.
+		expect(refreshed).toEqual([expectedA]);
+		await waitFor(() => manager.getTools().some(tool => tool.mcpServerName === SERVER_B));
 
 		expect(manager.getConnectionStatus(SERVER_A)).toBe("connected");
 		expect(manager.getConnectionStatus(SERVER_B)).toBe("connected");
-		const names = manager.getTools().map(t => t.name);
-		expect(names).toContain(TOOL_A);
-		expect(names).toContain(TOOL_B);
-		expect(manager.getTools()).toHaveLength(MANY_TOOL_COUNT * 2);
-		expect(refreshed.at(-1)).toContain(TOOL_A);
-		expect(refreshed.at(-1)).toContain(TOOL_B);
-		expect(refreshed.at(-1)).toHaveLength(MANY_TOOL_COUNT * 2);
-		expect(refreshed.at(-1)?.toSorted()).toEqual(expected);
+		expect(snapshotTools(manager.getTools())).toEqual(expectedAB);
+		expect(refreshed.slice(1).map(snapshot => snapshot.filter(tool => tool.mcpServerName === SERVER_A))).toEqual(
+			refreshed.slice(1).map(() => expectedA.filter(tool => tool.mcpServerName === SERVER_A)),
+		);
+		expect(refreshed.at(-1)).toEqual(expectedAB);
 	}, 20_000);
 
 	it("notifies connection-status listeners on connect and transport loss", async () => {
