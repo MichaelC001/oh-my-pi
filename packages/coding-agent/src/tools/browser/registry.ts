@@ -250,8 +250,13 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 		// already outlived the window an installed extension needs to connect.
 		let outcome = await waitForRelayExtension(cdpUrl, opts.signal);
 		// A broker-owned relay outlives omp upgrades; replace an incompatible one
-		// with this version's once. A manually started relay is left to its owner.
-		if (outcome === "outdated-relay" && autoStart && (await restartRelayDaemon({ cdpUrl, signal: opts.signal }))) {
+		// with this version's once, and a compatible older one only while no CDP
+		// client uses it. A manually started relay is left to its owner.
+		if (
+			(outcome === "outdated-relay" || outcome === "idle-older-relay") &&
+			autoStart &&
+			(await restartRelayDaemon({ cdpUrl, signal: opts.signal, idleOnly: outcome === "idle-older-relay" }))
+		) {
 			outcome = await waitForRelayExtension(cdpUrl, opts.signal);
 		}
 		if (outcome === "unreachable") {

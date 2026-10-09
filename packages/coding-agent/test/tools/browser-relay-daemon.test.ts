@@ -421,6 +421,104 @@ try {
 		});
 	}, 60_000);
 
+	it("replaces a compatible older broker-owned relay only while no CDP client uses it and it reports its clients", async () => {
+		const home = await fs.mkdtemp(path.join(os.tmpdir(), "omp-relay-idle-restart-"));
+		const ownedPort = await findFreeCdpPort();
+		let manualPort = await findFreeCdpPort();
+		while (manualPort === ownedPort) manualPort = await findFreeCdpPort();
+		// Stands in for a ready relay of the given version; an empty client count stands in for a relay that predates it.
+		const standIn = path.join(home, "stand-in-relay.ts");
+		await Bun.write(
+			standIn,
+			`const [port, version, clients] = process.argv.slice(2);
+Bun.serve({
+	hostname: "127.0.0.1",
+	port: Number(port),
+	fetch: () =>
+		Response.json({ Browser: "Chrome/1", ompRelayVersion: version, ...(clients ? { ompRelayCdpClients: Number(clients) } : {}) }),
+});
+console.log(\`omp browser relay listening on http://127.0.0.1:\${port}\`);
+`,
+		);
+		const result = await runWithIsolatedBroker(
+			home,
+			`import { VERSION } from "@oh-my-pi/pi-utils/dirs";
+import { closeDaemonClients, daemonClientForGlobal } from ${JSON.stringify(path.resolve(import.meta.dir, "../../src/launch/client.ts"))};
+import { restartRelayDaemon } from ${JSON.stringify(path.resolve(import.meta.dir, "../../src/tools/browser/relay/daemon.ts"))};
+const [ownedPort, manualPort, standIn] = [Bun.env.OMP_TEST_OWNED_PORT!, Bun.env.OMP_TEST_MANUAL_PORT!, Bun.env.OMP_TEST_STALE_RELAY!];
+const name = \`omp.browser.relay.\${ownedPort}\`;
+const ownedUrl = \`http://127.0.0.1:\${ownedPort}\`;
+const manual = Bun.spawn([process.execPath, standIn, manualPort, "18.0.0", "0"], { stdout: "pipe" });
+try {
+	const client = await daemonClientForGlobal("browser-relay");
+	const describe = () =>
+		client.request({ op: "describe", name }).then(
+			response => response.daemon,
+			() => undefined,
+		);
+	const versionAt = async (port: string) => {
+		const body: unknown = await (await fetch(\`http://127.0.0.1:\${port}/json/version\`)).json();
+		return typeof body === "object" && body !== null && "ompRelayVersion" in body ? body.ompRelayVersion : null;
+	};
+	// Starts a stand-in under the broker, asks for an idle-only restart, and reports whether the stand-in kept serving.
+	const restartOwned = async (version: string, clients: string) => {
+		const previous = await describe();
+		if (previous && previous.state !== "exited" && previous.state !== "failed") {
+			await client.request({ op: "stop", name, timeoutMs: 5_000 });
+		}
+		await client.request({
+			op: "start",
+			spec: {
+				name,
+				application: process.execPath,
+				args: [standIn, ownedPort, version, clients],
+				env: {},
+				cwd: process.cwd(),
+				pty: false,
+				ready: { log: "browser relay listening", timeoutMs: 15_000 },
+				restart: "no",
+				persist: false,
+				detached: false,
+			},
+		});
+		const pid = (await describe())?.pid;
+		const restarted = await restartRelayDaemon({ cdpUrl: ownedUrl, idleOnly: true });
+		return { restarted, kept: pid !== undefined && (await describe())?.pid === pid, version: await versionAt(ownedPort) };
+	};
+	const olderIdle = await restartOwned("18.0.0", "0");
+	const olderInUse = await restartOwned("18.0.0", "1");
+	const newerIdle = await restartOwned("999.0.0", "0");
+	const olderUncounted = await restartOwned("18.0.0", "");
+	await manual.stdout.getReader().read();
+	const manualRestarted = await restartRelayDaemon({ cdpUrl: \`http://127.0.0.1:\${manualPort}\`, idleOnly: true });
+	process.stdout.write(
+		JSON.stringify({
+			olderIdle: { ...olderIdle, version: olderIdle.version === VERSION ? "current" : olderIdle.version },
+			olderInUse,
+			newerIdle,
+			olderUncounted,
+			manual: { restarted: manualRestarted, version: await versionAt(manualPort) },
+		}),
+	);
+} finally {
+	manual.kill();
+	await closeDaemonClients();
+}`,
+			{
+				OMP_TEST_OWNED_PORT: String(ownedPort),
+				OMP_TEST_MANUAL_PORT: String(manualPort),
+				OMP_TEST_STALE_RELAY: standIn,
+			},
+		);
+		expect(result).toEqual({
+			olderIdle: { restarted: true, kept: false, version: "current" },
+			olderInUse: { restarted: false, kept: true, version: "18.0.0" },
+			newerIdle: { restarted: false, kept: true, version: "999.0.0" },
+			olderUncounted: { restarted: false, kept: true, version: "18.0.0" },
+			manual: { restarted: false, version: "18.0.0" },
+		});
+	}, 60_000);
+
 	it("keeps a replacement another omp started while this one was about to stop the outdated relay", async () => {
 		const home = await fs.mkdtemp(path.join(os.tmpdir(), "omp-relay-restart-race-"));
 		const port = String(await findFreeCdpPort());
