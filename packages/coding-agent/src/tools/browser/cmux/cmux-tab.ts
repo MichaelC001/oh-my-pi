@@ -1123,12 +1123,15 @@ export class CmuxTab implements InProcessRunTab {
 		};
 		context.screenshots.push(info);
 		if (!opts.silent) {
+			// The daemon's capture scale is not reported: measure it against the CSS viewport width.
+			const geometry = await this.#readGeometry(context.timeoutMs);
 			const lines = formatScreenshot({
 				saveFullRes,
 				savedMimeType,
 				savedByteLength: savedBuffer.length,
 				dest,
 				resized,
+				capture: { area: "viewport", scale: resized.originalWidth / geometry.innerWidth },
 			});
 			if (captureNotes.length > 0) {
 				lines.push(`[cmux surface: ${captureNotes.join("; ")}]`);

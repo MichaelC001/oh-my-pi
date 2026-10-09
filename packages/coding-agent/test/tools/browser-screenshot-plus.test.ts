@@ -209,4 +209,52 @@ button { margin: 80px; width: 180px; height: 60px; }
 			await invoke({ action: "close", name, kill: true }).catch(() => undefined);
 		}
 	}, 30_000);
+
+	test.each([1.25, 2])(
+		"the screenshot note maps image coordinates to clickAt at device scale %p",
+		async scale => {
+			const invoke = createHost();
+			const name = `screenshot-click-factor-${crypto.randomUUID()}`;
+			const html = `<!doctype html><html><head><style>
+body { margin: 0; }
+#target { position: absolute; left: 700px; top: 500px; width: 40px; height: 40px; }
+</style></head><body>
+<button id="target" onclick="event.stopPropagation(); document.title = 'hit'">Go</button>
+<script>document.addEventListener("click", event => { document.title = "miss " + event.clientX + "," + event.clientY; });</script>
+</body></html>`;
+			await invoke({
+				action: "open",
+				name,
+				url: `data:text/html,${encodeURIComponent(html)}`,
+				viewport: { width: 1000, height: 700, scale },
+			});
+			try {
+				const shot = await invoke({ action: "call", name, chain: [{ method: "screenshot", args: [] }] });
+				const text = shot.content
+					.filter(block => block.type === "text")
+					.map(block => block.text)
+					.join("\n");
+				const factor = Number(text.match(/Multiply (?:image )?coordinates by ([\d.]+)/)?.[1]);
+				const shots =
+					shot.details && typeof shot.details === "object" && "screenshots" in shot.details
+						? (shot.details.screenshots as ScreenshotResult[])
+						: [];
+				const displayedWidth = shots[0]?.width ?? 0;
+				// Where the button's centre (720, 520 CSS px) appears in the image the model sees.
+				const imageX = (720 * displayedWidth) / 1000;
+				const imageY = (520 * displayedWidth) / 1000;
+				await invoke({
+					action: "call",
+					name,
+					chain: [{ method: "clickAt", args: [Math.round(imageX * factor), Math.round(imageY * factor)] }],
+				});
+				expect(
+					valueFrom<string>(await invoke({ action: "call", name, chain: [{ method: "title", args: [] }] })),
+				).toBe("hit");
+			} finally {
+				await invoke({ action: "close", name, kill: true }).catch(() => undefined);
+			}
+		},
+		30_000,
+	);
 });

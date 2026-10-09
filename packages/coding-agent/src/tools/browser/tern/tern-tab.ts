@@ -93,6 +93,7 @@ import {
 	type ScreenshotChangeResult,
 	type ScreenshotHistory,
 	type ScreenshotOptions,
+	screenshotArea,
 	screenshotQuality,
 	screenshotScope,
 	screenshotThreshold,
@@ -1869,6 +1870,7 @@ export class TernTab implements InProcessRunTab {
 				savedByteLength: savedBuffer.length,
 				dest,
 				resized,
+				capture: { area: screenshotArea(opts), scale: this.#viewport.deviceScaleFactor ?? 1 },
 			});
 			if (opts.annotate) lines.push(formatScreenshotLegend(legend));
 			context.output.push({ type: "text", text: lines.join("\n") });

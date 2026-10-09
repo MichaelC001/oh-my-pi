@@ -54,6 +54,7 @@ describe("formatScreenshot", () => {
 				savedByteLength: 2048,
 				dest: filePath,
 				resized,
+				capture: { area: "viewport", scale: 1 },
 			}),
 		).toEqual([
 			"Screenshot captured",
@@ -73,6 +74,7 @@ describe("formatScreenshot", () => {
 				savedByteLength: 2048,
 				dest: filePath,
 				resized,
+				capture: { area: "viewport", scale: 1 },
 			}),
 		).toEqual([
 			"Screenshot captured",
@@ -91,6 +93,7 @@ describe("formatScreenshot", () => {
 				savedByteLength: 3072,
 				dest: path.join(os.tmpdir(), "omp-sshots-123.png"),
 				resized,
+				capture: { area: "viewport", scale: 1 },
 			}),
 		).toEqual(["Screenshot captured", "Format: image/webp (3.00 KB)", "Dimensions: 800x600"]);
 	});
@@ -105,17 +108,18 @@ describe("formatScreenshot", () => {
 				savedByteLength: 4096,
 				dest: path.join(os.tmpdir(), "omp-sshots-123.png"),
 				resized,
+				capture: { area: "viewport", scale: 1 },
 			}),
 		).toContain("Resize: image decoder failed; using original image bytes");
 	});
 
-	it("appends dimension note when image was resized", () => {
+	it("maps a resized capture to viewport CSS pixels through the device scale", () => {
 		const resized = fakeResized({
 			wasResized: true,
-			originalWidth: 1600,
-			originalHeight: 1200,
-			width: 800,
-			height: 600,
+			originalWidth: 1706,
+			originalHeight: 960,
+			width: 1024,
+			height: 576,
 		});
 
 		const lines = formatScreenshot({
@@ -124,10 +128,26 @@ describe("formatScreenshot", () => {
 			savedByteLength: 2048,
 			dest: path.join(os.tmpdir(), "shot.png"),
 			resized,
+			capture: { area: "viewport", scale: 1.25 },
 		});
 
 		expect(lines).toContain(
-			"[Image: original 1600x1200, displayed at 800x600. Multiply coordinates by 2.00 to map to original image.]",
+			"[Image: original 1706x960 at device scale 1.25, displayed at 1024x576. Multiply image coordinates by 1.33 to get viewport CSS pixels for tab.clickAt.]",
+		);
+	});
+
+	it("maps an unresized high-density capture down to CSS pixels", () => {
+		const lines = formatScreenshot({
+			saveFullRes: false,
+			savedMimeType: "image/webp",
+			savedByteLength: 2048,
+			dest: path.join(os.tmpdir(), "shot.png"),
+			resized: fakeResized(),
+			capture: { area: "element", scale: 2 },
+		});
+
+		expect(lines).toContain(
+			"[Image: 800x600 at device scale 2. Multiply image coordinates by 0.50 to get CSS pixels from the element's top-left corner.]",
 		);
 	});
 });

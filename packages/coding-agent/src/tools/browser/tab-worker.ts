@@ -199,6 +199,7 @@ import {
 	type ScreenshotChangeResult,
 	type ScreenshotHistory,
 	type ScreenshotOptions,
+	screenshotArea,
 	screenshotQuality,
 	screenshotScope,
 	screenshotThreshold,
@@ -2845,12 +2846,14 @@ export class WorkerCore {
 			height: resized.height,
 		});
 		if (!opts.silent) {
+			const { deviceScaleFactor = 1 } = await this.#viewport(signal);
 			const lines = formatScreenshot({
 				saveFullRes,
 				savedMimeType,
 				savedByteLength: savedBuffer.length,
 				dest,
 				resized,
+				capture: { area: screenshotArea(opts), scale: deviceScaleFactor },
 			});
 			if (opts.annotate) lines.push(formatScreenshotLegend(annotationTargets));
 			output.push({ type: "text", text: lines.join("\n") });

@@ -15,6 +15,7 @@
 
 ### Fixed
 
+- Fixed browser screenshots telling the model to scale image coordinates by the resize factor alone, so `clickAt` landed off target on any page captured at a device scale above 1 (headless 1.25×, Retina 2×); the note now gives the factor to CSS pixels on Chromium, Tern and cmux tabs
 - Fixed the custom-tool examples' full-documentation link opening a missing page ([#15076](https://github.com/can1357/oh-my-pi/pull/15076) by [@qingshungLI](https://github.com/qingshungLI))
 - Fixed the `/models` compaction limit preview and **Compacts at** row rounding fractional percentages (`12.5%` showed as `13%`) ([#15074](https://github.com/can1357/oh-my-pi/pull/15074) by [@H4vC](https://github.com/H4vC))
 - Fixed `/omfg` save, overwrite, and validation prompts in Tern opening as a sheet over the candidate rule; they now sit in the composer slot like `ask`, so the rule stays readable while you choose ([#15058](https://github.com/can1357/oh-my-pi/pull/15058) by [@H4vC](https://github.com/H4vC))

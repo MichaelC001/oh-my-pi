@@ -9,6 +9,7 @@ import { throwIfAborted } from "../tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { type AriaSnapshotOptions, buildAriaSnapshotScript } from "./aria/aria-snapshot";
 import { clickElement, fillViaHandle, focusTextEntryTarget, pressKey } from "./interactions";
+import { readPageViewport } from "./launch";
 import { RunOutput } from "./run-output";
 import type { ScreenshotResult, SessionSnapshot } from "./tab-protocol";
 
@@ -409,6 +410,7 @@ export async function captureFrameScreenshot(
 		width: resized.width,
 		height: resized.height,
 	});
+	const { deviceScaleFactor = 1 } = await readPageViewport(frame.page(), signal);
 	output.push({
 		type: "text",
 		text: formatScreenshot({
@@ -417,6 +419,7 @@ export async function captureFrameScreenshot(
 			savedByteLength: savedBuffer.length,
 			dest,
 			resized,
+			capture: { area: "element", scale: deviceScaleFactor },
 		}).join("\n"),
 	});
 	output.push({ type: "image", data: resized.data, mimeType: resized.mimeType });

@@ -33,7 +33,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { CmuxKind } from "@oh-my-pi/pi-coding-agent/tools/browser/cmux/rpc";
+import { type CmuxKind, GEOMETRY_SCRIPT } from "@oh-my-pi/pi-coding-agent/tools/browser/cmux/rpc";
 import { CmuxSocketClient } from "@oh-my-pi/pi-coding-agent/tools/browser/cmux/socket-client";
 import { acquireBrowser } from "@oh-my-pi/pi-coding-agent/tools/browser/registry";
 import {
@@ -43,6 +43,7 @@ import {
 	runInTab,
 } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
+import { encodeRawPng } from "@oh-my-pi/pi-coding-agent/utils/png-encode";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 
 function makeKind(socketSuffix: string): CmuxKind {
@@ -547,5 +548,48 @@ describe("browser tab-supervisor — cmux tab close mid-run (#4499)", () => {
 		} finally {
 			await fs.rm(screenshotDir, { recursive: true, force: true });
 		}
+	});
+
+	it("maps screenshot coordinates to CSS pixels by the capture's measured scale", async () => {
+		spyOn(CmuxSocketClient.prototype, "connect").mockResolvedValue(undefined);
+		spyOn(CmuxSocketClient.prototype, "close").mockImplementation(() => undefined);
+		// A 2x capture of a 1000 CSS px wide viewport.
+		const png = encodeRawPng(new Uint8Array(2000 * 20 * 3), 2000, 20, 3).toBase64();
+		spyOn(CmuxSocketClient.prototype, "request").mockImplementation(
+			async (method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> => {
+				switch (method) {
+					case "browser.open_split":
+						return { surface_id: "surface-screenshot-scale", url: "about:blank" };
+					case "browser.url.get":
+						return { url: "about:blank" };
+					case "browser.snapshot":
+						return { page: { html: "" } };
+					case "browser.eval":
+						return params.script === GEOMETRY_SCRIPT
+							? { value: { innerWidth: 1000, innerHeight: 10, dpr: 2 } }
+							: { value: "" };
+					case "browser.screenshot":
+						return { png_base64: png };
+					default:
+						return {};
+				}
+			},
+		);
+
+		const browser = await acquireBrowser(makeKind("screenshot-scale"), { cwd: "/tmp" });
+		await acquireTab("screenshot-scale", browser, {
+			timeoutMs: 5_000,
+			ownerSessionId: "session-screenshot-scale",
+		});
+
+		const result = await runInTab("screenshot-scale", {
+			code: "return await tab.screenshot();",
+			timeoutMs: 5_000,
+			session: makeSession("/tmp"),
+		});
+		const text = result.displays.flatMap(block => (block.type === "text" ? [block.text] : [])).join("\n");
+		expect(text).toContain("at device scale 2, displayed at 1024x10");
+		expect(text).toContain("Multiply image coordinates by 0.98 to get viewport CSS pixels for tab.clickAt.");
+		if (typeof result.returnValue === "string") await fs.rm(result.returnValue);
 	});
 });
