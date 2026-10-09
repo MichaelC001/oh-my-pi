@@ -648,6 +648,58 @@ try {
 		);
 		expect(result).toEqual({ abortedWhileRestarting: true, error: "ToolAbortError", relayServing: true });
 	}, 60_000);
+
+	it("routes an acquisition that finds a compatible older relay with no CDP clients into the relay restart", async () => {
+		const home = await fs.mkdtemp(path.join(os.tmpdir(), "omp-relay-idle-acquire-"));
+		const result = await runWithIsolatedBroker(
+			home,
+			`import { declareWorkerHostEntry } from "@oh-my-pi/pi-utils/worker-host";
+import { closeDaemonClients, daemonClientForGlobal } from ${JSON.stringify(path.resolve(import.meta.dir, "../../src/launch/client.ts"))};
+import { acquireBrowser } from ${JSON.stringify(path.resolve(import.meta.dir, "../../src/tools/browser/registry.ts"))};
+import { DISCARDED_TABS_PROTOCOL_VERSION } from ${JSON.stringify(path.resolve(import.meta.dir, "../../src/tools/browser/relay/protocol.ts"))};
+const controller = new AbortController();
+let restarting = false;
+// A compatible relay from an older omp that nobody is connected to; the acquisition is aborted once the restart probes it.
+const relay = Bun.serve({
+	hostname: "127.0.0.1",
+	port: 0,
+	fetch: () => {
+		if (restarting) controller.abort();
+		return Response.json({
+			ompRelayVersion: "18.0.0",
+			ompRelayDiscardedTabsProtocol: String(DISCARDED_TABS_PROTOCOL_VERSION),
+			ompExtensionDiscardedTabsProtocol: String(DISCARDED_TABS_PROTOCOL_VERSION),
+			ompRelayCdpClients: 0,
+		});
+	},
+});
+const cdpUrl = \`http://127.0.0.1:\${relay.port}\`;
+try {
+	// Start the broker first: the declared host is this script, which cannot serve as the broker.
+	const client = await daemonClientForGlobal("browser-relay");
+	await client.request({ op: "ping" });
+	const request = client.request.bind(client);
+	// Only the restart describes the relay's broker record; the first ensure adopts the serving relay.
+	client.request = (operation, signal) => {
+		if (operation.op === "describe") restarting = true;
+		return request(operation, signal);
+	};
+	declareWorkerHostEntry();
+	const error = await acquireBrowser({ kind: "relay", cdpUrl }, { cwd: process.cwd(), signal: controller.signal }).then(
+		() => null,
+		(failure: unknown) => failure,
+	);
+	process.stdout.write(
+		JSON.stringify({ restarting, error: error instanceof Error ? error.name : String(error) }),
+	);
+} finally {
+	await relay.stop(true);
+	await closeDaemonClients();
+}`,
+			{},
+		);
+		expect(result).toEqual({ restarting: true, error: "ToolAbortError" });
+	}, 60_000);
 });
 
 /** Runs `script` in a child bun with an isolated HOME and global broker; returns its JSON stdout. */
