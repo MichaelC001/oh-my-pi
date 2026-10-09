@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Renamed `takeRecentLoopPhase()` to `takeLoopPhaseAttribution()`, which returns `LoopPhaseAttribution` (`{ label, ms }`) instead of a string, returns `undefined` unless a window was armed with `resetLoopPhaseWindow()`, and names a label only when it outweighs unlabeled time ([#15019](https://github.com/can1357/oh-my-pi/pull/15019) by [@jaredlyon](https://github.com/jaredlyon)).
+
 ## [18.8.7] - 2026-10-09
 
 ### Added
