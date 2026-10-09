@@ -1,10 +1,11 @@
 /**
  * Snapcompact archive size follows the room under the compaction trigger, not
  * the window: half of what the trigger leaves after the system prompt, kept
- * turns and the archive's text, never planned past 60% of the trigger.
+ * turns and the archive's text, planned within 60% of the trigger.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
+import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -253,12 +254,20 @@ describe("snapcompact archive sized by the compaction trigger", () => {
 		// The kept turns, text edges and one frame already exceed 80% of a 12k trigger.
 		const { session, notices } = createSession(model, {
 			"compaction.thresholdTokens": 12_000,
-			"compaction.methodOrder": ["snapcompact"],
+			"compaction.methodOrder": ["snapcompact", "soft"],
 		});
 		const compactSpy = vi.spyOn(snapcompact, "compact");
+		const summarize = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
+			summary: "summarized",
+			shortSummary: undefined,
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: preparation.tokensBefore,
+			details: {},
+		}));
 		const { promise: done, resolve } = Promise.withResolvers<void>();
 		session.subscribe(event => {
-			if (event.type === "auto_compaction_end") resolve();
+			// The rejected snapcompact pass ends first; wait for the method that commits.
+			if (event.type === "auto_compaction_end" && event.result !== undefined) resolve();
 		});
 		const assistant = {
 			role: "assistant" as const,
@@ -282,11 +291,65 @@ describe("snapcompact archive sized by the compaction trigger", () => {
 		await done;
 		await session.waitForIdle();
 
-		// The single-frame render really happened, and was rejected rather than committed.
+		// The single-frame render really happened, was rejected, and the next method committed instead.
 		expect(compactSpy).toHaveBeenCalledTimes(1);
 		expect(compactSpy.mock.calls[0]?.[1]?.maxFrames).toBe(1);
 		expect(notices.some(notice => notice.includes("could not leave room under the compaction trigger"))).toBe(true);
-		expect(session.sessionManager.getBranch().some(entry => entry.type === "compaction")).toBe(false);
+		expect(summarize).toHaveBeenCalledTimes(1);
+		const compactions = session.sessionManager.getBranch().filter(entry => entry.type === "compaction");
+		expect(compactions).toHaveLength(1);
+		expect(compactions[0]).toMatchObject({ summary: "summarized" });
+		expect(snapcompact.getPreservedArchive(compactions[0]?.preserveData)).toBeUndefined();
+	});
+
+	it("keeps overflow recovery on the window fit: a one-frame archive above the trigger is committed and retried", async () => {
+		const model = opus(200_000);
+		const thresholdTokens = 12_000;
+		const { session, notices } = createSession(
+			model,
+			{
+				"compaction.thresholdTokens": thresholdTokens,
+				"compaction.methodOrder": ["snapcompact"],
+				"contextPromotion.enabled": false,
+			},
+			400,
+		);
+		session.agent.replaceMessages(session.buildDisplaySessionContext().messages);
+		const retry = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const compactSpy = vi.spyOn(snapcompact, "compact");
+		const { promise: done, resolve } = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_end") resolve();
+		});
+		const assistant = {
+			role: "assistant" as const,
+			content: [{ type: "text" as const, text: "" }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			stopReason: "error" as const,
+			errorMessage: "prompt is too long: 600000 tokens > 200000 maximum",
+			usage: {
+				input: 600_000,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 600_000,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: Date.now(),
+		};
+		session.agent.emitExternalEvent({ type: "message_end", message: assistant });
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistant] });
+		await done;
+		await session.waitForIdle();
+
+		expect(compactSpy.mock.calls[0]?.[1]?.maxFrames).toBe(1);
+		expect(latestArchive(session)?.frames.length).toBe(1);
+		// Above the recovery band, inside the window: the retry still runs.
+		expect(storedContextTokens(session)).toBeGreaterThan(0.8 * thresholdTokens);
+		expect(notices.some(notice => notice.includes("could not leave room under the compaction trigger"))).toBe(false);
+		expect(retry).toHaveBeenCalledTimes(1);
 	});
 
 	it("re-renders toward 60% of the trigger, dropping the oldest frames when a render overshoots", async () => {

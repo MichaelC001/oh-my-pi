@@ -3750,9 +3750,10 @@ export class SessionMaintenance {
 	 * - {@link SNAPCOMPACT_POST_COMPACTION_TARGET} of the threshold: the cap
 	 *   reserves text from an estimate that can run short, so the fit drops the
 	 *   measured excess at the archive's mean frame price.
-	 * A single frame cannot shrink further. The caller still rejects a payload
-	 * that stays over budget, and automatic passes reject a context above the
-	 * recovery band ({@link #snapcompactLeavesNoHeadroom}).
+	 * A single frame cannot shrink further, so 60% is a sizing target, not a
+	 * guarantee. The caller still rejects a payload that stays over budget, and
+	 * passes that need the recovery band reject a context above it
+	 * ({@link #snapcompactLeavesNoHeadroom}).
 	 */
 	async #renderSnapcompactArchive(
 		preparation: CompactionPreparation,
@@ -3799,10 +3800,12 @@ export class SessionMaintenance {
 	/**
 	 * Whether a rendered archive would leave the compacted context above
 	 * `COMPACTION_RECOVERY_BAND × threshold`, the band
-	 * {@link #compactionCreatedHeadroom} requires after the commit. Committing
-	 * such an archive only re-enters the no-headroom rescue, so automatic
-	 * maintenance rejects it and lets the next configured method try. Manual
-	 * `/compact` keeps its window-fit check only: the user asked for it.
+	 * {@link #compactionCreatedHeadroom} requires after a threshold pass.
+	 * Committing such an archive there only re-enters the no-headroom rescue, so
+	 * the pass rejects it and lets the next configured method try. Overflow and
+	 * incomplete recovery retry the turn and need only the window fit
+	 * ({@link #compactionCreatedRetryFit}), idle passes check neither, and manual
+	 * `/compact` keeps its window-fit check: the user asked for it.
 	 */
 	#snapcompactLeavesNoHeadroom(projectedTokens: number, settings: EngineCompactionSettings): boolean {
 		const ctxWindow = this.#model?.contextWindow ?? 0;
@@ -4809,7 +4812,8 @@ export class SessionMaintenance {
 			// room under the trigger so the compaction leaves space for new turns
 			// instead of re-firing a few turns later. Any local blocker (unsupported
 			// snapcompact glyphs, kept-history too large, post-render overflow, no room
-			// under the trigger) advances automatic maintenance to the next
+			// under the trigger on a threshold pass) advances automatic
+			// maintenance to the next
 			// configured preference instead of wedging the session (#3659). Manual
 			// `/compact snapcompact` remains local-only because its one-method override
 			// leaves no fallback.
@@ -4916,7 +4920,11 @@ export class SessionMaintenance {
 								snapcompactBlocker =
 									"snapcompact could not bring the context under the limit; trying the next preferred compaction method.";
 								snapcompactResult = undefined;
-							} else if (this.#snapcompactLeavesNoHeadroom(projectedForReduction, effectiveSettings)) {
+							} else if (
+								!willRetry &&
+								reason !== "idle" &&
+								this.#snapcompactLeavesNoHeadroom(projectedForReduction, effectiveSettings)
+							) {
 								logger.warn("Snapcompact archive leaves no room under the compaction trigger", {
 									model: this.#model?.id,
 									projected: projectedForReduction,
