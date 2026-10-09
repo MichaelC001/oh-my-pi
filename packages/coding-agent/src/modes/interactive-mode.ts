@@ -335,6 +335,7 @@ import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { materializeImageChipLinks, UiHelpers } from "./utils/ui-helpers";
 
 import {
+	cfgAskTimeout,
 	cfgAutocompleteMaxVisible,
 	cfgComposerShape,
 	cfgComposerTokenRate,
@@ -558,8 +559,11 @@ const PLAN_KEEP_CONTEXT_DISABLE_THRESHOLD_PERCENT = 95;
 const PLAN_SAVE_AND_QUIT_OPTION = "Save and quit";
 const PLAN_SAVE_TITLE_LINE_LIMIT = 6;
 
-/** How long a `cfg://` approval prompt waits for an answer before the write fails as unanswered. */
-const CFG_APPROVAL_TIMEOUT_MS = 10_000;
+/** Deadline for one `cfg://` approval prompt, honoring `ask.timeout` (seconds, 0 disables). */
+export function cfgApprovalTimeoutMs(settings: Settings): number | undefined {
+	const timeoutSeconds = cfgAskTimeout.get(settings);
+	return timeoutSeconds === 0 ? undefined : timeoutSeconds * 1000;
+}
 const CFG_APPROVE_SESSION = "Always for this session";
 const CFG_APPROVE_ONCE = "Allow once";
 const CFG_DENY = "Deny";
@@ -6712,9 +6716,9 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/**
 	 * Ask the user to approve one `cfg://` settings change; writable `/collab` guests get the
-	 * same prompt and the first answer wins. Dismissing the dialog denies it; leaving it
-	 * unanswered for {@link CFG_APPROVAL_TIMEOUT_MS} (any host keypress restarts the
-	 * countdown) drops it as `timeout`.
+	 * same prompt and the first answer wins. Dismissing the dialog denies it. The wait honors
+	 * `ask.timeout` (seconds, 0 waits indefinitely); while a deadline is armed, any host
+	 * keypress restarts the countdown, and an unanswered prompt drops the write as `timeout`.
 	 */
 	async #promptCfgChange(request: CfgChangeRequest): Promise<CfgApproval> {
 		const headline = request.save
@@ -6724,14 +6728,16 @@ export class InteractiveMode implements InteractiveModeContext {
 			? `\n⚠️ Overridden by your ${request.shadowedBy}: the saved value won't take effect here.`
 			: "";
 		let timedOut = false;
+		const timeout = cfgApprovalTimeoutMs(this.session.settings);
 		const choice = await this.#extensionUiController.showCollabAwareSelector(
 			`${headline}\n${request.previous} → ${request.value}${warning}`,
 			[CFG_APPROVE_SESSION, CFG_APPROVE_ONCE, CFG_DENY],
 			{
 				// A reflexive Enter approves this change only, never the whole session.
 				initialIndex: 1,
-				timeout: CFG_APPROVAL_TIMEOUT_MS,
-				// The selector auto-picks the highlighted option on expiry; an unanswered prompt approves nothing.
+				timeout,
+				// With a deadline armed the selector auto-picks the highlighted option on
+				// expiry; an unanswered prompt approves nothing.
 				onTimeout: () => {
 					timedOut = true;
 				},
