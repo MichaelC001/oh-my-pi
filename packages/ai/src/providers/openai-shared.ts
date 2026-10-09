@@ -329,8 +329,8 @@ export function resolveOpenAIRequestSetup(
 		setHeaderIfAbsent(headers, model.compat.promptCacheSessionHeader, options.promptCacheSessionId);
 	}
 	// Caller and configured headers win: this only labels the conversation.
-	if (sessionId && model.compat?.sessionHeader) {
-		setHeaderIfAbsent(headers, model.compat.sessionHeader, sessionId);
+	if (options.sessionId && model.compat?.sessionHeader) {
+		setHeaderIfAbsent(headers, model.compat.sessionHeader, options.sessionId);
 	}
 
 	if (options.defaultBaseUrl !== undefined) {

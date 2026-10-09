@@ -975,6 +975,7 @@ export async function discoverOpenAIModelsList(
 					api: task.api,
 					kind: task.kind,
 					provider: providerConfig.provider,
+					...(providerConfig.discovery.type === "litellm" ? { providerType: providerConfig.discovery.type } : {}),
 					baseUrl,
 					reasoning: false,
 					input,
@@ -1000,6 +1001,7 @@ export async function discoverOpenAIModelsList(
 				name: reference?.name ?? id,
 				api,
 				provider: providerConfig.provider,
+				...(providerConfig.discovery.type === "litellm" ? { providerType: providerConfig.discovery.type } : {}),
 				baseUrl,
 				reasoning: reference?.reasoning ?? false,
 				thinking: inheritReferenceThinking(undefined, reference, providerConfig.provider),
@@ -1089,7 +1091,7 @@ export async function discoverLiteLLMModels(
 	if (richModels === null) {
 		return discoverOpenAIModelsList({ ...providerConfig, baseUrl }, ctx);
 	}
-	return richModels.map(spec => buildModel({ ...spec, headers }));
+	return richModels.map(spec => buildModel({ ...spec, headers, providerType: providerConfig.discovery.type }));
 }
 
 /**

@@ -206,6 +206,23 @@ describe("opencode and gpt session header on OpenAI transports", () => {
 		expect(setup.headers["x-litellm-session-id"]).toBeUndefined();
 	});
 
+	it("does not turn a shared prompt-cache key into a LiteLLM conversation", () => {
+		const model = makeLiteLLMCompletionsModel();
+		const cacheOnly = resolveOpenAIRequestSetup(model, {
+			apiKey: "key",
+			messages: [],
+			promptCacheSessionId: "shared-cache",
+		});
+		expect(cacheOnly.headers["x-litellm-session-id"]).toBeUndefined();
+		const conversation = resolveOpenAIRequestSetup(model, {
+			apiKey: "key",
+			messages: [],
+			promptCacheSessionId: "shared-cache",
+			sessionId: "conversation",
+		});
+		expect(conversation.headers["x-litellm-session-id"]).toBe("conversation");
+	});
+
 	it("applies omp's common User-Agent as the global inference default", async () => {
 		const userAgents: Array<string | null> = [];
 		const fetchMock = async (_input: string | URL | Request, init?: RequestInit) => {
