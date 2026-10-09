@@ -31,6 +31,8 @@ describe("cfg:// approval prompt wiring", () => {
 	let originalProject: string;
 	let testSession: TestSessionContext | undefined;
 	let mode: InteractiveMode | undefined;
+	/** When true the stubbed selector waits for the abort signal instead of answering. */
+	let hangSelector = false;
 
 	beforeEach(async () => {
 		tmp = path.join(os.tmpdir(), `omp-cfg-timeout-${Snowflake.next()}`);
@@ -41,6 +43,7 @@ describe("cfg:// approval prompt wiring", () => {
 		resetSettingsForTest();
 		await initTheme();
 		await Settings.init({ inMemory: true, cwd: tmp });
+		hangSelector = false;
 	});
 
 	afterEach(async () => {
@@ -61,7 +64,7 @@ describe("cfg:// approval prompt wiring", () => {
 		await fs.rm(tmp, { recursive: true, force: true });
 	});
 
-	async function promptTimeoutSeen(askTimeout: number | undefined): Promise<Array<number | undefined>> {
+	async function startMode(askTimeout: number | undefined): Promise<Array<number | undefined>> {
 		testSession = await createTestSession(
 			askTimeout === undefined ? {} : { settingsOverrides: { "ask.timeout": askTimeout } },
 		);
@@ -84,34 +87,63 @@ describe("cfg:// approval prompt wiring", () => {
 		spyOn(mode, "showHookConfirm").mockResolvedValue(true);
 		const seen: Array<number | undefined> = [];
 		spyOn(ExtensionUiController.prototype, "showCollabAwareSelector").mockImplementation(
-			async (_title: string, _options: unknown, dialogOptions?: { timeout?: number }) => {
+			async (_title: string, _options: unknown, dialogOptions?: { timeout?: number; signal?: AbortSignal }) => {
 				seen.push(dialogOptions?.timeout);
+				if (hangSelector) {
+					// Mirror the real dialog: settle dismissed when the mode stops.
+					await new Promise<undefined>(resolve =>
+						dialogOptions?.signal?.addEventListener("abort", () => resolve(undefined), { once: true }),
+					);
+					return undefined;
+				}
 				return "Allow once";
 			},
 		);
 		await mode.init({ suppressWelcomeIntro: true });
 		seen.length = 0;
+		return seen;
+	}
+
+	function driveWrite(): Promise<unknown> {
 		const session: ToolSession = {
-			cwd: testSession.tempDir,
+			cwd: testSession!.tempDir,
 			hasUI: true,
 			settingsApproval: true,
 			taskDepth: 0,
 			getSessionFile: () => null,
 			getSessionSpawns: () => "*",
-			settings: testSession.session.settings,
+			settings: testSession!.session.settings,
 		};
-		await new CfgProtocolHandler().write(parseInternalUrl("cfg://advisor/enabled"), "true", { session });
-		return seen;
+		return new CfgProtocolHandler().write(parseInternalUrl("cfg://advisor/enabled"), "true", { session });
 	}
 
 	it("prompts without a deadline when ask.timeout is at its default", async () => {
 		// Regression for #15080: the prompt used a hardcoded 10s deadline.
-		// A hardcoded value here keeps the helper green but fails below,
+		// A hardcoded value here keeps a helper green but fails below,
 		// because this is the timeout the dialog actually receives.
-		expect(await promptTimeoutSeen(undefined)).toEqual([undefined]);
+		const seen = await startMode(undefined);
+		await driveWrite();
+		expect(seen).toEqual([undefined]);
 	}, 60_000);
 
 	it("prompts with the ask.timeout deadline in milliseconds", async () => {
-		expect(await promptTimeoutSeen(45)).toEqual([45_000]);
+		const seen = await startMode(45);
+		await driveWrite();
+		expect(seen).toEqual([45_000]);
+	}, 60_000);
+
+	it("denies a pending approval when the mode stops", async () => {
+		// Without a deadline the prompt would outlive the UI waiting on it.
+		hangSelector = true;
+		const seen = await startMode(undefined);
+		const pending = driveWrite();
+		const start = Date.now();
+		while (seen.length === 0) {
+			if (Date.now() - start > 10_000) throw new Error("approval prompt never appeared");
+			await Bun.sleep(25);
+		}
+		mode!.stop();
+		const result = (await pending) as { details?: { cfg?: { outcome?: string } } };
+		expect(result.details?.cfg?.outcome).toBe("declined");
 	}, 60_000);
 });

@@ -1227,6 +1227,16 @@ export const cfgAskTimeout = register({
 	},
 });
 
+/**
+ * `ask.timeout` in the milliseconds dialogs consume, or `undefined` for no
+ * deadline. Shared by the ask tool and the `cfg://` approval prompt so the
+ * setting means the same thing everywhere it is honored.
+ */
+export function askTimeoutMs(settings: Settings): number | undefined {
+	const timeoutSeconds = cfgAskTimeout.get(settings);
+	return timeoutSeconds === 0 ? undefined : timeoutSeconds * 1000;
+}
+
 export const cfgAskNotify = register({
 	id: "ask.notify",
 	type: "enum",

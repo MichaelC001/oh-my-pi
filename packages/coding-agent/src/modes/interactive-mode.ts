@@ -335,7 +335,7 @@ import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { materializeImageChipLinks, UiHelpers } from "./utils/ui-helpers";
 
 import {
-	cfgAskTimeout,
+	askTimeoutMs,
 	cfgAutocompleteMaxVisible,
 	cfgComposerShape,
 	cfgComposerTokenRate,
@@ -559,11 +559,6 @@ const PLAN_KEEP_CONTEXT_DISABLE_THRESHOLD_PERCENT = 95;
 const PLAN_SAVE_AND_QUIT_OPTION = "Save and quit";
 const PLAN_SAVE_TITLE_LINE_LIMIT = 6;
 
-/** Deadline for one `cfg://` approval prompt, honoring `ask.timeout` (seconds, 0 disables). */
-function cfgApprovalTimeoutMs(settings: Settings): number | undefined {
-	const timeoutSeconds = cfgAskTimeout.get(settings);
-	return timeoutSeconds === 0 ? undefined : timeoutSeconds * 1000;
-}
 const CFG_APPROVE_SESSION = "Always for this session";
 const CFG_APPROVE_ONCE = "Allow once";
 const CFG_DENY = "Deny";
@@ -1570,6 +1565,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#eventBus;
 	}
 	readonly #extensionUiController: ExtensionUiController;
+	/**
+	 * Settles pending `cfg://` approval prompts when the mode stops, so a
+	 * prompt armed without a deadline cannot outlive the UI waiting on it.
+	 * Replaced on every stop so later prompts start unaborted.
+	 */
+	#dialogLifetime = new AbortController();
 	readonly #inputController: InputController;
 	readonly #selectorController: SelectorController;
 	readonly #focusController: SessionFocusController;
@@ -6728,7 +6729,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			? `\n⚠️ Overridden by your ${request.shadowedBy}: the saved value won't take effect here.`
 			: "";
 		let timedOut = false;
-		const timeout = cfgApprovalTimeoutMs(this.session.settings);
+		const timeout = askTimeoutMs(this.session.settings);
 		const choice = await this.#extensionUiController.showCollabAwareSelector(
 			`${headline}\n${request.previous} → ${request.value}${warning}`,
 			[CFG_APPROVE_SESSION, CFG_APPROVE_ONCE, CFG_DENY],
@@ -6736,6 +6737,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				// A reflexive Enter approves this change only, never the whole session.
 				initialIndex: 1,
 				timeout,
+				signal: this.#dialogLifetime.signal,
 				// With a deadline armed the selector auto-picks the highlighted option on
 				// expiry; an unanswered prompt approves nothing.
 				onTimeout: () => {
@@ -6751,6 +6753,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	stop(): void {
 		this.#appearanceRefreshRequest = undefined;
+		// Settle any pending approval prompt as dismissed (deny), then hand
+		// later prompts a fresh signal.
+		this.#dialogLifetime.abort();
+		this.#dialogLifetime = new AbortController();
 		this.#streamPublisher?.dispose();
 		this.#streamPublisher = undefined;
 		void this.#recorder?.stop();
