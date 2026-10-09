@@ -66,15 +66,23 @@ async function waitForTools(manager: MCPManager, servers: string[]): Promise<voi
 describe("MCP incremental connectServers", () => {
 	let workDir: string;
 	let manager: MCPManager;
+	let originalStartupTimeout: string | undefined;
 
 	beforeEach(() => {
+		originalStartupTimeout = Bun.env.OMP_MCP_STARTUP_TIMEOUT_MS;
+		delete Bun.env.OMP_MCP_STARTUP_TIMEOUT_MS;
 		workDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-mcp-incremental-"));
 		manager = new MCPManager(workDir);
 	});
 
 	afterEach(async () => {
-		await manager.disconnectAll();
-		removeSyncWithRetries(workDir);
+		try {
+			await manager.disconnectAll();
+			removeSyncWithRetries(workDir);
+		} finally {
+			if (originalStartupTimeout === undefined) delete Bun.env.OMP_MCP_STARTUP_TIMEOUT_MS;
+			else Bun.env.OMP_MCP_STARTUP_TIMEOUT_MS = originalStartupTimeout;
+		}
 	});
 
 	it("keeps server A tools after incrementally connecting server B", async () => {
