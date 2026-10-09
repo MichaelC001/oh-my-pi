@@ -506,9 +506,9 @@ provider "factory-droid" {
 	models "claude-sonnet-5-5" {
 		routing-family "anthropic"
 		upstream-rotation "anthropic" "vertex_anthropic" "bedrock_anthropic" "azure_anthropic"
-		credit-rates { input 0.8; output 5 }
+		credit-rates { input 0.8; output 5; cache-read 0.05 }
 		thinking-efforts "low" "medium" "high" "xhigh" "max"
-		thinking-requires-effort #true
+		thinking-requires-effort #false
 		thinking-default-level "high"
 		entitlement { feature-flag "claude_sonnet_5_5" }
 	}
@@ -1058,6 +1058,7 @@ provider "factory-droid" {
 	// Messages contract on every Factory Anthropic route: non-thinking-led
 	// history drops thinking, disabled thinking omits the field, and the effort
 	// beta rides only where the route requires it alongside output effort.
+	// Where disabled thinking is sent, replayed history drops its thinking.
 	on-api "anthropic-messages" {
 		strip-thinking-history #true
 		disabled-thinking "omit"
@@ -1072,6 +1073,12 @@ provider "factory-droid" {
 		on-upstream "snowflake" {
 			disabled-thinking "disabled"
 		}
+	}
+	// Adaptive models the registry marks `supportsDisabledThinking` send the
+	// explicit disabled form at Off on every upstream.
+	models "claude-sonnet-4-6" "claude-sonnet-5" "claude-opus-4-6" "claude-opus-4-7" "claude-opus-4-8" \
+		"claude-opus-4-8-fast" "claude-opus-5" "claude-opus-5-fast" {
+		disabled-thinking "disabled"
 	}
 	models "claude-*" "atlas-07-21" "aster-07-15" {
 		anthropic-thinking "adaptive-summarized"
@@ -1091,8 +1098,14 @@ provider "factory-droid" {
 		anthropic-thinking "budget-effort"
 	}
 	// Always-thinking models keep adaptive thinking on disabled turns, on every upstream.
-	models "claude-fable-5.1" "claude-opus-5-5" "claude-opus-5-5-fast" "claude-sonnet-5-5" {
+	models "claude-fable-5.1" "claude-opus-5-5" "claude-opus-5-5-fast" {
 		disabled-thinking "adaptive"
+	}
+	// Sonnet 5.5 rejects `disabled`: Off is `between_tools`, pinned to high
+	// effort because `between_tools` rejects xhigh and max.
+	models "claude-sonnet-5-5" {
+		disabled-thinking "between-tools"
+		between-tools-effort "high"
 	}
 	// Fast tiers are distinct SKUs served with `speed: "fast"`.
 	models "claude-opus-5-5-fast" "claude-opus-5-fast" "claude-opus-4-8-fast" {
@@ -1131,6 +1144,11 @@ provider "factory-droid" {
 		on-upstream "bedrock_openai" "snowflake" {
 			reasoning-disable-mode "none-effort"
 		}
+	}
+	// GPT models whose ladder has an Off/None rung send the literal `none`
+	// tier on every upstream.
+	models "gpt-5.2" "gpt-5.6-sol" "gpt-5.6-sol-fast" "gpt-5.6-terra" "gpt-5.6-luna" "gpt-6-sol" "gpt-6-luna" {
+		reasoning-disable-mode "none-effort"
 	}
 	models "gpt-*" {
 		omit-max-output-tokens #true

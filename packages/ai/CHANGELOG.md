@@ -6,6 +6,10 @@
 
 - Added Anthropic route controls that send `between_tools` with a pinned effort on thinking-off turns, and let routes that strip thinking history also strip it on every disabled-thinking turn.
 
+### Fixed
+
+- Fixed Factory Droid Claude Off turns replaying thinking blocks after sending disabled thinking (including Snowflake), which native droid strips.
+
 ## [18.8.7] - 2026-10-09
 
 ### Added

@@ -6,6 +6,10 @@
 
 - Added the `between-tools` disabled-thinking form and the `between-tools-effort` axis for Anthropic Messages routes.
 
+### Fixed
+
+- Fixed Factory Droid thinking Off to match droid 0.237: Claude Sonnet 4.6/5, Opus 4.6–5 and their fast tiers send disabled thinking without replayed thinking blocks, Sonnet 5.5 gains Off (`between_tools` at high effort) and its cache-read rate, and GPT models with an Off/None rung send `reasoning.effort: "none"` on every upstream.
+
 ## [18.8.7] - 2026-10-09
 
 ### Added

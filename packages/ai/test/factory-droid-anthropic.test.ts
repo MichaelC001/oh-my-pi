@@ -209,4 +209,33 @@ describe("Factory Droid native thinking-history boundary", () => {
 		expect(replayedBlockTypes(payload)).toContain("thinking");
 		expect(replayedBlockTypes(payload)).toContain("redacted_thinking");
 	});
+
+	it.each([
+		["claude-opus-4-8", "anthropic"],
+		["claude-sonnet-4-6", "vertex_anthropic"],
+		["claude-opus-5", "snowflake"],
+	] as const)("%s via %s at Off sends disabled thinking and replays no thinking", async (id, upstream) => {
+		const captured: CapturedRequest[] = [];
+		await streamFactoryDroid(
+			factoryModel(id, [upstream]),
+			{ messages: history("thinking-led", { provider: "factory-droid", model: id }), tools: readTool },
+			{ apiKey: WORKOS_TOKEN, disableReasoning: true, fetch: captureFetch(captured, anthropicChunks("OK")) },
+		).result();
+		const body = captured[0].body;
+		expect(body.thinking).toEqual({ type: "disabled" });
+		expect(body.output_config).toBeUndefined();
+		expect(replayedBlockTypes(body)).not.toContain("thinking");
+		expect(replayedBlockTypes(body)).not.toContain("redacted_thinking");
+	});
+
+	it("sends Sonnet 5.5 Off as between_tools pinned to high effort", async () => {
+		const captured: CapturedRequest[] = [];
+		await streamFactoryDroid(
+			factoryModel("claude-sonnet-5-5", ["anthropic"]),
+			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+			{ apiKey: WORKOS_TOKEN, disableReasoning: true, fetch: captureFetch(captured, anthropicChunks("OK")) },
+		).result();
+		expect(captured[0].body.thinking).toEqual({ type: "between_tools" });
+		expect(captured[0].body.output_config).toEqual({ effort: "high" });
+	});
 });
