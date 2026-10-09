@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed Factory Droid Claude Off turns replaying thinking blocks after sending disabled thinking (including Snowflake), which native droid strips.
+- Fixed Factory Droid Azure Anthropic requests for prefix-bound Claude models omitting `block_binding` drop_block and the thinking-binding-controls beta.
 
 ## [18.8.7] - 2026-10-09
 

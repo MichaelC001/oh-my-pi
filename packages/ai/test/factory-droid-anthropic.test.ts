@@ -80,6 +80,28 @@ describe("Factory Droid anthropic wire (Claude)", () => {
 		const tools = captured[0].body.tools as Array<{ name: string }>;
 		expect(captured[0].body.tool_choice).toEqual(expected(tools[0].name));
 	});
+
+	it.each([
+		["claude-opus-5-5", "azure_anthropic", true],
+		["claude-sonnet-5-5", "azure_anthropic", true],
+		["claude-fable-5.1", "azure_anthropic", true],
+		["claude-opus-5-5", "anthropic", false],
+		["claude-sonnet-5-5", "vertex_anthropic", false],
+		["claude-opus-4-8", "azure_anthropic", false],
+	] as const)("%s via %s binds thinking to drop stale blocks: %p", async (id, upstream, bound) => {
+		const captured: CapturedRequest[] = [];
+		await streamFactoryDroid(
+			factoryModel(id, [upstream]),
+			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+			{ apiKey: WORKOS_TOKEN, reasoning: Effort.High, fetch: captureFetch(captured, anthropicChunks("OK")) },
+		).result();
+		const thinking = captured[0].body.thinking as { type: string; block_binding?: unknown };
+		expect(thinking.type).toBe("adaptive");
+		expect(thinking.block_binding).toEqual(bound ? { prefix_mismatch_behavior: "drop_block" } : undefined);
+		expect((captured[0].headers["anthropic-beta"] ?? "").includes("thinking-binding-controls-2026-08-01")).toBe(
+			bound,
+		);
+	});
 });
 
 const usage = {

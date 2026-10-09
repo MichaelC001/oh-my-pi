@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed Factory Droid thinking Off to match droid 0.237: Claude Sonnet 4.6/5, Opus 4.6–5 and their fast tiers send disabled thinking without replayed thinking blocks, Sonnet 5.5 gains Off (`between_tools` at high effort) and its cache-read rate, and GPT models with an Off/None rung send `reasoning.effort: "none"` on every upstream.
+- Fixed Factory Droid prefix-bound Claude models (Opus 5.5, Sonnet 5.5, Fable 5.1) on Azure Anthropic failing replays after a prompt or tool change, by asking Azure to drop stale thinking blocks as droid does.
 
 ## [18.8.7] - 2026-10-09
 

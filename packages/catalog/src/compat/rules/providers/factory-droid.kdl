@@ -1126,6 +1126,13 @@ provider "factory-droid" {
 	on-upstream "bedrock_anthropic" {
 		anthropic-tool-streaming-beta #true
 	}
+	// Azure Foundry enforces the preserved-thinking prefix check on Factory's
+	// account, so prefix-bound models (`thinking-prefix-binding`) ask it to drop
+	// stale signed blocks instead of failing. The other Anthropic upstreams
+	// predate default enforcement; the field would opt them into it.
+	on-upstream "azure_anthropic" {
+		supports-thinking-binding-controls #true
+	}
 	// xAI and Google sessions lock their upstream.
 	on-upstream "xai" "google" {
 		routing-session-lock #true
