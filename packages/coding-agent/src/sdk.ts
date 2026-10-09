@@ -30,7 +30,6 @@ import type { Dialect } from "@oh-my-pi/pi-ai/dialect";
 import { prewarmOpenAICodexResponses } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { isOpenAICodexWebSocketPreferred } from "@oh-my-pi/pi-ai/providers/openai-codex-transport";
 import { withCredentialRedaction } from "@oh-my-pi/pi-ai/providers/transform-messages";
-import { resolveModelServiceTier } from "@oh-my-pi/pi-ai/types";
 import { FALLBACK_DIALECT, preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { $env } from "@oh-my-pi/pi-utils/env";
@@ -5037,13 +5036,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 								await resolveApiKeyOnce(await options.getApiKey(codexModel))
 							: await modelRegistry.getApiKey(codexModel, providerSessionId);
 						if (!codexPrewarmApiKey) return;
-						const serviceTier = resolveModelServiceTier(session.serviceTierByFamily, codexModel);
 						await logger.time("prewarmOpenAICodexResponses", prewarmOpenAICodexResponses, codexModel, {
 							apiKey: codexPrewarmApiKey,
 							sessionId: providerSessionId,
 							preferWebsockets: session.preferWebsockets,
 							providerSessionState: session.providerSessionState,
-							...(serviceTier !== undefined ? { serviceTier } : {}),
+							serviceTier: session.effectiveServiceTier(codexModel),
 						});
 					} catch (error) {
 						const errorMessage = error instanceof Error ? error.message : String(error);

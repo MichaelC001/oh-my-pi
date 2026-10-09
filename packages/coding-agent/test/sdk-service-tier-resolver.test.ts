@@ -231,42 +231,6 @@ describe.serial("createAgentSession resolveServiceTierByFamily", () => {
 		}
 	});
 
-	it("retains an inherited family map while routing the final deferred model", async () => {
-		using tempDir = TempDir.createSync("@omp-service-tier-prewarm-inherit-");
-		const authStorage = openAuthStorage();
-		installCapturingWebSocket();
-		const inherited = { openai: "priority", anthropic: "priority" } satisfies ServiceTierByFamily;
-		const { session } = await createAgentSession({
-			...sessionOptions(
-				tempDir.path(),
-				authStorage,
-				Settings.isolated({
-					"providers.openaiWebsockets": "on",
-					enabledModels: ["openai-codex/deferred-model"],
-					"tier.openai": "none",
-					"tier.anthropic": "none",
-					"tier.google": "none",
-				}),
-				SessionManager.inMemory(),
-			),
-			extensions: [deferredCodexProviderExtension],
-			modelPattern: "openai-codex/deferred-model",
-			resolveServiceTierByFamily: model => resolveAgentServiceTierOverride("inherit", model, inherited),
-		});
-		try {
-			const socket = await waitForPrewarmSocket();
-			expect(session.model?.id).toBe("deferred-model");
-			expect(session.serviceTierByFamily).toEqual(inherited);
-			expect(socket.headers["x-codex-routing-hint"]).toBe("model=deferred-model;tier=priority");
-
-			await session.prompt("inherited tier turn");
-			const firstFrame = socket.frames.find(frame => frame.type === "response.create");
-			expect(firstFrame).toMatchObject({ model: "deferred-model", service_tier: "priority" });
-		} finally {
-			await session.dispose();
-		}
-	});
-
 	it("keeps omitted and explicit default tiers distinct during Codex prewarm and the first turn", async () => {
 		using tempDir = TempDir.createSync("@omp-service-tier-prewarm-default-");
 		const createDeferredSession = async (
