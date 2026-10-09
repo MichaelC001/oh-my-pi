@@ -4,11 +4,11 @@
 
 ### Added
 
-- Added Factory Droid Claude Haiku 5.5 and Mistral Large 4.
+- Added Factory Droid Claude Haiku 5.5 and Mistral Large 4 ([#15116](https://github.com/can1357/oh-my-pi/pull/15116) by [@will-bogusz](https://github.com/will-bogusz))
 
 ### Changed
 
-- Changed Factory Droid to match droid 0.237: thinking Off for Claude and GPT, Azure stale-thinking recovery, EU regions for Opus, Fable and Gemini Flash, GPT-6.1 Sol routes, ungated GPT-6 Luna and DeepSeek V4.1 Flash.
+- Changed Factory Droid to match droid 0.237: thinking Off for Claude and GPT, Azure stale-thinking recovery, EU regions for Opus, Fable and Gemini Flash, GPT-6.1 Sol routes, ungated GPT-6 Luna and DeepSeek V4.1 Flash ([#15116](https://github.com/can1357/oh-my-pi/pull/15116) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.7] - 2026-10-09
 

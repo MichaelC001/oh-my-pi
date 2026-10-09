@@ -4,8 +4,8 @@
 
 ### Fixed
 
-- Fixed Factory Droid Claude turns with thinking off replaying earlier thinking blocks, which Snowflake rejects, and Sonnet 5.5 Off now matching droid's between-tools thinking at high effort.
-- Fixed Anthropic requests sending the thinking-binding-controls beta on thinking-off turns that carry no thinking binding.
+- Fixed Factory Droid Claude turns with thinking off replaying earlier thinking blocks, which Snowflake rejects, and Sonnet 5.5 Off now matching droid's between-tools thinking at high effort ([#15116](https://github.com/can1357/oh-my-pi/pull/15116) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed Anthropic requests sending the thinking-binding-controls beta on thinking-off turns that carry no thinking binding ([#15116](https://github.com/can1357/oh-my-pi/pull/15116) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.7] - 2026-10-09
 
