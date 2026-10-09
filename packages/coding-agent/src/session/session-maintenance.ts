@@ -3816,7 +3816,8 @@ export class SessionMaintenance {
 	 * `COMPACTION_RECOVERY_BAND × threshold`, the band
 	 * {@link #compactionCreatedHeadroom} requires after a threshold pass.
 	 * Committing such an archive there only re-enters the no-headroom rescue, so
-	 * the pass rejects it and lets the next configured method try. Overflow and
+	 * the pass rejects it and lets the next configured method try; with no later
+	 * usable method it keeps an archive that still fits the window. Overflow and
 	 * incomplete recovery retry the turn and need only the window fit
 	 * ({@link #compactionCreatedRetryFit}), idle passes check neither, and manual
 	 * `/compact` keeps its window-fit check: the user asked for it.
@@ -4944,10 +4945,32 @@ export class SessionMaintenance {
 								logger.warn("Snapcompact archive leaves no room under the compaction trigger", {
 									model: this.#model?.id,
 									projected: projectedForReduction,
+									pendingTokens,
 								});
-								snapcompactBlocker =
-									"snapcompact could not leave room under the compaction trigger; trying the next preferred compaction method.";
-								snapcompactResult = undefined;
+								// With no later method to try, a reducing archive that fits the
+								// window still beats sending the whole history.
+								const laterMethodUsable = methods
+									.slice(methodIndex + 1)
+									.some(next =>
+										isCompactionMethodUsable(
+											next,
+											reason,
+											this.#model,
+											compactionSettings,
+											options.excludeMediaMethods === true,
+										),
+									);
+								if (laterMethodUsable || projected + pendingTokens > budget) {
+									snapcompactBlocker =
+										"snapcompact could not leave room under the compaction trigger; trying the next preferred compaction method.";
+									snapcompactResult = undefined;
+								} else {
+									this.#host.emitNotice(
+										"warning",
+										"snapcompact could not leave room under the compaction trigger; keeping its archive because no later compaction method can run.",
+										"compaction",
+									);
+								}
 							}
 						}
 					}

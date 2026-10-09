@@ -146,6 +146,52 @@ describe("snapcompact archive sized by the compaction trigger", () => {
 		return maxFrames;
 	}
 
+	/** Answer every model request with "ok", recording the stored context and compaction count each request saw. */
+	function recordRequests(session: AgentSession, model: Model): { tokens: number; compactions: number }[] {
+		const requests: { tokens: number; compactions: number }[] = [];
+		session.agent.streamFn = () => {
+			requests.push({
+				tokens: storedContextTokens(session),
+				compactions: session.sessionManager.getBranch().filter(entry => entry.type === "compaction").length,
+			});
+			const response = {
+				role: "assistant" as const,
+				content: [{ type: "text" as const, text: "ok" }],
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop" as const,
+				timestamp: Date.now(),
+			};
+			const stream = new AssistantMessageEventStream();
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: response });
+				stream.push({ type: "done", reason: "stop", message: response });
+			});
+			return stream;
+		};
+		return requests;
+	}
+
+	/** A user prompt of `repeats` filler sentences and what the tokenizer charges for it. */
+	function largePrompt(session: AgentSession, repeats: number): { prompt: string; promptTokens: number } {
+		const prompt = `please read this: ${"the quick brown fox jumps over the lazy dog. ".repeat(repeats)}`;
+		const promptTokens = session.agent.tokenizer.countMessage({
+			role: "user",
+			content: [{ type: "text", text: prompt }],
+			timestamp: Date.now(),
+		});
+		return { prompt, promptTokens };
+	}
+
 	/** What the compaction trigger counts for the session's current context (stored estimate). */
 	function storedContextTokens(session: AgentSession): number {
 		return (
@@ -348,6 +394,49 @@ describe("snapcompact archive sized by the compaction trigger", () => {
 		expect(snapcompact.getPreservedArchive(compactions[0]?.preserveData)).toBeUndefined();
 	});
 
+	it("keeps a snapcompact-only threshold archive that fits the window when even one frame leaves no room under the trigger", async () => {
+		const model = opus(1_000_000);
+		const { session, notices } = createSession(model, {
+			"compaction.thresholdTokens": 12_000,
+			"compaction.methodOrder": ["snapcompact"],
+		});
+		session.agent.replaceMessages(session.buildDisplaySessionContext().messages);
+		const uncompacted = storedContextTokens(session);
+		const { promise: done, resolve } = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_end") resolve();
+		});
+		const assistant = {
+			role: "assistant" as const,
+			content: [{ type: "text" as const, text: "Done." }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			stopReason: "stop" as const,
+			usage: {
+				input: 60_000,
+				output: 100,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 60_100,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: Date.now(),
+		};
+		session.agent.emitExternalEvent({ type: "message_end", message: assistant });
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistant] });
+		await done;
+		await session.waitForIdle();
+
+		expect(
+			notices.some(notice => notice.includes("keeping its archive because no later compaction method can run")),
+		).toBe(true);
+		expect(latestArchive(session)?.frames.length).toBe(1);
+		const after = storedContextTokens(session);
+		expect(after).toBeLessThan(uncompacted / 2);
+		expect(after).toBeLessThanOrEqual(1_000_000 - 16_384);
+	});
+
 	it.each([
 		{
 			reason: "overflow",
@@ -445,50 +534,59 @@ describe("snapcompact archive sized by the compaction trigger", () => {
 			500,
 		);
 		session.agent.replaceMessages(session.buildDisplaySessionContext().messages);
-		let requestTokens = 0;
-		session.agent.streamFn = () => {
-			requestTokens = storedContextTokens(session);
-			const response = {
-				role: "assistant" as const,
-				content: [{ type: "text" as const, text: "ok" }],
-				api: model.api,
-				provider: model.provider,
-				model: model.id,
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-				stopReason: "stop" as const,
-				timestamp: Date.now(),
-			};
-			const stream = new AssistantMessageEventStream();
-			queueMicrotask(() => {
-				stream.push({ type: "start", partial: response });
-				stream.push({ type: "done", reason: "stop", message: response });
-			});
-			return stream;
-		};
-
+		const requests = recordRequests(session, model);
 		// ~22k tokens of prompt, not yet in the session when the pre-prompt pass sizes the archive.
-		const prompt = `please read this: ${"the quick brown fox jumps over the lazy dog. ".repeat(2_200)}`;
-		const promptTokens = session.agent.tokenizer.countMessage({
-			role: "user",
-			content: [{ type: "text", text: prompt }],
-			timestamp: Date.now(),
-		});
+		const { prompt, promptTokens } = largePrompt(session, 2_200);
 		await session.prompt(prompt);
 
 		expect(latestArchive(session)?.frames.length).toBeGreaterThan(0);
-		expect(requestTokens).toBeGreaterThan(0);
+		expect(requests[0]?.compactions).toBe(1);
 		// The stored context at request time is the compacted history; the prompt rides on top.
-		expect(requestTokens + promptTokens).toBeLessThanOrEqual(TARGET * thresholdTokens);
+		expect((requests[0]?.tokens ?? Number.POSITIVE_INFINITY) + promptTokens).toBeLessThanOrEqual(
+			TARGET * thresholdTokens,
+		);
 	});
 
-	it("rejects a pre-prompt archive that leaves no room under the trigger once the pending prompt is counted", async () => {
+	it("hands a pre-prompt archive the pending prompt pushes over the recovery band to the next method", async () => {
+		const model = opus(1_000_000);
+		const thresholdTokens = 100_000;
+		const { session, notices } = createSession(
+			model,
+			{
+				"compaction.thresholdTokens": thresholdTokens,
+				"compaction.asyncEnabled": false,
+				"compaction.methodOrder": ["snapcompact", "soft"],
+			},
+			500,
+		);
+		session.agent.replaceMessages(session.buildDisplaySessionContext().messages);
+		const summarize = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
+			summary: "summarized",
+			shortSummary: undefined,
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: preparation.tokensBefore,
+			details: {},
+		}));
+		const requests = recordRequests(session, model);
+		// ~70k tokens of prompt: even a one-frame archive plus the prompt is above 80% of the trigger.
+		const { prompt, promptTokens } = largePrompt(session, 7_000);
+		await session.prompt(prompt);
+
+		expect(promptTokens).toBeGreaterThan(0.6 * thresholdTokens);
+		expect(notices.some(notice => notice.includes("could not leave room under the compaction trigger; trying"))).toBe(
+			true,
+		);
+		expect(summarize).toHaveBeenCalledTimes(1);
+		// The request went out on the next method's summary, not on the snapcompact archive.
+		expect(requests[0]?.compactions).toBe(1);
+		const compaction = session.sessionManager.getBranch().find(entry => entry.type === "compaction");
+		expect(compaction).toMatchObject({ summary: "summarized" });
+		expect(
+			snapcompact.getPreservedArchive(compaction?.type === "compaction" ? compaction.preserveData : undefined),
+		).toBeUndefined();
+	});
+
+	it("keeps a snapcompact-only pre-prompt archive that fits the window when the pending prompt pushes it over the band", async () => {
 		const model = opus(1_000_000);
 		const thresholdTokens = 100_000;
 		const { session, notices } = createSession(
@@ -501,50 +599,20 @@ describe("snapcompact archive sized by the compaction trigger", () => {
 			500,
 		);
 		session.agent.replaceMessages(session.buildDisplaySessionContext().messages);
-		let requestTokens = 0;
-		let compactionsAtRequest = -1;
-		session.agent.streamFn = () => {
-			requestTokens = storedContextTokens(session);
-			compactionsAtRequest = session.sessionManager.getBranch().filter(entry => entry.type === "compaction").length;
-			const response = {
-				role: "assistant" as const,
-				content: [{ type: "text" as const, text: "ok" }],
-				api: model.api,
-				provider: model.provider,
-				model: model.id,
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-				stopReason: "stop" as const,
-				timestamp: Date.now(),
-			};
-			const stream = new AssistantMessageEventStream();
-			queueMicrotask(() => {
-				stream.push({ type: "start", partial: response });
-				stream.push({ type: "done", reason: "stop", message: response });
-			});
-			return stream;
-		};
-
-		// ~70k tokens of prompt: even a one-frame archive plus the prompt is above 80% of the trigger.
-		const prompt = `please read this: ${"the quick brown fox jumps over the lazy dog. ".repeat(7_000)}`;
-		const promptTokens = session.agent.tokenizer.countMessage({
-			role: "user",
-			content: [{ type: "text", text: prompt }],
-			timestamp: Date.now(),
-		});
+		const uncompacted = storedContextTokens(session);
+		const requests = recordRequests(session, model);
+		const { prompt, promptTokens } = largePrompt(session, 7_000);
 		await session.prompt(prompt);
 
-		expect(promptTokens).toBeGreaterThan(0.6 * thresholdTokens);
-		expect(requestTokens).toBeGreaterThan(0);
-		expect(notices.some(notice => notice.includes("could not leave room under the compaction trigger"))).toBe(true);
-		// The request went out uncompacted rather than on an archive the prompt pushes over the band.
-		expect(compactionsAtRequest).toBe(0);
+		expect(
+			notices.some(notice => notice.includes("keeping its archive because no later compaction method can run")),
+		).toBe(true);
+		// The first request carries the archive, well below the uncompacted history, and fits the window.
+		expect(requests[0]?.compactions).toBe(1);
+		expect(latestArchive(session)?.frames.length).toBeGreaterThan(0);
+		const requestTokens = (requests[0]?.tokens ?? Number.POSITIVE_INFINITY) + promptTokens;
+		expect(requestTokens).toBeLessThan(uncompacted / 2);
+		expect(requestTokens).toBeLessThanOrEqual(1_000_000 - 16_384);
 	});
 
 	it("re-renders toward 60% of the trigger, dropping the oldest frames when a render overshoots", async () => {
