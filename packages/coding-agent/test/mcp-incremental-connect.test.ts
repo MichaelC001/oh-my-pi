@@ -67,10 +67,13 @@ describe("MCP incremental connectServers", () => {
 	let workDir: string;
 	let manager: MCPManager;
 	let originalStartupTimeout: string | undefined;
+	let originalRequestTimeout: string | undefined;
 
 	beforeEach(() => {
 		originalStartupTimeout = Bun.env.OMP_MCP_STARTUP_TIMEOUT_MS;
 		delete Bun.env.OMP_MCP_STARTUP_TIMEOUT_MS;
+		originalRequestTimeout = Bun.env.OMP_MCP_TIMEOUT_MS;
+		delete Bun.env.OMP_MCP_TIMEOUT_MS;
 		workDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-mcp-incremental-"));
 		manager = new MCPManager(workDir);
 	});
@@ -82,6 +85,8 @@ describe("MCP incremental connectServers", () => {
 		} finally {
 			if (originalStartupTimeout === undefined) delete Bun.env.OMP_MCP_STARTUP_TIMEOUT_MS;
 			else Bun.env.OMP_MCP_STARTUP_TIMEOUT_MS = originalStartupTimeout;
+			if (originalRequestTimeout === undefined) delete Bun.env.OMP_MCP_TIMEOUT_MS;
+			else Bun.env.OMP_MCP_TIMEOUT_MS = originalRequestTimeout;
 		}
 	});
 
