@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { getThemeByName, setThemeInstance, type Theme, theme as activeTheme } from "@oh-my-pi/pi-tui/theme";
+import { beforeAll, describe, expect, it } from "bun:test";
+import { getThemeByName, type Theme } from "@oh-my-pi/pi-tui/theme";
 import {
+	type EvalStatusEvent,
 	type EvalToolDetails,
 	evalToolRenderer,
 	MAX_STATUS_EVENTS,
@@ -16,16 +17,9 @@ import {
  */
 describe("eval status event log", () => {
 	let theme: Theme;
-	let previousTheme: Theme | undefined;
 
 	beforeAll(async () => {
-		previousTheme = activeTheme;
 		theme = (await getThemeByName("dark"))!;
-		setThemeInstance(theme);
-	});
-
-	afterAll(() => {
-		if (previousTheme) setThemeInstance(previousTheme);
 	});
 
 	it("keeps the newest discrete events and counts the dropped ones", () => {
@@ -64,7 +58,7 @@ describe("eval status event log", () => {
 		expect(log.statusEvents!.filter(event => event.committed === true).map(event => event.call)).toEqual([49_000]);
 	});
 
-	it("includes dropped events in the rendered earlier-events count", () => {
+	function renderCell(statusEvents: EvalStatusEvent[], statusEventsElided: number): string {
 		const details: EvalToolDetails = {
 			language: "js",
 			languages: ["js"],
@@ -75,13 +69,8 @@ describe("eval status event log", () => {
 					language: "js",
 					output: "",
 					status: "complete",
-					statusEvents: [
-						{ op: "browser", detail: "tab.evaluate one" },
-						{ op: "browser", detail: "tab.evaluate two" },
-						{ op: "browser", detail: "tab.evaluate three" },
-						{ op: "browser", detail: "tab.evaluate four" },
-					],
-					statusEventsElided: 5000,
+					statusEvents,
+					statusEventsElided,
 				},
 			],
 		};
@@ -90,10 +79,28 @@ describe("eval status event log", () => {
 			{ expanded: false, isPartial: false, spinnerFrame: 0 },
 			theme,
 		);
-		const rendered = Bun.stripANSI(component.render(120).join("\n"));
+		return Bun.stripANSI(component.render(120).join("\n"));
+	}
+
+	it("includes dropped events in the rendered earlier-events count", () => {
+		const rendered = renderCell(
+			[
+				{ op: "browser", detail: "tab.evaluate one" },
+				{ op: "browser", detail: "tab.evaluate two" },
+				{ op: "browser", detail: "tab.evaluate three" },
+				{ op: "browser", detail: "tab.evaluate four" },
+			],
+			5000,
+		);
 
 		// Collapsed shows the newest 3; the 4th plus 5,000 dropped are counted.
 		expect(rendered).toContain("… 5001 earlier");
 		expect(rendered).toContain("tab.evaluate four");
+	});
+
+	it("shows the dropped count when only agent snapshots remain", () => {
+		const rendered = renderCell([{ op: "agent", id: "Scout", status: "completed" }], 5000);
+
+		expect(rendered).toContain("… 5000 earlier");
 	});
 });

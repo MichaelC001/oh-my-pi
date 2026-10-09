@@ -189,7 +189,7 @@ type AgentEventStatus = "pending" | "running" | "completed" | "failed" | "aborte
 /**
  * Coalescing key of a progress-snapshot event: `agent` and `judge_batch`
  * events keyed by `id`, where only the newest snapshot matters. Discrete
- * actions (everything else) have no key. Shared by {@link recordStatusEvent}
+ * actions (everything else) have no key. Shared by {@link upsertStatusEvent}
  * and the executors' display collectors so both coalesce identically.
  */
 export function statusEventKey(event: { op: string; [key: string]: unknown }): string | undefined {
@@ -212,14 +212,9 @@ export type StatusEventLog = Pick<EvalCellResult, "statusEvents" | "statusEvents
 /**
  * Append or replace a status event. Progress snapshots (see
  * {@link statusEventKey}) coalesce in place, preserving first-seen order; every
- * other op is a discrete action and appends. Past {@link MAX_STATUS_EVENTS},
- * the oldest discrete event is dropped and counted. Snapshots stay, since agent
- * cards read them, and so does the newest committed `todo` result, which the
- * session todo panel refreshes from. Renderers already show only the newest
- * events behind an "… N earlier" row.
+ * other op is a discrete action and simply appends.
  */
-export function recordStatusEvent(log: StatusEventLog, event: EvalStatusEvent): void {
-	const events = (log.statusEvents ??= []);
+export function upsertStatusEvent(events: EvalStatusEvent[], event: EvalStatusEvent): void {
 	const key = statusEventKey(event);
 	if (key !== undefined) {
 		const idx = events.findIndex(e => statusEventKey(e) === key);
@@ -229,6 +224,18 @@ export function recordStatusEvent(log: StatusEventLog, event: EvalStatusEvent): 
 		}
 	}
 	events.push(event);
+}
+
+/**
+ * {@link upsertStatusEvent} into a bounded log. Past {@link MAX_STATUS_EVENTS},
+ * the oldest discrete event is dropped and counted. Snapshots stay, since agent
+ * cards read them, and so does the newest committed `todo` result, which the
+ * session todo panel refreshes from. Renderers already show only the newest
+ * events behind an "… N earlier" row.
+ */
+export function recordStatusEvent(log: StatusEventLog, event: EvalStatusEvent): void {
+	const events = (log.statusEvents ??= []);
+	upsertStatusEvent(events, event);
 	if (events.length <= MAX_STATUS_EVENTS) return;
 	const keep = events.findLastIndex(e => e.op === "todo" && e.committed === true);
 	const oldest = events.findIndex((e, i) => i !== keep && statusEventKey(e) === undefined);
@@ -538,7 +545,7 @@ function formatStatusEventExpanded(event: EvalStatusEvent, theme: Theme): string
  * `elided` counts events already dropped from the log's front.
  */
 function renderStatusEvents(events: EvalStatusEvent[], theme: Theme, expanded: boolean, elided = 0): string[] {
-	if (events.length === 0) return [];
+	if (events.length === 0 && elided === 0) return [];
 
 	const max = expanded ? Math.max(10, previewWindowRows()) : 3;
 	const shownFrom = Math.max(0, events.length - max);
@@ -547,7 +554,8 @@ function renderStatusEvents(events: EvalStatusEvent[], theme: Theme, expanded: b
 
 	const lines: string[] = [];
 	if (hidden > 0) {
-		lines.push(`${theme.fg("dim", theme.tree.branch)} ${theme.fg("dim", `… ${hidden} earlier`)}`);
+		const glyph = visible.length > 0 ? theme.tree.branch : theme.tree.last;
+		lines.push(`${theme.fg("dim", glyph)} ${theme.fg("dim", `… ${hidden} earlier`)}`);
 	}
 	for (let i = 0; i < visible.length; i++) {
 		const isLast = i === visible.length - 1;
