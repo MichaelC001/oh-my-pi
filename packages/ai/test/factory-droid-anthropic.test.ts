@@ -270,14 +270,66 @@ describe("Factory Droid native thinking-history boundary", () => {
 		expect(replayedBlockTypes(body)).not.toContain("redacted_thinking");
 	});
 
-	it("sends Sonnet 5.5 Off as between_tools pinned to high effort", async () => {
+	// Bedrock and Vertex reject `output_config` without the effort beta.
+	it.each([
+		["anthropic", false],
+		["bedrock_anthropic", true],
+		["vertex_anthropic", true],
+	] as const)(
+		"sends Sonnet 5.5 Off via %s as between_tools pinned to high effort, effort beta %p",
+		async (upstream, beta) => {
+			const captured: CapturedRequest[] = [];
+			await streamFactoryDroid(
+				factoryModel("claude-sonnet-5-5", [upstream]),
+				{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+				{ apiKey: WORKOS_TOKEN, disableReasoning: true, fetch: captureFetch(captured, anthropicChunks("OK")) },
+			).result();
+			expect(captured[0].body.thinking).toEqual({ type: "between_tools" });
+			expect(captured[0].body.output_config).toEqual({ effort: "high" });
+			expect((captured[0].headers["anthropic-beta"] ?? "").includes("effort-2025-11-24")).toBe(beta);
+		},
+	);
+
+	it("sends the effort beta when a forfeited Sonnet 5.5 Off redemption rebuilds on Bedrock", async () => {
 		const captured: CapturedRequest[] = [];
+		const respond = captureFetch(captured, anthropicChunks("OK"));
 		await streamFactoryDroid(
-			factoryModel("claude-sonnet-5-5", ["anthropic"]),
+			factoryModel("claude-sonnet-5-5", ["bedrock_anthropic"]),
 			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
-			{ apiKey: WORKOS_TOKEN, disableReasoning: true, fetch: captureFetch(captured, anthropicChunks("OK")) },
+			{
+				apiKey: WORKOS_TOKEN,
+				disableReasoning: true,
+				fallbackCreditRedemption: {
+					token: "fct_review",
+					prefillClaim: false,
+					params: {
+						model: "claude-sonnet-5-5",
+						messages: [{ role: "user", content: "hello" }],
+						max_tokens: 1024,
+						thinking: { type: "between_tools" },
+						output_config: { effort: "high" },
+						stream: true,
+					},
+					betas: ["fallback-credit-2026-06-01"],
+					betaHeader: "fallback-credit-2026-06-01",
+					expiresAt: Date.now() + 60_000,
+				},
+				// An expired token forfeits the redemption; the retry rebuilds a fresh body.
+				fetch: async (url, init) => {
+					const response = await respond(url, init);
+					return captured.length === 1
+						? Response.json(
+								{ error: { type: "invalid_request_error", message: "invalid fallback_credit_token expired" } },
+								{ status: 400 },
+							)
+						: response;
+				},
+			},
 		).result();
-		expect(captured[0].body.thinking).toEqual({ type: "between_tools" });
-		expect(captured[0].body.output_config).toEqual({ effort: "high" });
+		expect(captured).toHaveLength(2);
+		const rebuilt = captured[1];
+		expect(rebuilt.body.fallback_credit_token).toBeUndefined();
+		expect(rebuilt.body.output_config).toEqual({ effort: "high" });
+		expect(rebuilt.headers["anthropic-beta"] ?? "").toContain("effort-2025-11-24");
 	});
 });

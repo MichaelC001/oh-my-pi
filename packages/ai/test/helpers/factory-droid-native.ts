@@ -81,9 +81,12 @@ export const NATIVE_CASES: readonly NativeCase[] = [
 	{ model: "claude-opus-4-8", upstream: "azure_anthropic", effort: "high" },
 	{ model: "claude-opus-5", upstream: "snowflake", effort: "off" },
 	{ model: "claude-sonnet-5-5", upstream: "anthropic", effort: "off" },
+	{ model: "claude-sonnet-5-5", upstream: "bedrock_anthropic", effort: "off" },
 	{ model: "claude-opus-5-5", upstream: "azure_anthropic", effort: "high" },
 	// Not capturable from droid 0.237 on the capture account, so unit tests own
 	// them (factory-droid-anthropic.test.ts):
+	// - claude-sonnet-5-5@vertex_anthropic off: "Requested model was not found
+	//   on the API provider"; bedrock covers the effort beta on gated routes.
 	// - claude-haiku-5-5 (any upstream): Factory answers 400 "Invalid model ID"
 	//   even with `claude_haiku_5_5` forced on; the account is not entitled.
 	// - claude-sonnet-5-5@azure_anthropic: "Requested model was not found on the

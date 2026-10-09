@@ -2192,7 +2192,8 @@ const streamAnthropicOnce = (
 						(model.compat.supportsForcedToolChoice && isForcedToolChoice(options?.toolChoice)));
 				// A resolved `effortBeta` (Factory Droid routes, whose Bedrock/Vertex
 				// upstreams gate the beta themselves) replaces the heuristic: the beta
-				// rides exactly when an output effort does.
+				// rides exactly when an output effort does. Efforts the body pins
+				// without a caller effort are added per request (see below).
 				const emitsEffortBeta =
 					model.compat.effortBeta !== undefined
 						? model.compat.effortBeta && options?.effort !== undefined
@@ -2595,6 +2596,21 @@ const streamAnthropicOnce = (
 					perRequestHeaders = {
 						...perRequestHeaders,
 						"anthropic-beta": rawBetas.join(","),
+					};
+				}
+				// A route that requires the effort beta gets it from the effort the
+				// finalized body carries (a pinned between_tools effort, a rebuilt
+				// forfeited redemption), unioned with the client's own betas. A frozen
+				// redemption body keeps its saved header contract.
+				if (
+					!usingFallbackCredit &&
+					model.compat.effortBeta === true &&
+					options?.client === undefined &&
+					(params.output_config as AnthropicOutputConfig | undefined)?.effort !== undefined
+				) {
+					perRequestHeaders = {
+						...perRequestHeaders,
+						...mergeAnthropicBetaHeader(clientDefaultHeaders ?? {}, effortBeta),
 					};
 				}
 				const requestOptions = {
