@@ -560,7 +560,7 @@ const PLAN_SAVE_AND_QUIT_OPTION = "Save and quit";
 const PLAN_SAVE_TITLE_LINE_LIMIT = 6;
 
 /** Deadline for one `cfg://` approval prompt, honoring `ask.timeout` (seconds, 0 disables). */
-export function cfgApprovalTimeoutMs(settings: Settings): number | undefined {
+function cfgApprovalTimeoutMs(settings: Settings): number | undefined {
 	const timeoutSeconds = cfgAskTimeout.get(settings);
 	return timeoutSeconds === 0 ? undefined : timeoutSeconds * 1000;
 }

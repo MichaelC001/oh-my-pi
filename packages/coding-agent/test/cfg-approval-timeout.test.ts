@@ -7,7 +7,7 @@ import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config
 import { CfgProtocolHandler, setCfgApprovalHost } from "@oh-my-pi/pi-coding-agent/internal-urls/cfg-protocol";
 import { parseInternalUrl } from "@oh-my-pi/pi-coding-agent/internal-urls/parse";
 import { ExtensionUiController } from "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller";
-import { cfgApprovalTimeoutMs, InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
+import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import {
 	cfgMarketplaceAutoUpdate,
 	cfgStartupChangelogMode,
@@ -25,18 +25,6 @@ import { getProjectDir, setProjectDir, Snowflake } from "@oh-my-pi/pi-utils";
 import * as utils from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { createTestSession, type TestSessionContext } from "./utilities";
-
-describe("cfg:// approval prompt timeout", () => {
-	it("waits indefinitely when ask.timeout is at its default", () => {
-		// Regression for #15080: the prompt used a hardcoded 10s deadline no matter what.
-		expect(cfgApprovalTimeoutMs(Settings.isolated())).toBeUndefined();
-	});
-
-	it("converts ask.timeout seconds to a millisecond deadline", () => {
-		// The exact product matters: the dialog consumes ms, the setting stores seconds.
-		expect(cfgApprovalTimeoutMs(Settings.isolated({ "ask.timeout": 45 }))).toBe(45_000);
-	});
-});
 
 describe("cfg:// approval prompt wiring", () => {
 	let tmp: string;
@@ -96,26 +84,30 @@ describe("cfg:// approval prompt wiring", () => {
 		spyOn(mode, "showHookConfirm").mockResolvedValue(true);
 		const seen: Array<number | undefined> = [];
 		spyOn(ExtensionUiController.prototype, "showCollabAwareSelector").mockImplementation(
-			async (_title: string, _options: never, dialogOptions?: { timeout?: number }) => {
+			async (_title: string, _options: unknown, dialogOptions?: { timeout?: number }) => {
 				seen.push(dialogOptions?.timeout);
 				return "Allow once";
 			},
 		);
 		await mode.init({ suppressWelcomeIntro: true });
 		seen.length = 0;
-		const session = {
-			settings: testSession.session.settings,
+		const session: ToolSession = {
+			cwd: testSession.tempDir,
 			hasUI: true,
 			settingsApproval: true,
 			taskDepth: 0,
-		} as unknown as ToolSession;
+			getSessionFile: () => null,
+			getSessionSpawns: () => "*",
+			settings: testSession.session.settings,
+		};
 		await new CfgProtocolHandler().write(parseInternalUrl("cfg://advisor/enabled"), "true", { session });
 		return seen;
 	}
 
 	it("prompts without a deadline when ask.timeout is at its default", async () => {
-		// A hardcoded 10s here keeps the helper tests green: this is the
-		// observable contract #15080 actually reports.
+		// Regression for #15080: the prompt used a hardcoded 10s deadline.
+		// A hardcoded value here keeps the helper green but fails below,
+		// because this is the timeout the dialog actually receives.
 		expect(await promptTimeoutSeen(undefined)).toEqual([undefined]);
 	}, 60_000);
 
