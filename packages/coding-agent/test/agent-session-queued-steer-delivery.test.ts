@@ -855,7 +855,9 @@ describe("AgentSession queued steer delivery", () => {
 			let injected = false;
 			let promoted: boolean | undefined;
 			let promotedAgain: boolean | undefined;
-			let queueAfterPromotion: { steering: readonly string[]; followUp: readonly string[]; liveSteered: number } | undefined;
+			let queueAfterPromotion:
+				| { steering: readonly string[]; followUp: readonly string[]; liveSteered: number }
+				| undefined;
 			session.agent.setOnBeforeYield(async () => {
 				if (injected) return;
 				injected = true;
