@@ -36,6 +36,8 @@ import {
 	type NativeRequest,
 	projectNativeRequest,
 } from "../test/helpers/factory-droid-native";
+import capturePrompt from "./prompts/factory-droid-capture.md" with { type: "text" };
+import resumePrompt from "./prompts/factory-droid-capture-resume.md" with { type: "text" };
 
 const { values } = parseArgs({
 	options: {
@@ -52,8 +54,8 @@ if (!values.droid) throw new Error("--droid <path-to-droid-binary> is required")
 const droid = path.resolve(values.droid);
 
 const NONCE = "nonce-7f3a91";
-const PROMPT = "Use the Read tool to read probe.txt in the current directory, then reply with exactly its contents.";
-const RESUME_PROMPT = "Reply with exactly: done";
+const PROMPT = capturePrompt.trim();
+const RESUME_PROMPT = resumePrompt.trim();
 /** Hop-by-hop and encoding headers the proxy must not copy across. */
 const HOP_HEADERS = new Set([
 	"host",
