@@ -1,5 +1,5 @@
-import { beforeAll, describe, expect, it } from "bun:test";
-import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-tui/theme";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { getThemeByName, setThemeInstance, type Theme, theme as activeTheme } from "@oh-my-pi/pi-tui/theme";
 import {
 	type EvalToolDetails,
 	evalToolRenderer,
@@ -16,10 +16,16 @@ import {
  */
 describe("eval status event log", () => {
 	let theme: Theme;
+	let previousTheme: Theme | undefined;
 
 	beforeAll(async () => {
+		previousTheme = activeTheme;
 		theme = (await getThemeByName("dark"))!;
 		setThemeInstance(theme);
+	});
+
+	afterAll(() => {
+		if (previousTheme) setThemeInstance(previousTheme);
 	});
 
 	it("keeps the newest discrete events and counts the dropped ones", () => {

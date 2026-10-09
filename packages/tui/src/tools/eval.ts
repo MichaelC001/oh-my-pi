@@ -230,20 +230,11 @@ export function recordStatusEvent(log: StatusEventLog, event: EvalStatusEvent): 
 	}
 	events.push(event);
 	if (events.length <= MAX_STATUS_EVENTS) return;
-	for (let i = 0; i < events.length; i++) {
-		const candidate = events[i]!;
-		if (statusEventKey(candidate) !== undefined) continue;
-		if (
-			candidate.op === "todo" &&
-			candidate.committed === true &&
-			!events.some((later, j) => j > i && later.op === "todo" && later.committed === true)
-		) {
-			continue;
-		}
-		events.splice(i, 1);
-		log.statusEventsElided = (log.statusEventsElided ?? 0) + 1;
-		return;
-	}
+	const keep = events.findLastIndex(e => e.op === "todo" && e.committed === true);
+	const oldest = events.findIndex((e, i) => i !== keep && statusEventKey(e) === undefined);
+	if (oldest < 0) return;
+	events.splice(oldest, 1);
+	log.statusEventsElided = (log.statusEventsElided ?? 0) + 1;
 }
 
 function eventString(value: unknown): string | undefined {
