@@ -58,8 +58,8 @@ function makeOpenAICompletionsModel(): Model<"openai-completions"> {
 
 function makeLiteLLMCompletionsModel(): Model<"openai-completions"> {
 	return buildModel({
-		id: "fd-coder",
-		name: "fd-coder",
+		id: "proxy-model",
+		name: "Proxy Model",
 		api: "openai-completions",
 		provider: "litellm",
 		baseUrl: "https://litellm.example/v1",
