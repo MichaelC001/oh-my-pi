@@ -91,6 +91,7 @@ export interface OAuthRefresherDeps {
 	store: AuthCredentialStore;
 	pool: CredentialPool;
 	override?: AuthStorageOptions["refreshOAuthCredential"];
+	overrideMints?: AuthStorageOptions["refreshOAuthCredentialMints"];
 }
 
 /** Single-flighted, lease-guarded OAuth refresh with compare-and-set persistence. */
@@ -135,6 +136,13 @@ export class OAuthRefresher {
 			if (now - mint.at >= OAUTH_REMINT_COOLDOWN_MS) this.#recentMints.delete(cachedId);
 		}
 		this.#recentMints.set(id, { provider, access: credential.access, at: now });
+	}
+
+	/** Whether refreshes run the provider token exchange in this process rather than delegating it. */
+	#mintsLocally(): boolean {
+		return this.#deps.override
+			? this.#deps.overrideMints === true
+			: this.#deps.store.refreshOAuthCredential === undefined;
 	}
 
 	/**
@@ -343,7 +351,7 @@ export class OAuthRefresher {
 			} else {
 				this.#deps.store.updateAuthCredential(row.id, merged);
 			}
-			if (this.#deps.override === undefined && this.#deps.store.refreshOAuthCredential === undefined) {
+			if (this.#mintsLocally()) {
 				this.#rememberMint(provider, row.id, merged);
 			}
 			this.#deps.pool.replace(
@@ -459,11 +467,7 @@ export class OAuthRefresher {
 			.then(refreshed => {
 				// A delegated refresh may have returned a broker-cached token rather
 				// than minting one. Only direct local requests can establish mint time.
-				if (
-					!hasRefreshLeases(this.#deps.store) &&
-					this.#deps.override === undefined &&
-					this.#deps.store.refreshOAuthCredential === undefined
-				) {
+				if (!hasRefreshLeases(this.#deps.store) && this.#mintsLocally()) {
 					this.#rememberMint(provider, credentialId, refreshed);
 				}
 				return refreshed;
@@ -610,7 +614,7 @@ export class OAuthRefresher {
 		const promise = (async () => {
 			this.#deps.pool.bump("credential-refresh-start");
 			try {
-				return await this.#forceRefreshCredentialByIdUnshared(id, signal);
+				return await this.#forceRefreshCredentialByIdUnshared(id, signal, options?.reason);
 			} catch (error) {
 				this.#deps.pool.bump("credential-refresh-failure");
 				throw error;
@@ -622,7 +626,11 @@ export class OAuthRefresher {
 		return raceSignal(promise, signal, "credential refresh aborted");
 	}
 
-	async #forceRefreshCredentialByIdUnshared(id: number, signal?: AbortSignal): Promise<AuthCredentialSnapshotEntry> {
+	async #forceRefreshCredentialByIdUnshared(
+		id: number,
+		signal?: AbortSignal,
+		reason?: OAuthRefreshReason,
+	): Promise<AuthCredentialSnapshotEntry> {
 		for (const provider of this.#deps.pool.providers()) {
 			const entries = this.#deps.pool.entries(provider);
 			const index = entries.findIndex(entry => entry.id === id);
@@ -642,7 +650,7 @@ export class OAuthRefresher {
 			const stale: OAuthCredential = { ...attempted, expires: 0 };
 			let refreshed: OAuthCredentials;
 			try {
-				refreshed = await this.#refreshSingleFlight(provider as Provider, stale, id, signal);
+				refreshed = await this.#refreshSingleFlight(provider as Provider, stale, id, signal, reason);
 			} catch (error) {
 				// A definitively-dead grant tears the row down here, where the
 				// attempted credential is known. CAS on the persisted credential so a
