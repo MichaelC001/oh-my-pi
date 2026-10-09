@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { Writable } from "node:stream";
 import * as util from "node:util";
+import * as vm from "node:vm";
 
 // Subpath imports only: the computer worker's readiness graph includes this runtime and must not
 // load pi_natives (verified under `--no-addons`); the `@oh-my-pi/pi-utils` barrel loads it eagerly.
@@ -278,6 +279,16 @@ function describeDataType(data: unknown): string {
 	return typeof data;
 }
 
+/** Compiles `source` as a global script without running it (matches indirect eval semantics). */
+function compiles(source: string): boolean {
+	try {
+		new vm.Script(source);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Shared JS runtime for the eval worker and the browser tab worker. Owns the prelude,
  * helper bag, console bridge, and indirect-eval execution. Emits text/display/tool-call
@@ -537,8 +548,12 @@ export class JsRuntime {
 				try {
 					value = indirectEval(wrapped.source, filename);
 				} catch (error) {
-					// The engine's own SyntaxError has no usable cell position; surface Babel's.
-					if (error instanceof SyntaxError) throw (await diagnoseCellSyntaxError(code)) ?? error;
+					// The engine's own compile SyntaxError has no usable cell position; surface Babel's.
+					// Sync cells run inside indirectEval, so a SyntaxError may also be a runtime one
+					// (e.g. JSON.parse); only diagnose when the source itself fails to compile as a script.
+					if (error instanceof SyntaxError && !compiles(wrapped.source)) {
+						throw (await diagnoseCellSyntaxError(code)) ?? error;
+					}
 					throw error;
 				}
 				if (wrapped.finalExpressionReturned) {

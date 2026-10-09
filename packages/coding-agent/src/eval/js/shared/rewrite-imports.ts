@@ -158,10 +158,17 @@ function buildCellSyntaxError(code: string, error: unknown): SyntaxError | undef
 		let caretColumn = column;
 		if (n === line && text.length > FRAME_MAX_LINE_WIDTH) {
 			const start = Math.min(Math.max(0, column - FRAME_MAX_LINE_WIDTH / 2), text.length - FRAME_MAX_LINE_WIDTH);
-			text = text.slice(start, start + FRAME_MAX_LINE_WIDTH);
+			const end = start + FRAME_MAX_LINE_WIDTH;
+			const cutAfter = end < text.length;
+			text = text.slice(start, end);
 			caretColumn = column - start;
+			if (start > 0) {
+				text = `…${text}`;
+				caretColumn += 1;
+			}
+			if (cutAfter) text += "…";
 		} else if (text.length > FRAME_MAX_LINE_WIDTH) {
-			text = text.slice(0, FRAME_MAX_LINE_WIDTH);
+			text = `${text.slice(0, FRAME_MAX_LINE_WIDTH)}…`;
 		}
 		frame.push(`${String(n).padStart(gutterWidth)} | ${text}`);
 		if (n === line) {
