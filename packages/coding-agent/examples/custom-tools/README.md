@@ -26,17 +26,20 @@ cd /path/to/your-project
 omp --tools hello
 ```
 
-Or install it for every project:
+Or install it for every project (default profile):
 
 ```bash
 mkdir -p ~/.omp/agent/tools
 cp -r hello ~/.omp/agent/tools/
 ```
 
+With a named profile (`OMP_PROFILE` or `--profile`), use that profile's tools
+dir instead: `~/.omp/profiles/<name>/agent/tools`.
+
 `--tools` selects registered tool names, never file paths. `hello` is the name
 the factory in `hello/index.ts` returns. Without the flag the tool is still
-discovered and loaded; `--tools hello` starts a session with only `hello`
-active, so built-ins stay out of the way while you try it.
+discovered and loaded; `--tools hello` requests it by name on top of the
+session's usual set.
 
 Then in omp:
 

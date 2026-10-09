@@ -53,6 +53,7 @@
 - Fixed auto-compaction overflowing the context window every cycle when `compaction.thresholdTokens` or an `f<tokens>` model limit is at or past a window the provider caps lower (such as Factory's 196K Kimi K3); it now compacts at the window less the reserve, and `/models` shows the trigger as capped ([#15146](https://github.com/can1357/oh-my-pi/pull/15146) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed resumed xAI, Factory Droid and OpenAI sessions forgetting earlier reasoning on their first request, while a retry after a stale Responses item error still rebuilds history ([#15148](https://github.com/can1357/oh-my-pi/pull/15148) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed the startup default ignoring the model a provider's discovery names as the account's default: with no model chosen, Devin Pro now starts on SWE-2 at High instead of SWE-1.6 ([#15115](https://github.com/can1357/oh-my-pi/pull/15115) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed the custom-tool quickstart: it used a `--tool` flag omp does not have and pointed at a `todo/` example that is not in the repo; it now uses the shipped `hello` example and the supported discovery routes ([#15088](https://github.com/can1357/oh-my-pi/pull/15088) by [@danzaio](https://github.com/danzaio), fixes [#15069](https://github.com/can1357/oh-my-pi/issues/15069))
 
 ## [18.8.7] - 2026-10-09
 
