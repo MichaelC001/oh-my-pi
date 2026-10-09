@@ -215,6 +215,51 @@ describe("snapcompact archive sized by the compaction trigger", () => {
 		expect(frames * framePrice(model)).toBeLessThanOrEqual(TARGET * thresholdTokens - fixedTokens);
 	});
 
+	it("sizes the trigger room without the kept turns' opaque reasoning replay bytes", async () => {
+		const model = opus(1_000_000);
+		const settings = { "compaction.thresholdTokens": 100_000 };
+		const frames = async (signature: string): Promise<number> => {
+			const { session } = createSession(model, settings);
+			// A kept assistant turn whose replay signature the trigger's stored count skips.
+			session.sessionManager.appendMessage({
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "short", thinkingSignature: signature },
+					{ type: "text", text: "kept answer" },
+				],
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				stopReason: "stop",
+				usage: {
+					input: 1000,
+					output: 10,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 1010,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				timestamp: Date.now(),
+			});
+			const spy = vi.spyOn(snapcompact, "compact").mockImplementation(async preparation => ({
+				summary: "stub",
+				shortSummary: "stub",
+				firstKeptEntryId: preparation.firstKeptEntryId,
+				tokensBefore: preparation.tokensBefore,
+				details: { readFiles: [], modifiedFiles: [] },
+				preserveData: { snapcompact: { frames: [], totalChars: 0, truncatedChars: 0 } },
+			}));
+			await session.compact(undefined, { mode: "snapcompact" });
+			const maxFrames = spy.mock.calls[0]?.[1]?.maxFrames ?? 0;
+			spy.mockRestore();
+			return maxFrames;
+		};
+		const plain = await frames("sig");
+		expect(plain).toBeGreaterThan(1);
+		// ~40k tokens of signature text, which the trigger never counts.
+		expect(await frames("x".repeat(160_000))).toBe(plain);
+	});
+
 	it("follows the active model's trigger after a model switch", async () => {
 		const haiku = getBundledModel("anthropic", "claude-haiku-4-5");
 		if (!haiku) throw new Error("Expected bundled claude-haiku-4-5");

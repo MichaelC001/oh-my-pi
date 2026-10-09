@@ -3661,12 +3661,12 @@ export class SessionMaintenance {
 			);
 		}
 		const reserve = effectiveReserveTokens(ctxWindow, settings);
-		let baseTokens = computeNonMessageTokens(
+		const nonMessageTokens = computeNonMessageTokens(
 			this.#host.nonMessageTokenSource(),
 			this.#tokenizer,
 			this.#host.settings.revision,
 		);
-		baseTokens += this.#tokenizer.countMessages(preparation.recentMessages);
+		const baseTokens = nonMessageTokens + this.#tokenizer.countMessages(preparation.recentMessages);
 		const totalBudget = ctxWindow - reserve;
 		// Skip iff there is no headroom whatsoever; a text-only archive costs
 		// far less than the cap reserve below, so any positive residual is
@@ -3698,12 +3698,17 @@ export class SessionMaintenance {
 		const SUMMARY_TEMPLATE_TOKENS = 2000;
 		const capReserve = textEdgeTokens + SUMMARY_TEMPLATE_TOKENS;
 		const thresholdTokens = resolveThresholdTokens(ctxWindow, settings);
-		const fixedTokens = baseTokens + capReserve;
+		// The trigger counts kept turns without opaque reasoning replay bytes; the
+		// window fit keeps the full count.
+		const fixedTokens =
+			nonMessageTokens +
+			this.#tokenizer.countMessages(preparation.recentMessages, { excludeEncryptedReasoning: true }) +
+			capReserve;
 		const roomBudget = Math.min(
 			SNAPCOMPACT_ARCHIVE_SHARE * (thresholdTokens - fixedTokens),
 			SNAPCOMPACT_POST_COMPACTION_TARGET * thresholdTokens - fixedTokens,
 		);
-		const frameBudget = Math.min(totalBudget - fixedTokens, roomBudget);
+		const frameBudget = Math.min(totalBudget - baseTokens - capReserve, roomBudget);
 		// Size at the conservative ceiling, or at the shape's own frame price when a
 		// forced large shape (2576px `5x8-*` on OpenAI) bills more, so the tokenizer's
 		// per-frame charge never exceeds what this cap assumed.
