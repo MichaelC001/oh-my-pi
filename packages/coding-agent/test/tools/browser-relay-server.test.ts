@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { findFreeCdpPort } from "@oh-my-pi/pi-coding-agent/tools/browser/attach";
+import { relayCdpClientsOf } from "@oh-my-pi/pi-coding-agent/tools/browser/relay/probe";
 import {
 	type RelayServer,
 	type RelayUnavailableInfo,
@@ -174,8 +175,11 @@ describe("browser relay discovery endpoint", () => {
 		relay = startRelayServer({ port });
 		const discovery = async () => {
 			const response = await fetch(`http://127.0.0.1:${port}/json/version`);
-			const body = (await response.json()) as { ompRelayCdpClients: number };
-			return { status: response.status, clients: body.ompRelayCdpClients };
+			const body: unknown = await response.json();
+			return {
+				status: response.status,
+				clients: typeof body === "object" && body !== null ? relayCdpClientsOf(body) : null,
+			};
 		};
 		expect(await discovery()).toEqual({ status: 503, clients: 0 });
 		const client = new WebSocket(`ws://127.0.0.1:${port}/cdp`);
