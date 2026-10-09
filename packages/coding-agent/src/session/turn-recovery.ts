@@ -290,6 +290,20 @@ type PendingRetryError = {
 	note: string;
 };
 
+/** How a retry saga's pending error entries are annotated when it closes. */
+type RetryErrorCompletion = { status: "recovered"; supersedingMessage: AssistantMessage } | { status: "superseded" };
+
+/** The `auto_retry_end` a closing retry saga publishes; its `retryErrors` come from the close itself. */
+type RetrySagaEnd = Omit<Extract<AgentSessionEvent, { type: "auto_retry_end" }>, "type" | "retryErrors">;
+
+/** How {@link TurnRecovery.handleRetryableError} may recover a failed turn. */
+type RetryPolicyOptions = {
+	allowModelFallback?: boolean;
+	fireworksFastFallback?: boolean;
+	hardErrorFallback?: boolean;
+	preserveFailedTurn?: boolean;
+};
+
 type UsageLimitOutcome = {
 	switchedCredential: boolean;
 	retryAfterMs: number;
@@ -519,19 +533,10 @@ export class TurnRecovery {
 		if (this.#retryAttempt === 0) {
 			return;
 		}
-		const retryErrors = await this.#markPendingRetryErrors({
-			status: "recovered",
-			supersedingMessage: message,
-		});
-		await this.#host.emitSessionEvent({
-			type: "auto_retry_end",
-			success: true,
-			attempt: this.#retryAttempt,
-			retryErrors,
-		});
-		this.#clearPendingRetryErrors();
-		this.#retryAttempt = 0;
-		this.resolveRetry();
+		await this.#closeRetrySaga(
+			{ success: true, attempt: this.#retryAttempt },
+			{ retryErrors: { status: "recovered", supersedingMessage: message } },
+		);
 	}
 
 	/** Closes a failed retry saga when no compaction continuation took ownership. */
@@ -721,15 +726,7 @@ export class TurnRecovery {
 	}
 
 	/** Applies automatic retry, credential rotation, and model fallback policy. */
-	handleRetryableError(
-		message: AssistantMessage,
-		options?: {
-			allowModelFallback?: boolean;
-			fireworksFastFallback?: boolean;
-			hardErrorFallback?: boolean;
-			preserveFailedTurn?: boolean;
-		},
-	): Promise<boolean> {
+	handleRetryableError(message: AssistantMessage, options?: RetryPolicyOptions): Promise<boolean> {
 		return this.#handleRetryableError(message, options);
 	}
 
@@ -793,6 +790,39 @@ export class TurnRecovery {
 			this.#retryResolve();
 			this.#retryResolve = undefined;
 			this.#retryPromise = undefined;
+		}
+	}
+
+	/**
+	 * Ends a retry saga: records its outcome in the session (the terminal empty
+	 * error turn, the annotations on the attempts it retried), publishes
+	 * `auto_retry_end`, then resets the saga and resolves `retryPromise`.
+	 * Publishing and releasing run in `finally`, so a session write that throws
+	 * (a full disk, an unwritable transcript) still ends the saga before its
+	 * error propagates. Left pending, `retryPromise` keeps the in-flight prompt
+	 * waiting for a retry that never runs: the session reports streaming for
+	 * good and queues every later message as a steer that never drains.
+	 */
+	async #closeRetrySaga(
+		end: RetrySagaEnd,
+		record: { terminalTurn?: AssistantMessage; retryErrors?: RetryErrorCompletion },
+	): Promise<void> {
+		let retryErrors: RetryErrorUpdate[] | undefined;
+		try {
+			if (record.terminalTurn) await this.persistTerminalEmptyErrorTurn(record.terminalTurn);
+			if (record.retryErrors) retryErrors = await this.#markPendingRetryErrors(record.retryErrors);
+		} finally {
+			try {
+				await this.#host.emitSessionEvent({
+					type: "auto_retry_end",
+					...end,
+					...(retryErrors ? { retryErrors } : {}),
+				});
+			} finally {
+				this.#clearPendingRetryErrors();
+				this.#retryAttempt = 0;
+				this.resolveRetry();
+			}
 		}
 	}
 
@@ -877,9 +907,7 @@ export class TurnRecovery {
 		});
 	}
 
-	async #markPendingRetryErrors(
-		completion: { status: "recovered"; supersedingMessage: AssistantMessage } | { status: "superseded" },
-	): Promise<RetryErrorUpdate[]> {
+	async #markPendingRetryErrors(completion: RetryErrorCompletion): Promise<RetryErrorUpdate[]> {
 		if (this.#pendingRetryErrors.length === 0) return [];
 		const branch = this.#host.sessionManager.getBranchView();
 		const branchById = new Map<string, SessionEntry>();
@@ -2374,15 +2402,30 @@ export class TurnRecovery {
 	 * the error without a same-model backoff retry.
 	 * @returns true if retry was initiated, false if max retries exceeded or disabled
 	 */
-	async #handleRetryableError(
-		message: AssistantMessage,
-		options?: {
-			allowModelFallback?: boolean;
-			fireworksFastFallback?: boolean;
-			hardErrorFallback?: boolean;
-			preserveFailedTurn?: boolean;
-		},
-	): Promise<boolean> {
+	async #handleRetryableError(message: AssistantMessage, options?: RetryPolicyOptions): Promise<boolean> {
+		try {
+			return await this.#applyRetryPolicy(message, options);
+		} catch (error) {
+			// The policy's dead ends close their own saga through
+			// #closeRetrySaga, so a write that throws there has already closed
+			// it. A throw anywhere else on the way, such as recording an attempt
+			// before its retry is scheduled, leaves the saga open, and nothing
+			// else would close it.
+			if (this.#retryPromise) {
+				await this.#closeRetrySaga(
+					{ success: false, attempt: this.#retryAttempt, finalError: message.errorMessage },
+					{},
+				);
+			}
+			throw error;
+		}
+	}
+
+	/**
+	 * The retry policy {@link #handleRetryableError} applies. A throw outside
+	 * its dead ends leaves the saga for the caller to close.
+	 */
+	async #applyRetryPolicy(message: AssistantMessage, options?: RetryPolicyOptions): Promise<boolean> {
 		const retrySettings = cfgRetry.get(this.#host.settings);
 		if (this.#host.abortInProgress() || this.#host.isDisposed()) return false;
 		// The Fireworks Fast→base degrade is an intrinsic model-selection safety net,
@@ -2674,18 +2717,10 @@ export class TurnRecovery {
 			if (!switchedModel && !switchedCredential) {
 				const attempt = this.#retryAttempt - 1;
 				message.errorMessage = `Retry budget exhausted after ${attempt} ${attempt === 1 ? "retry" : "retries"}: ${errorMessage}`;
-				await this.persistTerminalEmptyErrorTurn(message);
-				const retryErrors = await this.#markPendingRetryErrors({ status: "superseded" });
-				await this.#host.emitSessionEvent({
-					type: "auto_retry_end",
-					success: false,
-					attempt,
-					finalError: errorMessage,
-					retryErrors,
-				});
-				this.#clearPendingRetryErrors();
-				this.#retryAttempt = 0;
-				this.resolveRetry(); // Resolve so waitForRetry() completes
+				await this.#closeRetrySaga(
+					{ success: false, attempt, finalError: errorMessage },
+					{ terminalTurn: message, retryErrors: { status: "superseded" } },
+				);
 				return false;
 			}
 			// A fallback model gets a fresh retry budget. Credential rotation
@@ -2702,14 +2737,10 @@ export class TurnRecovery {
 			// (e.g. suppressing a duplicate error toast) don't stay latched on
 			// an announcement that never resolves.
 			if (this.#retryAttempt > 1) {
-				await this.persistTerminalEmptyErrorTurn(message);
-				await this.#host.emitSessionEvent({
-					type: "auto_retry_end",
-					success: false,
-					attempt: this.#retryAttempt - 1,
-					finalError: errorMessage,
-				});
-				this.#clearPendingRetryErrors();
+				await this.#closeRetrySaga(
+					{ success: false, attempt: this.#retryAttempt - 1, finalError: errorMessage },
+					{ terminalTurn: message },
+				);
 			}
 			this.#retryAttempt = 0;
 			this.resolveRetry();
@@ -2727,14 +2758,10 @@ export class TurnRecovery {
 		) {
 			// Same auto_retry_end backstop as the classifier-refusal branch above.
 			if (this.#retryAttempt > 1) {
-				await this.persistTerminalEmptyErrorTurn(message);
-				await this.#host.emitSessionEvent({
-					type: "auto_retry_end",
-					success: false,
-					attempt: this.#retryAttempt - 1,
-					finalError: errorMessage,
-				});
-				this.#clearPendingRetryErrors();
+				await this.#closeRetrySaga(
+					{ success: false, attempt: this.#retryAttempt - 1, finalError: errorMessage },
+					{ terminalTurn: message },
+				);
 			}
 			this.#retryAttempt = 0;
 			this.resolveRetry();
@@ -2767,17 +2794,16 @@ export class TurnRecovery {
 			effectiveUsageLimitWaitMs !== undefined &&
 			delayMs <= effectiveUsageLimitWaitMs;
 		if (maxDelayMs > 0 && delayMs > maxDelayMs && !switchedCredential && !switchedModel && !waitForUsageReset) {
-			await this.persistTerminalEmptyErrorTurn(message);
 			const attempt = this.#retryAttempt;
 			this.#retryAttempt = 0;
-			await this.#host.emitSessionEvent({
-				type: "auto_retry_end",
-				success: false,
-				attempt,
-				finalError: `Provider requested ${Math.ceil(delayMs)}ms wait, exceeds retry.maxDelayMs (${maxDelayMs}ms). Original error: ${errorMessage}`,
-			});
-			this.#clearPendingRetryErrors();
-			this.resolveRetry();
+			await this.#closeRetrySaga(
+				{
+					success: false,
+					attempt,
+					finalError: `Provider requested ${Math.ceil(delayMs)}ms wait, exceeds retry.maxDelayMs (${maxDelayMs}ms). Original error: ${errorMessage}`,
+				},
+				{ terminalTurn: message },
+			);
 			return false;
 		}
 
@@ -2849,7 +2875,12 @@ export class TurnRecovery {
 			delayMs: 1,
 			generation,
 			shouldContinue: () => this.#retryAttempt > 0,
-			onError: error => void this.#failRetryAfterLocalContinueError(message, error),
+			onError: error =>
+				void this.#failRetryAfterLocalContinueError(message, error).catch(failure =>
+					logger.error("Closing a retry saga after a failed local continuation threw", {
+						error: failure instanceof Error ? failure.message : String(failure),
+					}),
+				),
 		});
 
 		return true;
@@ -2902,15 +2933,14 @@ export class TurnRecovery {
 		const attempt = this.#retryAttempt;
 		this.#retryAttempt = 0;
 		const localError = error instanceof Error ? error.message : String(error);
-		await this.persistTerminalEmptyErrorTurn(message);
-		await this.#host.emitSessionEvent({
-			type: "auto_retry_end",
-			success: false,
-			attempt,
-			finalError: `Retry continuation failed locally: ${localError}. Original error: ${message.errorMessage ?? "Unknown error"}`,
-		});
-		this.#clearPendingRetryErrors();
-		this.resolveRetry();
+		await this.#closeRetrySaga(
+			{
+				success: false,
+				attempt,
+				finalError: `Retry continuation failed locally: ${localError}. Original error: ${message.errorMessage ?? "Unknown error"}`,
+			},
+			{ terminalTurn: message },
+		);
 	}
 
 	/**
