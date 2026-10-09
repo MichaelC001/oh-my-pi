@@ -2486,7 +2486,7 @@ export class ModelRegistry {
 		return models.map(model => {
 			const providerType = providers.get(model.provider);
 			if (providerType === "litellm" && model.providerType !== providerType) {
-				return buildModel({ ...toModelSpec(model), providerType });
+				return buildDiscoveredModel(toModelSpec(model), providerType);
 			}
 			if (providerType !== "llama.cpp") return model;
 			const spec = toModelSpec(model);
