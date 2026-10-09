@@ -539,7 +539,7 @@ describe("AgentSession queued steer delivery", () => {
 		const skillPath = path.join(tempDir, "SKILL.md");
 		await Bun.write(skillPath, "---\nname: reviewer\ndescription: Review code\n---\n\nReview the supplied code.\n");
 		const invocation = "/skill:reviewer  focus on risks\nand correctness";
-		let queued: { steering: readonly string[]; followUp: readonly string[] } | undefined;
+		let queued: { steering: readonly string[]; followUp: readonly string[]; liveSteered: number } | undefined;
 		let injected = false;
 		session.agent.setOnBeforeYield(async () => {
 			if (injected) return;
@@ -855,7 +855,7 @@ describe("AgentSession queued steer delivery", () => {
 			let injected = false;
 			let promoted: boolean | undefined;
 			let promotedAgain: boolean | undefined;
-			let queueAfterPromotion: { steering: readonly string[]; followUp: readonly string[] } | undefined;
+			let queueAfterPromotion: { steering: readonly string[]; followUp: readonly string[]; liveSteered: number } | undefined;
 			session.agent.setOnBeforeYield(async () => {
 				if (injected) return;
 				injected = true;
