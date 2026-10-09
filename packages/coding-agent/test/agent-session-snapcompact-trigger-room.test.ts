@@ -14,6 +14,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { computeNonMessageTokens } from "@oh-my-pi/pi-tui/status-line/context-usage";
 import * as snapcompact from "@oh-my-pi/snapcompact";
+import { rejectionOf } from "./helpers/rejection";
 
 const SHARE = 0.5;
 const TARGET = 0.6;
@@ -219,9 +220,15 @@ describe("snapcompact archive sized by the compaction trigger", () => {
 		// 20% of each model's window: 200k on Opus 1M, 40k on Haiku 200k.
 		const { session } = createSession(opus(1_000_000), { "compaction.thresholdPercent": 20 });
 		const requested = stopAtRender();
-		await expect(session.compact(undefined, { mode: "snapcompact" })).rejects.toThrow("stop after sizing");
+		expect(await rejectionOf(session.compact(undefined, { mode: "snapcompact" }))).toHaveProperty(
+			"message",
+			"stop after sizing",
+		);
 		session.agent.setModel(haiku);
-		await expect(session.compact(undefined, { mode: "snapcompact" })).rejects.toThrow("stop after sizing");
+		expect(await rejectionOf(session.compact(undefined, { mode: "snapcompact" }))).toHaveProperty(
+			"message",
+			"stop after sizing",
+		);
 
 		const [onOpus, onHaiku] = requested;
 		expect(onHaiku).toBeGreaterThan(0);
