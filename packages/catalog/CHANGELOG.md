@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Enabled `supports-prompt-cache-key` for the `mistral` provider so openai-completions requests to `api.mistral.ai` carry the session's `prompt_cache_key`, increasing cache hits and reducing billed uncached input tokens on Mistral models ([#15079](https://github.com/can1357/oh-my-pi/pull/15079) by [@richardotomislav](https://github.com/richardotomislav))
+
 ## [18.8.7] - 2026-10-09
 
 ### Added
