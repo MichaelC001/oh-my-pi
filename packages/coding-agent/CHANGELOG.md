@@ -13,7 +13,7 @@
 
 - Reduced memory growth after one-shot side requests without interrupting ongoing conversations ([#14334](https://github.com/can1357/oh-my-pi/pull/14334) by [@iliaal](https://github.com/iliaal)).
 - Fixed sessions staying untitled when you interrupted the first reply to send a queued steer message.
-- Fixed Codex session prewarm using a different model or service tier from the resolved agent session.
+- Fixed Codex session prewarm using a different model or service tier from the resolved agent session ([#15022](https://github.com/can1357/oh-my-pi/pull/15022) by [@xiangnan0811](https://github.com/xiangnan0811)).
 
 ## [18.8.6] - 2026-10-08
 

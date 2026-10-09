@@ -9,7 +9,7 @@
 ### Fixed
 
 - Fixed Claude Haiku 5.5 requests silently enabling adaptive thinking when reasoning is off, on native Bedrock (main and helper calls) and the Anthropic API; conversations whose earlier effort controls rule out disabled thinking fall back to lowest-effort adaptive thinking instead of failing ([#14996](https://github.com/can1357/oh-my-pi/pull/14996) by [@bse-ai](https://github.com/bse-ai)).
-- Fixed Codex WebSocket prewarm routing to use the final resolved session model and eligible family service tier, preserving omitted and explicit service-tier requests.
+- Fixed Codex WebSocket prewarm routing to use the final resolved session model and eligible family service tier, preserving omitted and explicit service-tier requests ([#15022](https://github.com/can1357/oh-my-pi/pull/15022) by [@xiangnan0811](https://github.com/xiangnan0811)).
 
 ## [18.8.6] - 2026-10-08
 
