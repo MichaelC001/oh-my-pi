@@ -436,17 +436,20 @@ const SCREENSHOT_AREA_TARGET: Record<ScreenshotArea, string> = {
 };
 
 /**
- * Map displayed screenshot coordinates to the CSS pixels the page and `tab.clickAt` use:
- * the capture holds `scale` image pixels per CSS pixel (the device scale factor) before any resize.
+ * Map displayed screenshot coordinates to the CSS pixels the page and `tab.clickAt` use: the capture
+ * holds `scale` image pixels per CSS pixel before any resize, or `undefined` when it could not be read.
  */
 function formatScreenshotCoordinateNote(
 	resized: ResizedImage,
-	capture: { area: ScreenshotArea; scale: number },
+	capture: { area: ScreenshotArea; scale: number | undefined },
 ): string | undefined {
-	if (!resized.originalWidth || !resized.width || !(capture.scale > 0)) return undefined;
+	if (!resized.originalWidth || !resized.width) return undefined;
+	if (capture.scale === undefined || !(capture.scale > 0)) {
+		return `[Image: original ${resized.originalWidth}x${resized.originalHeight}, displayed at ${resized.width}x${resized.height}. Its scale to CSS pixels could not be read; target elements by selector or id rather than tab.clickAt.]`;
+	}
 	const factor = (resized.originalWidth / resized.width / capture.scale).toFixed(2);
 	if (factor === "1.00") return undefined;
-	const scale = `device scale ${Number(capture.scale.toFixed(2))}`;
+	const scale = `capture scale ${Number(capture.scale.toFixed(2))}`;
 	const size = resized.wasResized
 		? `original ${resized.originalWidth}x${resized.originalHeight} at ${scale}, displayed at ${resized.width}x${resized.height}`
 		: `${resized.width}x${resized.height} at ${scale}`;
@@ -460,7 +463,7 @@ export function formatScreenshot(opts: {
 	savedByteLength: number;
 	dest: string;
 	resized: ResizedImage;
-	capture: { area: ScreenshotArea; scale: number };
+	capture: { area: ScreenshotArea; scale: number | undefined };
 }): string[] {
 	const lines = ["Screenshot captured"];
 	if (opts.saveFullRes) {

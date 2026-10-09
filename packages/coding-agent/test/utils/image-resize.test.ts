@@ -2,7 +2,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test
 import * as os from "node:os";
 import * as path from "node:path";
 import * as zlib from "node:zlib";
-import { formatDimensionNote, formatScreenshot, resizeImage } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
+import {
+	formatDimensionNote,
+	formatScreenshot,
+	type ResizedImage,
+	resizeImage,
+	type ScreenshotArea,
+} from "@oh-my-pi/pi-coding-agent/utils/image-resize";
 
 describe("formatScreenshot", () => {
 	function fakeResized(
@@ -113,42 +119,39 @@ describe("formatScreenshot", () => {
 		).toContain("Resize: image decoder failed; using original image bytes");
 	});
 
-	it("maps a resized capture to viewport CSS pixels through the device scale", () => {
-		const resized = fakeResized({
-			wasResized: true,
-			originalWidth: 1706,
-			originalHeight: 960,
-			width: 1024,
-			height: 576,
-		});
-
+	function coordinateNote(resized: ResizedImage, capture: { area: ScreenshotArea; scale: number | undefined }) {
 		const lines = formatScreenshot({
 			saveFullRes: false,
 			savedMimeType: "image/webp",
 			savedByteLength: 2048,
 			dest: path.join(os.tmpdir(), "shot.png"),
 			resized,
-			capture: { area: "viewport", scale: 1.25 },
+			capture,
 		});
+		return lines.find(line => line.startsWith("[Image:"));
+	}
 
-		expect(lines).toContain(
-			"[Image: original 1706x960 at device scale 1.25, displayed at 1024x576. Multiply image coordinates by 1.33 to get viewport CSS pixels for tab.clickAt.]",
+	it("maps a resized capture to viewport CSS pixels through the capture scale", () => {
+		const note = coordinateNote(
+			fakeResized({ wasResized: true, originalWidth: 1706, originalHeight: 960, width: 1024, height: 576 }),
+			{ area: "viewport", scale: 1.25 },
 		);
+		expect(note).toContain("capture scale 1.25");
+		expect(note).toContain("by 1.33 to get viewport CSS pixels for tab.clickAt");
 	});
 
 	it("maps an unresized high-density capture down to CSS pixels", () => {
-		const lines = formatScreenshot({
-			saveFullRes: false,
-			savedMimeType: "image/webp",
-			savedByteLength: 2048,
-			dest: path.join(os.tmpdir(), "shot.png"),
-			resized: fakeResized(),
-			capture: { area: "element", scale: 2 },
-		});
+		const note = coordinateNote(fakeResized(), { area: "element", scale: 2 });
+		expect(note).toContain("by 0.50 to get CSS pixels from the element's top-left corner");
+	});
 
-		expect(lines).toContain(
-			"[Image: 800x600 at device scale 2. Multiply image coordinates by 0.50 to get CSS pixels from the element's top-left corner.]",
+	it("says the mapping is unknown instead of guessing one", () => {
+		const note = coordinateNote(
+			fakeResized({ wasResized: true, originalWidth: 2000, originalHeight: 1000, width: 1024, height: 512 }),
+			{ area: "viewport", scale: undefined },
 		);
+		expect(note).toContain("scale to CSS pixels could not be read");
+		expect(note).not.toContain("Multiply");
 	});
 });
 

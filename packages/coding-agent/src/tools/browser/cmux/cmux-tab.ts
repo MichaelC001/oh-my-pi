@@ -1089,6 +1089,17 @@ export class CmuxTab implements InProcessRunTab {
 		if (opts.fullPage) {
 			captureNotes.push("fullPage is unavailable on this surface — the image is the viewport only");
 		}
+		// The daemon does not report its capture scale: measure the image against the CSS viewport width.
+		let cssWidth: number | undefined;
+		if (!opts.silent) {
+			const answer = (await this.#request("browser.eval", { script: "window.innerWidth" }, context.timeoutMs).catch(
+				error => {
+					if (context.signal.aborted) throw error;
+					return undefined;
+				},
+			)) as CmuxEvalResult | undefined;
+			cssWidth = typeof answer?.value === "number" && answer.value > 0 ? answer.value : undefined;
+		}
 		const result = await this.#captureScreenshotPng(context.timeoutMs);
 		const buffer = Buffer.from(result.png_base64, "base64");
 		const captureMime = "image/png";
@@ -1123,15 +1134,13 @@ export class CmuxTab implements InProcessRunTab {
 		};
 		context.screenshots.push(info);
 		if (!opts.silent) {
-			// The daemon's capture scale is not reported: measure it against the CSS viewport width.
-			const geometry = await this.#readGeometry(context.timeoutMs);
 			const lines = formatScreenshot({
 				saveFullRes,
 				savedMimeType,
 				savedByteLength: savedBuffer.length,
 				dest,
 				resized,
-				capture: { area: "viewport", scale: resized.originalWidth / geometry.innerWidth },
+				capture: { area: "viewport", scale: cssWidth && resized.originalWidth / cssWidth },
 			});
 			if (captureNotes.length > 0) {
 				lines.push(`[cmux surface: ${captureNotes.join("; ")}]`);

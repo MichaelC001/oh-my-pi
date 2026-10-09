@@ -2792,6 +2792,7 @@ export class WorkerCore {
 				});
 			}
 		}
+		const captureScale = opts.silent ? undefined : ((await this.#viewport(signal)).deviceScaleFactor ?? 1);
 		const cleanupAnnotations = opts.annotate
 			? await installScreenshotAnnotations(page, annotationTargets, signal)
 			: async (): Promise<void> => {};
@@ -2846,14 +2847,13 @@ export class WorkerCore {
 			height: resized.height,
 		});
 		if (!opts.silent) {
-			const { deviceScaleFactor = 1 } = await this.#viewport(signal);
 			const lines = formatScreenshot({
 				saveFullRes,
 				savedMimeType,
 				savedByteLength: savedBuffer.length,
 				dest,
 				resized,
-				capture: { area: screenshotArea(opts), scale: deviceScaleFactor },
+				capture: { area: screenshotArea(opts), scale: captureScale },
 			});
 			if (opts.annotate) lines.push(formatScreenshotLegend(annotationTargets));
 			output.push({ type: "text", text: lines.join("\n") });

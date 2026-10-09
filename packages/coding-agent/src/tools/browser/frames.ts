@@ -373,6 +373,7 @@ export async function captureFrameScreenshot(
 	const handle = await untilAborted(signal, () => frame.$(normalizeSelector(selector)));
 	if (!handle) throw new ToolError(`frame.screenshot(${JSON.stringify(selector)}) matched no element`);
 	let buffer: Buffer;
+	let captureScale: number;
 	try {
 		await untilAborted(signal, () =>
 			handle.evaluate(element => {
@@ -382,6 +383,7 @@ export async function captureFrameScreenshot(
 				target.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
 			}),
 		).catch(() => undefined);
+		captureScale = (await readPageViewport(frame.page(), signal)).deviceScaleFactor ?? 1;
 		const screenshotOptions: ElementScreenshotOptions = { type: "png", scrollIntoView: false };
 		buffer = (await untilAborted(signal, () => handle.screenshot(screenshotOptions))) as Buffer;
 	} finally {
@@ -410,7 +412,6 @@ export async function captureFrameScreenshot(
 		width: resized.width,
 		height: resized.height,
 	});
-	const { deviceScaleFactor = 1 } = await readPageViewport(frame.page(), signal);
 	output.push({
 		type: "text",
 		text: formatScreenshot({
@@ -419,7 +420,7 @@ export async function captureFrameScreenshot(
 			savedByteLength: savedBuffer.length,
 			dest,
 			resized,
-			capture: { area: "element", scale: deviceScaleFactor },
+			capture: { area: "element", scale: captureScale },
 		}).join("\n"),
 	});
 	output.push({ type: "image", data: resized.data, mimeType: resized.mimeType });

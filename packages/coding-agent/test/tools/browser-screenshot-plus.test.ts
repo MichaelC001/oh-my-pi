@@ -210,9 +210,13 @@ button { margin: 80px; width: 180px; height: 60px; }
 		}
 	}, 30_000);
 
-	test.each([1.25, 2])(
+	// Scale 0 keeps the browser's own device scale (1 in headless Chromium).
+	test.each([1.25, 2, 0])(
 		"the screenshot note maps image coordinates to clickAt at device scale %p",
 		async scale => {
+			// Backend overrides would send this open to a relay or cmux surface instead of headless Chromium.
+			const savedEnv = { ...process.env };
+			for (const key of ["PI_BROWSER_RELAY", "PI_BROWSER_CMUX", "PI_BROWSER_TERN"]) delete process.env[key];
 			const invoke = createHost();
 			const name = `screenshot-click-factor-${crypto.randomUUID()}`;
 			const html = `<!doctype html><html><head><style>
@@ -222,13 +226,13 @@ body { margin: 0; }
 <button id="target" onclick="event.stopPropagation(); document.title = 'hit'">Go</button>
 <script>document.addEventListener("click", event => { document.title = "miss " + event.clientX + "," + event.clientY; });</script>
 </body></html>`;
-			await invoke({
-				action: "open",
-				name,
-				url: `data:text/html,${encodeURIComponent(html)}`,
-				viewport: { width: 1000, height: 700, scale },
-			});
 			try {
+				await invoke({
+					action: "open",
+					name,
+					url: `data:text/html,${encodeURIComponent(html)}`,
+					viewport: { width: 1200, height: 700, scale },
+				});
 				const shot = await invoke({ action: "call", name, chain: [{ method: "screenshot", args: [] }] });
 				const text = shot.content
 					.filter(block => block.type === "text")
@@ -241,8 +245,8 @@ body { margin: 0; }
 						: [];
 				const displayedWidth = shots[0]?.width ?? 0;
 				// Where the button's centre (720, 520 CSS px) appears in the image the model sees.
-				const imageX = (720 * displayedWidth) / 1000;
-				const imageY = (520 * displayedWidth) / 1000;
+				const imageX = (720 * displayedWidth) / 1200;
+				const imageY = (520 * displayedWidth) / 1200;
 				await invoke({
 					action: "call",
 					name,
@@ -253,6 +257,7 @@ body { margin: 0; }
 				).toBe("hit");
 			} finally {
 				await invoke({ action: "close", name, kill: true }).catch(() => undefined);
+				Object.assign(process.env, savedEnv);
 			}
 		},
 		30_000,

@@ -33,7 +33,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { type CmuxKind, GEOMETRY_SCRIPT } from "@oh-my-pi/pi-coding-agent/tools/browser/cmux/rpc";
+import type { CmuxKind } from "@oh-my-pi/pi-coding-agent/tools/browser/cmux/rpc";
 import { CmuxSocketClient } from "@oh-my-pi/pi-coding-agent/tools/browser/cmux/socket-client";
 import { acquireBrowser } from "@oh-my-pi/pi-coding-agent/tools/browser/registry";
 import {
@@ -550,7 +550,11 @@ describe("browser tab-supervisor — cmux tab close mid-run (#4499)", () => {
 		}
 	});
 
-	it("maps screenshot coordinates to CSS pixels by the capture's measured scale", async () => {
+	it.each([
+		{ name: "measured", width: { value: 1000 }, note: "by 0.98 to get viewport CSS pixels for tab.clickAt" },
+		{ name: "missing", width: { value: "" }, note: "scale to CSS pixels could not be read" },
+		{ name: "failed", width: new Error("eval failed"), note: "scale to CSS pixels could not be read" },
+	])("screenshot coordinate note with $name viewport width", async ({ width, note }) => {
 		spyOn(CmuxSocketClient.prototype, "connect").mockResolvedValue(undefined);
 		spyOn(CmuxSocketClient.prototype, "close").mockImplementation(() => undefined);
 		// A 2x capture of a 1000 CSS px wide viewport.
@@ -565,9 +569,9 @@ describe("browser tab-supervisor — cmux tab close mid-run (#4499)", () => {
 					case "browser.snapshot":
 						return { page: { html: "" } };
 					case "browser.eval":
-						return params.script === GEOMETRY_SCRIPT
-							? { value: { innerWidth: 1000, innerHeight: 10, dpr: 2 } }
-							: { value: "" };
+						if (params.script !== "window.innerWidth") return { value: "" };
+						if (width instanceof Error) throw width;
+						return width;
 					case "browser.screenshot":
 						return { png_base64: png };
 					default:
@@ -588,8 +592,8 @@ describe("browser tab-supervisor — cmux tab close mid-run (#4499)", () => {
 			session: makeSession("/tmp"),
 		});
 		const text = result.displays.flatMap(block => (block.type === "text" ? [block.text] : [])).join("\n");
-		expect(text).toContain("at device scale 2, displayed at 1024x10");
-		expect(text).toContain("Multiply image coordinates by 0.98 to get viewport CSS pixels for tab.clickAt.");
+		expect(text).toContain(note);
+		expect(result.displays.filter(block => block.type === "image")).toHaveLength(1);
 		if (typeof result.returnValue === "string") await fs.rm(result.returnValue);
 	});
 });
