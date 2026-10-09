@@ -16,6 +16,7 @@ const stdinIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isT
 const stdoutIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 const stdinSetRawModeDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "setRawMode");
 let previousHeadless = false;
+let terminal: ProcessTerminal | undefined;
 
 function restoreProperty(target: object, key: string, descriptor: PropertyDescriptor | undefined): void {
 	if (descriptor) {
@@ -44,6 +45,10 @@ describe("ProcessTerminal write loop phase", () => {
 	});
 
 	afterEach(() => {
+		// Stop before restoring the mocks so a failed assertion can't leave the
+		// terminal registered with its stdout listeners and stderr guard installed.
+		terminal?.stop();
+		terminal = undefined;
 		setTerminalHeadless(previousHeadless);
 		vi.restoreAllMocks();
 		restoreProperty(process.stdin, "isTTY", stdinIsTtyDescriptor);
@@ -58,7 +63,7 @@ describe("ProcessTerminal write loop phase", () => {
 			now += 300; // the terminal took 300 ms to drain this frame
 			return true;
 		});
-		const terminal = new ProcessTerminal();
+		terminal = new ProcessTerminal();
 		terminal.start(
 			() => {},
 			() => {},
@@ -69,6 +74,5 @@ describe("ProcessTerminal write loop phase", () => {
 
 		expect(takeLoopPhaseAttribution(now)).toEqual({ label: "ui.terminal-write", ms: 300 });
 		expect(currentLoopPhase()).toBeUndefined();
-		terminal.stop();
 	});
 });
