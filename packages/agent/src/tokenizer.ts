@@ -156,7 +156,7 @@ interface MessageEstimate {
  */
 export class Tokenizer {
 	readonly #encoding: natives.Encoding | null;
-	readonly #frameTarget: snapcompact.ShapeTarget | undefined;
+	readonly #frameBilling: snapcompact.FrameBilling;
 	readonly frameBillingKey: string;
 
 	/** Exact counts only; byte fallbacks remain mode-dependent and uncached. */
@@ -178,8 +178,8 @@ export class Tokenizer {
 
 	constructor(model?: (Pick<Model, "tokenizer"> & snapcompact.ShapeTarget) | null) {
 		this.#encoding = tokenizerEncodingForModel(model);
-		this.#frameTarget = model ?? undefined;
-		this.frameBillingKey = snapcompact.frameBillingKey(this.#frameTarget);
+		this.#frameBilling = snapcompact.frameBilling(model ?? undefined);
+		this.frameBillingKey = snapcompact.frameBillingKey(this.#frameBilling);
 	}
 
 	get encoding(): natives.Encoding | null {
@@ -357,6 +357,6 @@ export class Tokenizer {
 	/** One snapcompact frame at the active model's price for its pixel size; unreadable frames cost the ceiling. */
 	#frameTokens(data: string): number {
 		const size = base64ImageSize(data);
-		return size ? snapcompact.frameTokens(this.#frameTarget, size) : snapcompact.FRAME_TOKEN_ESTIMATE;
+		return size ? snapcompact.frameTokens(this.#frameBilling, size) : snapcompact.FRAME_TOKEN_ESTIMATE;
 	}
 }

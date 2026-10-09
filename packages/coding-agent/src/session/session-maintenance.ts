@@ -23,6 +23,7 @@ import {
 	compact,
 	compactionContextTokens,
 	computeFileLists,
+	countResponsesHistoryTokens,
 	createCompactionSummaryMessage,
 	DEFAULT_SHAKE_CONFIG,
 	type CompactionSettings as EngineCompactionSettings,
@@ -53,15 +54,16 @@ import type { ProtectedToolMatcher } from "@oh-my-pi/pi-agent-core/compaction/to
 import type {
 	AssistantMessage,
 	CodexCompactionContext,
+	Context,
 	Message,
 	Model,
-	OpenAIResponsesHistoryPayload,
 	ProviderSessionState,
 } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { resolvePromptCacheLookback } from "@oh-my-pi/pi-catalog/compat/prompt-cache-lookback";
 import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import { isRecord, logger, prompt, Snowflake, stringifyJson } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { writeArtifact } from "./artifacts";
 import type { ModelRegistry } from "../config/model-registry";
@@ -91,6 +93,7 @@ import {
 	assistantTurnDelivered,
 	convertToLlm,
 	invalidateConvertToLlmArrayCache,
+	isUserAuthoredMessage,
 	stripImagesFromMessage,
 } from "./messages";
 import { isTerminalTextAssistantAnswer } from "./queued-messages";
@@ -111,13 +114,13 @@ import lengthStopRetryTemplate from "../prompts/system/length-stop-retry.md" wit
 
 import {
 	type CompactionSettings,
-	cfgCompaction,
 	cfgCompactionAutoContinue,
 	cfgCompactionEnabled,
 	cfgCompactionMethodOrder,
 	cfgContextPromotionEnabled,
 	cfgSnapcompactShape,
 } from "./context-settings";
+import { resolveModelCompactionSettings } from "./model-compaction-threshold";
 import { cfgRetry } from "./settings";
 
 export type CompactionCheckResult = Readonly<{
@@ -257,15 +260,15 @@ function compactionDeadEndWarning(remedies: string): string {
 	);
 }
 
-/** Honest-skip notice for a payload-shaped HTTP 413 where compaction was correctly withheld (#9235). */
+/** A terminal payload rejection may be byte-sized history or irreducible media, not necessarily token overflow. */
 function payloadRejectionNotice(storedTokens: number, contextWindow: number): string {
 	const remedies =
-		"Token compaction cannot shrink bytes or image budgets; reduce or remove archived image frames (e.g. switch compaction.methodOrder away from snapcompact) or raise the server/proxy body limit.";
+		"Reduce or remove oversized media from the live request, shrink older history, or raise the provider/proxy body limit.";
 	if (contextWindow <= 0) {
-		return `The provider rejected the request size or media budget (HTTP 413), and this model has no known context window to compare against — this is NOT a token-context problem. ${remedies}`;
+		return `The provider rejected the request size or media budget (HTTP 413), and this model has no known context window to compare against — this is NOT necessarily a token-context problem. ${remedies}`;
 	}
 	const headroom = Math.max(0, Math.floor(contextWindow - storedTokens));
-	return `The provider rejected the request size or media budget (HTTP 413), but ~${headroom.toLocaleString("en-US")} tokens of headroom remain locally — this is NOT a token-context problem. ${remedies}`;
+	return `The provider rejected the request size or media budget (HTTP 413), but ~${headroom.toLocaleString("en-US")} tokens of headroom remain locally — this is NOT necessarily a token-context problem. ${remedies}`;
 }
 
 /** Dead-end notice when provider-reported usage proves context overflow but no recovery exists (#9235). */
@@ -321,9 +324,6 @@ const PRUNE_IDLE_FLUSH_MS = 90 * 60_000;
  * most-recent kept turn already exceeds the threshold (the snapcompact thrash).
  */
 const COMPACTION_RECOVERY_BAND = 0.8;
-
-/** Snapcompact summary template (intro + FILES section + grid notes), in tokens, for typical sessions. */
-const SNAPCOMPACT_SUMMARY_TEMPLATE_TOKENS = 2000;
 
 /** Share of the room under the compaction trigger a snapcompact archive may fill; the rest is left for new turns. */
 const SNAPCOMPACT_ARCHIVE_SHARE = 0.5;
@@ -461,6 +461,12 @@ export interface SessionMaintenanceHost {
 	drainStrandedQueuedMessages(): void;
 	buildDisplaySessionContext(): SessionContext;
 	convertToLlmForSideRequest(messages: AgentMessage[]): Message[];
+	/** The provider context a live turn sends for `summarized` + `retained`, cut to the `summarized` range. */
+	buildLiveProviderContext(
+		summarized: AgentMessage[],
+		retained: AgentMessage[],
+		signal?: AbortSignal,
+	): Promise<Context>;
 	obfuscateTextForProvider(text: string | undefined): string | undefined;
 	obfuscatePreparationForProvider(preparation: CompactionPreparation): CompactionPreparation;
 	closeCodexProviderSessionsForHistoryRewrite(): void;
@@ -560,6 +566,11 @@ export class SessionMaintenance {
 		return this.#host.model();
 	}
 
+	/** Compaction policy in force for the active model (its `compaction.modelThresholds` entry applied). */
+	get #compactionSettings(): CompactionSettings {
+		return resolveModelCompactionSettings(this.#host.settings, this.#model);
+	}
+
 	get #tokenizer() {
 		return this.#host.agent.tokenizer;
 	}
@@ -575,7 +586,7 @@ export class SessionMaintenance {
 	/** Experimental rollover is safe only when the current effective tool surface can recover its state. */
 	#usesExperimentalContextManagement(): boolean {
 		return (
-			cfgCompaction.get(this.#host.settings).experimentalContextManagement === true &&
+			this.#compactionSettings.experimentalContextManagement === true &&
 			this.#host.hasExperimentalContextRolloverTools()
 		);
 	}
@@ -587,7 +598,7 @@ export class SessionMaintenance {
 	 */
 	#maybeQueueExperimentalNotesReminder(contextTokens: number, contextWindow: number): void {
 		if (!this.#usesExperimentalContextManagement()) return;
-		const settings = cfgCompaction.get(this.#host.settings);
+		const settings = this.#compactionSettings;
 		if (!settings.enabled || this.isCompacting || this.#host.isGeneratingHandoff()) return;
 		const thresholdTokens = resolveThresholdTokens(contextWindow, settings);
 		if (contextTokens >= thresholdTokens) return;
@@ -679,20 +690,22 @@ export class SessionMaintenance {
 	}
 
 	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
-		const branchEntries = this.#host.sessionManager.getBranch();
+		const branchEntries = this.#host.sessionManager.getBranchView();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
+		const model = this.#host.model();
 		const result = pruneToolOutputs(
 			branchEntries,
 			this.#tokenizer,
 			this.#withPlanProtection({
 				...DEFAULT_PRUNE_CONFIG,
-				pruneUseless: cfgCompaction.get(this.#host.settings).dropUseless,
+				pruneUseless: this.#compactionSettings.dropUseless,
 				// Cache-stable boundary: never re-write the warm, already-sent prefix
 				// (deep stale/age victims) or summarized-away entries every turn.
 				keepBoundaryId,
 				// Prefix-bound thinking cannot survive rewrites inside a warm provider prefix.
-				cacheWarmSuffixTokens:
-					this.#host.model()?.thinking?.prefixBinding === true ? 0 : PRUNE_CACHE_WARM_SUFFIX_TOKENS,
+				cacheWarmSuffixTokens: model?.thinking?.prefixBinding === true ? 0 : PRUNE_CACHE_WARM_SUFFIX_TOKENS,
+				cacheLookbackPositions: model ? resolvePromptCacheLookback(model) : undefined,
+				convertToLlm,
 			}),
 		);
 		if (result.prunedCount === 0) {
@@ -722,10 +735,11 @@ export class SessionMaintenance {
 	 * provider prompt cache.
 	 */
 	async #pruneStaleToolResults(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
-		const { supersedeReads, dropUseless } = cfgCompaction.get(this.#host.settings);
+		const { supersedeReads, dropUseless } = this.#compactionSettings;
 		if (!supersedeReads && !dropUseless) return undefined;
-		const branchEntries = this.#host.sessionManager.getBranch();
+		const branchEntries = this.#host.sessionManager.getBranchView();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
+		const model = this.#host.model();
 		const result = pruneSupersededToolResults(
 			branchEntries,
 			this.#tokenizer,
@@ -739,7 +753,9 @@ export class SessionMaintenance {
 				keepBoundaryId,
 				idleFlushMs: PRUNE_IDLE_FLUSH_MS,
 				// Prefix-bound thinking cannot survive rewrites inside a warm provider prefix.
-				suffixTokenLimit: this.#host.model()?.thinking?.prefixBinding === true ? 0 : undefined,
+				suffixTokenLimit: model?.thinking?.prefixBinding === true ? 0 : undefined,
+				cacheLookbackPositions: model ? resolvePromptCacheLookback(model) : undefined,
+				convertToLlm,
 			}),
 		);
 		if (result.prunedCount === 0) {
@@ -1014,7 +1030,7 @@ export class SessionMaintenance {
 
 	/** One-shot, artifact-backed mechanical reduction for a pre-output Responses body-read timeout. */
 	async shakeForRequestBodyReadTimeout(generation: number): Promise<boolean> {
-		const settings = cfgCompaction.get(this.#host.settings);
+		const settings = this.#compactionSettings;
 		if (!settings.enabled || !resolveCompactionMethodOrder(settings.methodOrder).includes("shake")) return false;
 		const isCurrent = () => !this.#host.isDisposed() && this.#host.promptGeneration() === generation;
 		if (!isCurrent()) return false;
@@ -1172,7 +1188,7 @@ export class SessionMaintenance {
 				return result;
 			}
 
-			const compactionSettings = cfgCompaction.get(this.#host.settings);
+			const compactionSettings = this.#compactionSettings;
 			methods = resolveCompactionMethodOrder(compactMode?.overrides.methodOrder ?? compactionSettings.methodOrder);
 			const explicitSnapcompact = compactMode?.name === "snapcompact";
 			let selectedMethod: CompactionMethod | undefined;
@@ -1341,18 +1357,19 @@ export class SessionMaintenance {
 					if (!shape) {
 						throw new Error("snapcompact shape was not resolved before rendering.");
 					}
-					snapcompactResult = await this.#renderSnapcompactArchive(
+					const rendered = await this.#renderSnapcompactArchive(
 						preparation,
 						{
 							convertToLlm,
 							model: this.#model,
 							...(snapcompactShapeSetting === "auto" ? {} : { shape }),
+							maxFrames,
 							includeThinking: snapcompactIncludeThinking,
 						},
-						maxFrames,
 						effectiveSettings,
 					);
-					const framePayloadBytes = this.#snapcompactFramePayloadBytes(snapcompactResult);
+					snapcompactResult = rendered.result;
+					const framePayloadBytes = rendered.framePayloadBytes;
 					if (framePayloadBytes > snapcompact.FRAME_DATA_BYTES_BUDGET) {
 						logger.warn("Snapcompact exceeded the per-request frame payload budget", {
 							model: this.#model?.id,
@@ -1579,7 +1596,7 @@ export class SessionMaintenance {
 		onCommitted: () => void,
 	): Promise<CompactionResult> {
 		const entries = this.#host.sessionManager.getBranch();
-		const settings = cfgCompaction.get(this.#host.settings);
+		const settings = this.#compactionSettings;
 		const preparation = prepareCompaction(entries, settings, model, this.#tokenizer);
 		if (!preparation)
 			throw new ManualCompactionNoOpError("Nothing to compact (session too small or already rolled over)");
@@ -1682,7 +1699,7 @@ export class SessionMaintenance {
 	): Promise<CompactionCheckResult> {
 		const model = this.#model;
 		if (!model || this.isCompacting) return COMPACTION_CHECK_NONE;
-		const settings = cfgCompaction.get(this.#host.settings);
+		const settings = this.#compactionSettings;
 		const branch = this.#host.sessionManager.getBranch();
 		const preparation = prepareCompaction(branch, settings, model, this.#tokenizer);
 		if (!preparation) return COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION;
@@ -2020,7 +2037,7 @@ export class SessionMaintenance {
 		const entries = this.#host.sessionManager.getBranch();
 		const messageCount = entries.filter(e => e.type === "message").length;
 		if (messageCount < 2) throw new Error("Nothing to hand off (no messages yet)");
-		const compactionSettings = cfgCompaction.get(this.#host.settings);
+		const compactionSettings = this.#compactionSettings;
 		const preparation = prepareCompaction(
 			entries,
 			resolveMethodSettings(compactionSettings, "handoff"),
@@ -2066,7 +2083,7 @@ export class SessionMaintenance {
 	 */
 	maybeStartSpeculativeCompaction(contextTokens: number, contextWindow: number): void {
 		if (contextWindow <= 0 || this.#host.isDisposed()) return;
-		const settings = cfgCompaction.get(this.#host.settings);
+		const settings = this.#compactionSettings;
 		if (this.#usesExperimentalContextManagement()) {
 			this.#maybeQueueExperimentalNotesReminder(contextTokens, contextWindow);
 			return;
@@ -2163,7 +2180,7 @@ export class SessionMaintenance {
 	 */
 	deferThresholdCompactionToSpeculation(contextTokens: number, contextWindow: number): boolean {
 		if (contextWindow <= 0 || this.#host.isDisposed()) return false;
-		const settings = cfgCompaction.get(this.#host.settings);
+		const settings = this.#compactionSettings;
 		if (this.#usesExperimentalContextManagement()) return false;
 		if (!settings.enabled || settings.asyncEnabled === false || !hasConfiguredCompactionMethod(settings))
 			return false;
@@ -2207,7 +2224,7 @@ export class SessionMaintenance {
 		};
 		const model = this.#model;
 		if (!model) return clear();
-		const settings = cfgCompaction.get(this.#host.settings);
+		const settings = this.#compactionSettings;
 		const effectiveSettings = resolveMethodSettings(settings, method);
 		const branch = this.#host.sessionManager.getBranch();
 		const snapshotLeafId = branch[branch.length - 1]?.id;
@@ -2308,7 +2325,7 @@ export class SessionMaintenance {
 	): boolean {
 		const model = this.#model;
 		if (!model) return false;
-		const settings = cfgCompaction.get(this.#host.settings);
+		const settings = this.#compactionSettings;
 		if (
 			armed.result.preserveData &&
 			!remotePreserveReusable(armed.result.preserveData, model, resolveMethodSettings(settings, armed.method))
@@ -2379,7 +2396,7 @@ export class SessionMaintenance {
 			run.controller.abort();
 			return undefined;
 		}
-		const settings = cfgCompaction.get(this.#host.settings);
+		const settings = this.#compactionSettings;
 		if (settings.asyncEnabled === false) return undefined;
 		if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) return undefined;
 		if (!this.#armedSpeculationValid(run.armed, triggerContextTokens, pendingContextTokens)) {
@@ -2542,7 +2559,7 @@ export class SessionMaintenance {
 		if (!model) return;
 		const contextWindow = model.contextWindow ?? 0;
 		if (contextWindow <= 0) return;
-		const compactionSettings = cfgCompaction.get(this.#host.settings);
+		const compactionSettings = this.#compactionSettings;
 		const contextTokens = this.#estimatePrePromptContextTokens(messages, contextWindow);
 		const pendingMidTurnDeadEnd = this.#midTurnDeadEndPendingPrePrompt;
 		this.#midTurnDeadEndPendingPrePrompt = false;
@@ -2624,7 +2641,7 @@ export class SessionMaintenance {
 		const model = this.#model;
 		const contextWindow = model?.contextWindow ?? 0;
 		if (contextWindow <= 0) return;
-		const compactionSettings = cfgCompaction.get(this.#host.settings);
+		const compactionSettings = this.#compactionSettings;
 		const experimentalNewContextRequest =
 			this.#usesExperimentalContextManagement() && this.#host.takeExperimentalContextRolloverRequest(context);
 
@@ -2854,25 +2871,47 @@ export class SessionMaintenance {
 		// already complaining about (#11482).
 		// (Named distinctly from the `compactionSettings` used further down in
 		// this function's later, unrelated threshold check.)
-		const payloadCompactionSettings = cfgCompaction.get(this.#host.settings);
+		const payloadCompactionSettings = this.#compactionSettings;
+		const payloadModel = this.#model;
 		const compactionAvailable =
 			payloadCompactionSettings.enabled &&
 			(this.#usesExperimentalContextManagement() ||
 				hasUsableCompactionMethod(
 					"overflow",
-					this.#model,
+					payloadModel,
 					payloadCompactionSettings,
 					excludeMediaForPayloadRejection,
 				));
-		// Unknown context window (common for custom/self-hosted models the
-		// registry has no metadata for) used to be treated the same as a
-		// confirmed media/byte-budget rejection and blocked outright — even
-		// when the payload bloat is plain message-count growth that ordinary
-		// compaction would shrink just fine (#11479). Only skip straight to the
-		// honest "can't help" notice here when there is genuinely no compaction
-		// method configured to try — an absence of proof, gated to the
-		// unknown-window case since a known window's own evidence (below) already
-		// covers it.
+		// A cut point inside the failing turn is not older reclaimable history.
+		// Require a delivered assistant turn in the part being summarized;
+		// shake selects its own victims and has a no-progress guard.
+		const payloadBranch = trustedPayloadRejection ? this.#host.sessionManager.getBranch() : undefined;
+		const reclaimablePayloadHistory =
+			trustedPayloadRejection &&
+			compactionAvailable &&
+			!explicitMediaRejection &&
+			payloadModel !== undefined &&
+			payloadBranch?.some(
+				entry =>
+					entry.type === "message" && entry.message.role === "assistant" && entry.message.stopReason !== "error",
+			) === true &&
+			(this.#usesExperimentalContextManagement() ||
+				resolveCompactionMethodOrder(payloadCompactionSettings.methodOrder).some(candidate => {
+					if (!isCompactionMethodUsable(candidate, "overflow", payloadModel, payloadCompactionSettings, true))
+						return false;
+					if (candidate === "shake") return true;
+					const preparation = prepareCompaction(
+						payloadBranch,
+						resolveMethodSettings(payloadCompactionSettings, candidate),
+						payloadModel,
+						this.#tokenizer,
+					);
+					return (
+						preparation?.messagesToSummarize.some(
+							message => message.role === "assistant" && message.stopReason !== "error",
+						) === true
+					);
+				}));
 		const unknownWindowDeadEnd =
 			payloadRejection && contextWindow <= 0 && !ambiguousPayloadRejection && !compactionAvailable;
 		// Explicit media evidence is a terminal signal independent of whether the
@@ -2886,13 +2925,15 @@ export class SessionMaintenance {
 		// it (with media methods excluded per `excludeMediaForPayloadRejection`
 		// above), not be discarded just because the same response also named a
 		// media limit (#11482).
-		if (unknownWindowDeadEnd || trustedPayloadRejection || (explicitMediaRejection && !usageBackedOverflow)) {
-			// Every disjunct above implies `!usageBackedOverflow` (unknown window ⇒
-			// `isUsageBackedContextOverflow` is false by definition; trusted requires
-			// `reportedInputTokens <= contextWindow`; the third is explicit), so this
-			// is always the honest "NOT a token-context problem" notice — the sibling
-			// usage-backed selection lives further down, where that case is reachable.
+		if (
+			unknownWindowDeadEnd ||
+			(trustedPayloadRejection && !reclaimablePayloadHistory) ||
+			(explicitMediaRejection && !usageBackedOverflow)
+		) {
+			// None of these branches has usage-backed overflow evidence; the
+			// provider's byte/media limit can still be hit with local token headroom.
 			this.#host.removeAssistantMessageFromActiveContext(assistantMessage);
+			this.#host.retainTerminalFailure(assistantMessage);
 			this.#host.emitNotice("warning", payloadRejectionNotice(storedTokens, contextWindow), "compaction");
 			logger.debug("Payload-shaped 413 withheld from token compaction", {
 				provider: assistantMessage.provider,
@@ -2905,11 +2946,11 @@ export class SessionMaintenance {
 		}
 		const overflowEvidence =
 			sameModel && !errorIsFromBeforeCompaction && AIError.isContextOverflow(assistantMessage, contextWindow);
-		if (overflowEvidence || (payloadRejection && !trustedPayloadRejection)) {
+		if (overflowEvidence || reclaimablePayloadHistory || (payloadRejection && !trustedPayloadRejection)) {
 			this.#host.removeAssistantMessageFromActiveContext(assistantMessage);
 
-			// Try context promotion first - switch to a larger model and retry without compacting
-			const promoted = await this.#tryContextPromotion(assistantMessage);
+			// A larger token window cannot raise a trusted byte-size limit.
+			const promoted = !trustedPayloadRejection && (await this.#tryContextPromotion(assistantMessage));
 			if (promoted) {
 				await this.#host.dropPersistedAssistantTurn(assistantMessage);
 				// Retry on the promoted (larger) model without compacting
@@ -2956,6 +2997,7 @@ export class SessionMaintenance {
 					// persisted session history (separate from this active-context view)
 					// still keeps the turn visible.
 					this.#host.removeAssistantMessageFromActiveContext(assistantMessage);
+					this.#host.retainTerminalFailure(assistantMessage);
 					if (compactionResult.automaticContinuationBlocked === true) {
 						// `runAutoCompaction` already blocked and emitted its own notice for
 						// this outcome (e.g. its own compaction dead end) — only the cleanup
@@ -2984,9 +3026,13 @@ export class SessionMaintenance {
 					});
 					return COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION;
 				}
+				if (payloadRejection && !compactionResult.continuationScheduled) {
+					this.#host.retainTerminalFailure(assistantMessage);
+				}
 				return compactionResult;
 			}
 			if (payloadRejection) {
+				this.#host.retainTerminalFailure(assistantMessage);
 				this.#host.emitNotice(
 					"warning",
 					usageBackedOverflow
@@ -3024,7 +3070,8 @@ export class SessionMaintenance {
 			contextWindow > 0 &&
 			cfgContextPromotionEnabled.get(this.#host.settings)
 		) {
-			const failedModel = this.#host.modelRegistry.find(assistantMessage.provider, assistantMessage.model);
+			const foundModel = this.#host.modelRegistry.find(assistantMessage.provider, assistantMessage.model);
+			const failedModel = foundModel && this.#host.modelRegistry.fitContextWindow(foundModel, this.#host.settings);
 			const failedWindow = failedModel?.contextWindow ?? 0;
 			const promotionTarget = failedModel
 				? resolveContextPromotionConfiguredTarget(failedModel, this.#host.modelRegistry.getAvailable())
@@ -3059,7 +3106,7 @@ export class SessionMaintenance {
 		// output cap. Unlike overflow, the *input* is fine, so a reachable handoff
 		// preference may run.
 		if (sameModel && !errorIsFromBeforeCompaction && assistantMessage.stopReason === "length") {
-			const incompleteCompactionSettings = cfgCompaction.get(this.#host.settings);
+			const incompleteCompactionSettings = this.#compactionSettings;
 			const incompleteContextTokens = calculateContextTokens(assistantMessage.usage);
 			// Unknown windows keep compacting: there is no evidence the window had room.
 			const windowExhausted =
@@ -3192,7 +3239,7 @@ export class SessionMaintenance {
 			? undefined
 			: await this.#pruneStaleToolResults();
 
-		const compactionSettings = cfgCompaction.get(this.#host.settings);
+		const compactionSettings = this.#compactionSettings;
 		if (
 			!compactionSettings.enabled ||
 			(!this.#usesExperimentalContextManagement() && !hasConfiguredCompactionMethod(compactionSettings))
@@ -3343,7 +3390,9 @@ export class SessionMaintenance {
 		const availableModels = this.#host.modelRegistry.getAvailable();
 		if (availableModels.length === 0) return undefined;
 
-		const candidate = resolveContextPromotionConfiguredTarget(currentModel, availableModels);
+		const configured = resolveContextPromotionConfiguredTarget(currentModel, availableModels);
+		// Judge the window this session would actually run the target with.
+		const candidate = configured && this.#host.modelRegistry.fitContextWindow(configured, this.#host.settings);
 		if (!candidate) return undefined;
 		if (modelsAreEqual(candidate, currentModel)) return undefined;
 		if (candidate.contextWindow == null || candidate.contextWindow <= contextWindow) return undefined;
@@ -3361,6 +3410,11 @@ export class SessionMaintenance {
 		availableModels: Model[],
 		filter?: (model: Model) => boolean,
 	): Model[] {
+		// Shared catalog rows carry the registry's extended-window opt-ins; judge
+		// and compact with the window this session's settings select.
+		const registry = this.#host.modelRegistry;
+		const settings = this.#host.settings;
+		availableModels = availableModels.map(model => registry.fitContextWindow(model, settings));
 		const candidates: Model[] = [];
 		const seen = new Set<string>();
 
@@ -3444,6 +3498,9 @@ export class SessionMaintenance {
 						...options,
 						metadata: this.#host.agent.metadataForProvider(candidate.provider),
 						convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
+						buildProviderContext: (summarized, retained, signal) =>
+							this.#host.buildLiveProviderContext(summarized, retained, signal),
+						isUserAuthored: isUserAuthoredMessage,
 						telemetry,
 						// Honor the user's /model thinking selection (incl. `off`) on
 						// the manual `/compact` path. Clamped per-model inside compact()
@@ -3556,28 +3613,120 @@ export class SessionMaintenance {
 		return { kind: "needsLlm", hookContext, hookPrompt, preserveData };
 	}
 
-	/** Frame caps that hold whatever the context budget allows: the engine default, the per-request payload, and the provider's image count. */
-	#snapcompactFrameHardCap(shape: snapcompact.Shape): number {
+	/**
+	 * Cap on snapcompact frames, sized from the room under the compaction
+	 * trigger rather than the window: {@link SNAPCOMPACT_ARCHIVE_SHARE} of
+	 * `threshold − (system prompt + tools + kept recent + cap reserve)`, never
+	 * past {@link SNAPCOMPACT_POST_COMPACTION_TARGET} of the threshold, and never
+	 * past what the post-compaction context can carry without busting the model
+	 * window. Charges each frame at least the per-frame price
+	 * the tokenizer will bill ({@link snapcompact.FRAME_TOKEN_ESTIMATE}, the
+	 * conservative high-res Anthropic ceiling, or the shape's own higher price),
+	 * so picking `maxFrames` from this helper makes
+	 * {@link #projectSnapcompactContextTokens} succeed by construction.
+	 *
+	 * Skip vs. cap use different reserves on purpose. The **skip** decision
+	 * (return `0`) trips only when kept-recent plus non-message tokens already
+	 * eat the entire `ctxWindow − reserve` envelope: at that point no archive
+	 * shape — frame-bearing or text-only — can fit, and the caller MUST
+	 * shortcut to the LLM summarizer instead of re-running snapcompact to
+	 * re-emit the "could not bring the context under the limit" warning every
+	 * threshold tick. The **cap** calculation subtracts a shape-aware reserve
+	 * (`2 × geometry(shape).capacity` chars worth of text edges, billed at the
+	 * tiktoken cl100k baseline, plus a 2k summary-template allowance) sized
+	 * from the same `shape` snapcompact will use, so the projection still
+	 * passes once frames land — but it MUST NOT gate the skip decision, since
+	 * a frame-less archive (`text.length <= 2 * edgeCap` short-circuit in
+	 * `planArchive`) typically costs only a few hundred tokens of summary
+	 * lead and would fit under residual headroom far smaller than the cap
+	 * reserve (chatgpt-codex reviews on #3249).
+	 *
+	 * Returns `1` when the frame charge would overflow but the text-only path
+	 * still has room: snapcompact's planner picks the frame-less layout
+	 * automatically when the discarded text fits in the edges, so giving it
+	 * the minimum cap lets it succeed instead of being skipped outright.
+	 *
+	 * Without this cap, the bundled `MAX_FRAMES_DEFAULT = 80` × 5024 tokens =
+	 * ~402k frame-token projection always overflows any sub-1M-token window
+	 * (issue #3247).
+	 */
+	#computeSnapcompactMaxFrames(preparation: CompactionPreparation, settings: EngineCompactionSettings): number {
+		const ctxWindow = this.#model?.contextWindow ?? 0;
+		const shape = snapcompact.resolveShape(this.#model, cfgSnapcompactShape.get(this.#host.settings));
+		if (ctxWindow <= 0) {
+			return Math.min(
+				snapcompact.MAX_FRAMES_DEFAULT,
+				snapcompact.maxFramesForDataBudget(shape),
+				snapcompact.providerFrameBudget(this.#model?.provider),
+			);
+		}
+		const reserve = effectiveReserveTokens(ctxWindow, settings);
+		let baseTokens = computeNonMessageTokens(
+			this.#host.nonMessageTokenSource(),
+			this.#tokenizer,
+			this.#host.settings.revision,
+		);
+		baseTokens += this.#tokenizer.countMessages(preparation.recentMessages);
+		const totalBudget = ctxWindow - reserve;
+		// Skip iff there is no headroom whatsoever; a text-only archive costs
+		// far less than the cap reserve below, so any positive residual is
+		// worth attempting and the projection guard catches actual overflow.
+		if (baseTokens >= totalBudget) return 0;
+		// Cap reserve mirrors what `countMessage(summaryMessage)` will charge
+		// when frames > 0: `countTokens(summaryTemplate ‖ textHead ‖ textTail)`
+		// plus each frame at the reading model's frame price. Resolve the shape this
+		// snapcompact pass will actually use (matches the `shape` argument
+		// passed to `snapcompact.compact` in the auto and manual paths) so the
+		// text-edge cost reflects the live frame geometry rather than a fixed
+		// approximation. Reviewer (chatgpt-codex on #3249): a 4k reserve
+		// undersized the ~7k text-edge cost on the default Anthropic
+		// 11on16-bw shape, so the projection then rejected the `maxFrames`
+		// the cap had picked and the warning loop reappeared.
+		//
+		// - `textHead` and `textTail` each consume up to `geometry.capacity`
+		//   chars when frames > 0 (one HQ-capacity page per edge: see
+		//   `TEXT_EDGE_PAGES = 1` in `planArchive`), so 2 × capacity chars
+		//   total. Per-shape capacity: Anthropic 11on16-bw ~13.9k, Opus
+		//   1932px ~21k, Gemini 8on22-bw 2048px ~23.8k, OpenAI 1568px ~13.9k.
+		// - tiktoken cl100k ≈ 4 chars/token on ASCII (verified empirically
+		//   for prose, code, and JSON); a 1.15 multiplier absorbs tokenizer
+		//   drift on denser content (e.g. dense JSON / tool-result blobs).
+		// - Summary template (intro + FILES section + grid notes) bills
+		//   ~2k tokens for typical sessions.
+		const edgeCap = snapcompact.geometry(shape).capacity;
+		const textEdgeTokens = Math.ceil((2 * edgeCap * 1.15) / 4);
+		const SUMMARY_TEMPLATE_TOKENS = 2000;
+		const capReserve = textEdgeTokens + SUMMARY_TEMPLATE_TOKENS;
+		const thresholdTokens = resolveThresholdTokens(ctxWindow, settings);
+		const fixedTokens = baseTokens + capReserve;
+		const roomBudget = Math.min(
+			SNAPCOMPACT_ARCHIVE_SHARE * (thresholdTokens - fixedTokens),
+			SNAPCOMPACT_POST_COMPACTION_TARGET * thresholdTokens - fixedTokens,
+		);
+		const frameBudget = Math.min(totalBudget - fixedTokens, roomBudget);
+		// Size at the conservative ceiling, or at the shape's own frame price when a
+		// forced large shape (2576px `5x8-*` on OpenAI) bills more, so the tokenizer's
+		// per-frame charge never exceeds what this cap assumed.
+		const frameCost = Math.max(snapcompact.FRAME_TOKEN_ESTIMATE, shape.frameTokenEstimate);
+		if (roomBudget < frameCost) {
+			logger.warn("Snapcompact archive has no room under the compaction trigger", {
+				model: this.#model?.id,
+				thresholdTokens,
+				fixedTokens,
+			});
+		}
+		if (frameBudget < frameCost) return 1;
 		return Math.min(
+			Math.floor(frameBudget / frameCost),
 			snapcompact.MAX_FRAMES_DEFAULT,
 			snapcompact.maxFramesForDataBudget(shape),
 			snapcompact.providerFrameBudget(this.#model?.provider),
 		);
 	}
 
-	/**
-	 * Text a frame-bearing archive carries besides its frames, in tokens: the
-	 * head and tail edges (one HQ page of `shape` each, at ~4 chars/token with
-	 * a 1.15 margin for denser content) plus the summary template.
-	 */
-	#snapcompactArchiveTextTokens(shape: snapcompact.Shape): number {
-		const textEdgeTokens = Math.ceil((2 * snapcompact.geometry(shape).capacity * 1.15) / 4);
-		return textEdgeTokens + SNAPCOMPACT_SUMMARY_TEMPLATE_TOKENS;
-	}
-
-	/** What the active tokenizer charges for one full frame of `shape`. */
-	#snapcompactShapeFrameTokens(shape: snapcompact.Shape): number {
-		return snapcompact.frameTokens(this.#model ?? undefined, { width: shape.frameSize, height: shape.frameSize });
+	#snapcompactFramePayloadBytes(result: snapcompact.CompactionResult): number {
+		const archive = snapcompact.getPreservedArchive(result.preserveData);
+		return archive ? snapcompact.frameDataBytes(archive.frames) : 0;
 	}
 
 	/** What the active tokenizer charges for `archive`'s frames inside a compaction summary. */
@@ -3591,92 +3740,60 @@ export class SessionMaintenance {
 	}
 
 	/**
-	 * Frame cap for a snapcompact pass, sized from the room under the
-	 * compaction trigger rather than the window: {@link SNAPCOMPACT_ARCHIVE_SHARE}
-	 * of `threshold − (system prompt + tools + kept recent + archive text)`, and
-	 * never past {@link SNAPCOMPACT_POST_COMPACTION_TARGET} of the threshold.
-	 * Frames are priced as the trigger's tokenizer counts them, so the plan is
-	 * what the trigger sees after the commit. The window fit and
-	 * {@link #snapcompactFrameHardCap} bound it from above.
-	 *
-	 * Returns `0` (skip) only when kept-recent plus non-message tokens already
-	 * fill `window − reserve`: no archive shape can fit, and re-running would
-	 * re-emit the overflow warning every tick. Otherwise it returns at least
-	 * `1`: `planArchive` falls back to the frame-less text layout when the
-	 * discarded text fits in the edges, so the minimum cap lets it succeed.
-	 */
-	#computeSnapcompactMaxFrames(preparation: CompactionPreparation, settings: EngineCompactionSettings): number {
-		// Same shape the auto and manual paths pass to `snapcompact.compact`.
-		const shape = snapcompact.resolveShape(this.#model, cfgSnapcompactShape.get(this.#host.settings));
-		const hardCap = this.#snapcompactFrameHardCap(shape);
-		const ctxWindow = this.#model?.contextWindow ?? 0;
-		if (ctxWindow <= 0) return hardCap;
-		const totalBudget = ctxWindow - effectiveReserveTokens(ctxWindow, settings);
-		const keptTokens =
-			computeNonMessageTokens(this.#host.nonMessageTokenSource(), this.#tokenizer, this.#host.settings.revision) +
-			this.#tokenizer.countMessages(preparation.recentMessages);
-		if (keptTokens >= totalBudget) return 0;
-		const frameTokens = this.#snapcompactShapeFrameTokens(shape);
-		const fixedTokens = keptTokens + this.#snapcompactArchiveTextTokens(shape);
-		const thresholdTokens = resolveThresholdTokens(ctxWindow, settings);
-		const roomTokens = Math.min(
-			SNAPCOMPACT_ARCHIVE_SHARE * (thresholdTokens - fixedTokens),
-			SNAPCOMPACT_POST_COMPACTION_TARGET * thresholdTokens - fixedTokens,
-		);
-		const roomFrames = Math.floor(roomTokens / frameTokens);
-		const windowFrames = Math.floor((totalBudget - fixedTokens) / frameTokens);
-		const frames = Math.min(roomFrames, windowFrames, hardCap);
-		if (frames >= 1) return frames;
-		if (roomFrames < 1) {
-			logger.warn("Snapcompact archive has no room under the compaction trigger", {
-				model: this.#model?.id,
-				thresholdTokens,
-				fixedTokens,
-			});
-		}
-		return 1;
-	}
-
-	/**
-	 * Render a snapcompact archive at `maxFrames`, then steer it toward the
-	 * sizing target: while the compacted context would sit above
-	 * {@link SNAPCOMPACT_POST_COMPACTION_TARGET} of the threshold (the text
-	 * estimate in {@link #computeSnapcompactMaxFrames} ran short), re-render
-	 * with enough of the oldest frames dropped to fit, at most twice: the first
-	 * pass removes the estimated excess, the second absorbs per-frame variance.
-	 * A single frame cannot shrink further, so the target is best effort;
-	 * whether the result is acceptable is the caller's call
-	 * ({@link #snapcompactLeavesNoHeadroom} for automatic passes).
+	 * Render the snapcompact archive at `options.maxFrames`, then re-render it
+	 * with the oldest frames dropped while it breaks either budget, at most
+	 * twice (the second pass absorbs per-frame variance):
+	 * - {@link snapcompact.FRAME_DATA_BYTES_BUDGET}: the cap from
+	 *   {@link #computeSnapcompactMaxFrames} sizes bytes from a per-shape
+	 *   estimate, and denser frames (CJK prose drawn with fallback glyphs) run
+	 *   heavier, so the fit is `frames × budget / payload`;
+	 * - {@link SNAPCOMPACT_POST_COMPACTION_TARGET} of the threshold: the cap
+	 *   reserves text from an estimate that can run short, so the fit drops the
+	 *   measured excess at the archive's mean frame price.
+	 * A single frame cannot shrink further. The caller still rejects a payload
+	 * that stays over budget, and automatic passes reject a context above the
+	 * recovery band ({@link #snapcompactLeavesNoHeadroom}).
 	 */
 	async #renderSnapcompactArchive(
 		preparation: CompactionPreparation,
 		options: snapcompact.Options<AgentMessage>,
-		maxFrames: number,
 		settings: EngineCompactionSettings,
-	): Promise<snapcompact.CompactionResult> {
-		let result = await snapcompact.compact(preparation, { ...options, maxFrames });
+	): Promise<{ result: snapcompact.CompactionResult; framePayloadBytes: number }> {
+		let result = await snapcompact.compact(preparation, options);
+		let framePayloadBytes = this.#snapcompactFramePayloadBytes(result);
 		const ctxWindow = this.#model?.contextWindow ?? 0;
-		if (ctxWindow <= 0) return result;
-		const targetTokens = Math.floor(SNAPCOMPACT_POST_COMPACTION_TARGET * resolveThresholdTokens(ctxWindow, settings));
+		const targetTokens =
+			ctxWindow > 0
+				? Math.floor(SNAPCOMPACT_POST_COMPACTION_TARGET * resolveThresholdTokens(ctxWindow, settings))
+				: Number.POSITIVE_INFINITY;
 		for (let rerender = 0; rerender < 2; rerender++) {
 			const archive = snapcompact.getPreservedArchive(result.preserveData);
-			if (!archive || archive.frames.length <= 1) break;
+			if (!archive) break;
+			const frames = archive.frames.length;
+			let maxFrames = frames;
+			if (framePayloadBytes > snapcompact.FRAME_DATA_BYTES_BUDGET) {
+				maxFrames = Math.floor((frames * snapcompact.FRAME_DATA_BYTES_BUDGET) / framePayloadBytes);
+			}
 			const projected = this.#projectSnapcompactContextTokens(preparation, result, {
 				excludeEncryptedReasoning: true,
 			});
-			if (projected <= targetTokens) break;
-			const perFrame = this.#snapcompactArchiveFrameTokens(archive) / archive.frames.length;
-			const fitted = Math.max(1, archive.frames.length - Math.ceil((projected - targetTokens) / perFrame));
-			logger.debug("Snapcompact archive re-rendered toward the post-compaction target", {
+			if (projected > targetTokens && frames > 1) {
+				const perFrame = this.#snapcompactArchiveFrameTokens(archive) / frames;
+				maxFrames = Math.min(maxFrames, Math.max(1, frames - Math.ceil((projected - targetTokens) / perFrame)));
+			}
+			if (maxFrames < 1 || maxFrames >= frames) break;
+			logger.debug("Snapcompact re-rendering the archive at fewer frames", {
 				model: this.#model?.id,
+				frames,
+				framePayloadBytes,
 				projected,
 				targetTokens,
-				frames: archive.frames.length,
-				fitted,
+				maxFrames,
 			});
-			result = await snapcompact.compact(preparation, { ...options, maxFrames: fitted });
+			result = await snapcompact.compact(preparation, { ...options, maxFrames });
+			framePayloadBytes = this.#snapcompactFramePayloadBytes(result);
 		}
-		return result;
+		return { result, framePayloadBytes };
 	}
 
 	/**
@@ -3691,11 +3808,6 @@ export class SessionMaintenance {
 		const ctxWindow = this.#model?.contextWindow ?? 0;
 		if (ctxWindow <= 0) return false;
 		return projectedTokens > Math.floor(resolveThresholdTokens(ctxWindow, settings) * COMPACTION_RECOVERY_BAND);
-	}
-
-	#snapcompactFramePayloadBytes(result: snapcompact.CompactionResult): number {
-		const archive = snapcompact.getPreservedArchive(result.preserveData);
-		return archive ? snapcompact.frameDataBytes(archive.frames) : 0;
 	}
 
 	#deadEndRemedies(defaultRemedies: string, implicatedFrames: number): string {
@@ -3801,7 +3913,7 @@ export class SessionMaintenance {
 			blocks,
 		});
 		const summaryTokens = this.#countProjectedMessages([summaryMessage]);
-		const nativeHistoryTokens = this.#countOpenAiNativeHistoryTokens(providerPayload);
+		const nativeHistoryTokens = countResponsesHistoryTokens(providerPayload.items, this.#tokenizer);
 		return nonMessageTokens + rebuiltTokens - summaryTokens + nativeHistoryTokens;
 	}
 
@@ -3822,11 +3934,6 @@ export class SessionMaintenance {
 		return (
 			this.#tokenizer.countMessages(archives, options) + this.#tokenizer.countMessages(convertToLlm(rest), options)
 		);
-	}
-
-	#countOpenAiNativeHistoryTokens(providerPayload: OpenAIResponsesHistoryPayload): number {
-		const serialized = stringifyJson(providerPayload.items);
-		return serialized === undefined ? 0 : this.#tokenizer.countTokens(serialized);
 	}
 
 	/**
@@ -3864,7 +3971,7 @@ export class SessionMaintenance {
 	#compactionCreatedHeadroom(): boolean {
 		const contextWindow = this.#model?.contextWindow ?? 0;
 		if (contextWindow <= 0) return true;
-		const compactionSettings = cfgCompaction.get(this.#host.settings);
+		const compactionSettings = this.#compactionSettings;
 		const residualTokens = compactionContextTokens(
 			this.#host.getContextUsage({ contextWindow })?.tokens ?? 0,
 			this.#estimateStoredContextTokens(),
@@ -3913,7 +4020,7 @@ export class SessionMaintenance {
 		const storedExcludedTokens = activeExcludedMessage
 			? this.#tokenizer.countMessage(activeExcludedMessage, { excludeEncryptedReasoning: true })
 			: 0;
-		const compactionSettings = cfgCompaction.get(this.#host.settings);
+		const compactionSettings = this.#compactionSettings;
 		const residualTokens = compactionContextTokens(
 			Math.max(0, (this.#host.getContextUsage({ contextWindow })?.tokens ?? 0) - providerExcludedTokens),
 			Math.max(0, this.#estimateStoredContextTokens() - storedExcludedTokens),
@@ -3969,7 +4076,7 @@ export class SessionMaintenance {
 		// a threshold-derived frame budget.
 		const frameRescue = await this.#rescueSnapcompactFrameOverflow(
 			this.#host.sessionManager.getBranch(),
-			resolveMethodSettings(cfgCompaction.get(this.#host.settings), "snapcompact"),
+			resolveMethodSettings(this.#compactionSettings, "snapcompact"),
 			signal,
 		);
 		if (frameRescue !== undefined && options.hasProgress()) return true;
@@ -4032,61 +4139,55 @@ export class SessionMaintenance {
 	/**
 	 * Frame budget for {@link #rescueSnapcompactFrameOverflow}: targets
 	 * `COMPACTION_RECOVERY_BAND × threshold` (the same band
-	 * {@link #compactionCreatedHeadroom} re-tests), not the window-fit budget
+	 * {@link #compactionCreatedHeadroom} re-tests), not the budget
 	 * {@link #computeSnapcompactMaxFrames} sizes against — a rebuilt archive
 	 * must land back under the maintenance trigger, or the next settle
-	 * re-enters the same dead-end. The text reserve mirrors
-	 * #computeSnapcompactMaxFrames; `frameTokens` is the receiving model's
-	 * price for one frame of the rebuild's shape; `keptTailTokens` charges the
-	 * kept entries around the archive so the budget mirrors what
-	 * #compactionCreatedHeadroom will actually measure. Returns 0 when not even
-	 * one frame fits that budget — the rebuild could never create headroom, so
-	 * the caller must not append it.
+	 * re-enters the same dead-end. Cap reserve mirrors
+	 * #computeSnapcompactMaxFrames (text edges + summary template), and
+	 * `keptTailTokens` charges the kept entries AFTER the archive so the
+	 * budget mirrors what #compactionCreatedHeadroom will actually measure.
+	 * Returns 0 when not even one frame fits that budget — the rebuild could
+	 * never create headroom, so the caller must not append it.
 	 */
-	#computeSnapcompactRescueMaxFrames(
-		settings: EngineCompactionSettings,
-		keptTailTokens: number,
-		shape: snapcompact.Shape,
-		frameTokens: number,
-	): number {
+	#computeSnapcompactRescueMaxFrames(settings: EngineCompactionSettings, keptTailTokens: number): number {
+		const ctxWindow = this.#model?.contextWindow ?? 0;
+		const shape = snapcompact.resolveShape(this.#model, cfgSnapcompactShape.get(this.#host.settings));
+		if (ctxWindow <= 0) {
+			return Math.min(
+				snapcompact.MAX_FRAMES_DEFAULT,
+				snapcompact.maxFramesForDataBudget(shape),
+				snapcompact.providerFrameBudget(this.#model?.provider),
+			);
+		}
+		const thresholdTokens = resolveThresholdTokens(ctxWindow, settings);
+		const recoveryBandTokens = Math.floor(thresholdTokens * COMPACTION_RECOVERY_BAND);
+		const baseTokens = computeNonMessageTokens(
+			this.#host.nonMessageTokenSource(),
+			this.#tokenizer,
+			this.#host.settings.revision,
+		);
+		const edgeCap = snapcompact.geometry(shape).capacity;
+		const textEdgeTokens = Math.ceil((2 * edgeCap * 1.15) / 4);
+		const SUMMARY_TEMPLATE_TOKENS = 2000;
+		const frameBudget = recoveryBandTokens - baseTokens - keptTailTokens - textEdgeTokens - SUMMARY_TEMPLATE_TOKENS;
+		const frameCost = Math.max(snapcompact.FRAME_TOKEN_ESTIMATE, shape.frameTokenEstimate);
+		if (frameBudget < frameCost) return 0;
 		// Same hard caps as #computeSnapcompactMaxFrames: a threshold-derived
 		// count above the per-request payload or provider image budget would
 		// "shrink" a huge archive to a frame count the rebuilt prompt can never
 		// attach anyway.
-		const hardCap = this.#snapcompactFrameHardCap(shape);
-		const ctxWindow = this.#model?.contextWindow ?? 0;
-		if (ctxWindow <= 0) return hardCap;
-		const frameBudget =
-			this.#snapcompactRescueBandTokens(settings, ctxWindow) -
-			keptTailTokens -
-			this.#snapcompactArchiveTextTokens(shape);
-		return Math.min(Math.max(0, Math.floor(frameBudget / frameTokens)), hardCap);
-	}
-
-	/** Recovery-band tokens left for a rebuilt archive's summary message after the system prompt and tools. */
-	#snapcompactRescueBandTokens(settings: EngineCompactionSettings, ctxWindow: number): number {
-		const recoveryBandTokens = Math.floor(resolveThresholdTokens(ctxWindow, settings) * COMPACTION_RECOVERY_BAND);
-		return (
-			recoveryBandTokens -
-			computeNonMessageTokens(this.#host.nonMessageTokenSource(), this.#tokenizer, this.#host.settings.revision)
-		);
-	}
-
-	/** What the active tokenizer charges for a compaction summary carrying `preserveData`'s archive. */
-	#snapcompactSummaryTokens(summary: string, preserveData: Record<string, unknown> | undefined): number {
-		const archive = snapcompact.getPreservedArchive(preserveData);
-		const blocks = archive
-			? snapcompact.historyBlocks(archive, { maxFrameDataBytes: snapcompact.FRAME_DATA_BYTES_BUDGET })
-			: undefined;
-		return this.#tokenizer.countMessage(
-			createCompactionSummaryMessage(summary, 0, new Date().toISOString(), { blocks }),
+		return Math.min(
+			Math.floor(frameBudget / frameCost),
+			snapcompact.MAX_FRAMES_DEFAULT,
+			snapcompact.maxFramesForDataBudget(shape),
+			snapcompact.providerFrameBudget(this.#model?.provider),
 		);
 	}
 
 	/**
 	 * Dead-end rescue for a branch whose latest snapcompact CompactionEntry is
 	 * itself billed past the maintenance threshold
-	 * (each frame at its billed price). Reaching the `!preparation` dead-end
+	 * (`FRAME_TOKEN_ESTIMATE × frames`). Reaching the `!preparation` dead-end
 	 * proves everything after that entry is already kept-recent (nothing to
 	 * summarize), so the archive is the irreducible cost — and the elide/image
 	 * tiers can never touch it: `collectShakeRegions` and `dropImages()` only
@@ -4143,26 +4244,18 @@ export class SessionMaintenance {
 		if (!archive || archive.frames.length <= 1) return undefined;
 		const archiveText = snapcompact.archiveSourceText(archive);
 		if (!archiveText) return undefined;
-		const shapeSetting = cfgSnapcompactShape.get(this.#host.settings);
-		const shape = snapcompact.resolveShapeForText(archiveText, this.#model, shapeSetting);
-		// Progress is judged by what the receiving model's counter charges, not by
-		// frame count: after a model switch the stale frames keep their old
-		// geometry and price, so re-rendering the same number of frames at the new
-		// shape can still free room.
-		const frameTokens = this.#snapcompactShapeFrameTokens(shape);
-		const staleFrameTokens = this.#snapcompactArchiveFrameTokens(archive);
-		const maxFrames = Math.min(
-			this.#computeSnapcompactRescueMaxFrames(settings, keptTailTokens, shape, frameTokens),
-			archive.frames.length,
-		);
-		if (maxFrames < 1 || maxFrames * frameTokens >= staleFrameTokens) return undefined;
+		const maxFrames = this.#computeSnapcompactRescueMaxFrames(settings, keptTailTokens);
+		if (maxFrames < 1 || maxFrames >= archive.frames.length) return undefined;
 
 		const staleDetails = staleEntry.details as snapcompact.CompactionDetails | undefined;
 		const fileOps = snapcompact.createFileOps();
 		for (const file of staleDetails?.readFiles ?? []) fileOps.read.add(file);
 		for (const file of staleDetails?.modifiedFiles ?? []) fileOps.edited.add(file);
-		const render = (frames: number) =>
-			snapcompact.compact(
+		const shapeSetting = cfgSnapcompactShape.get(this.#host.settings);
+		const shape = snapcompact.resolveShapeForText(archiveText, this.#model, shapeSetting);
+		let result: snapcompact.CompactionResult;
+		try {
+			result = await snapcompact.compact(
 				{
 					firstKeptEntryId: staleEntry.firstKeptEntryId,
 					messagesToSummarize: [],
@@ -4176,31 +4269,9 @@ export class SessionMaintenance {
 					convertToLlm,
 					model: this.#model,
 					...(shapeSetting === "auto" ? {} : { shape }),
-					maxFrames: frames,
+					maxFrames,
 				},
 			);
-		// Verify the rendered archive before committing it: the text edges can
-		// run past the reserve, so a render still above the band is re-fitted
-		// once, and a rebuild that does not cost less than the stale archive
-		// under the receiving model is dropped.
-		const ctxWindow = this.#model.contextWindow ?? 0;
-		const bandTokens =
-			ctxWindow > 0
-				? this.#snapcompactRescueBandTokens(settings, ctxWindow) - keptTailTokens
-				: Number.POSITIVE_INFINITY;
-		let result: snapcompact.CompactionResult;
-		let rebuiltTokens: number;
-		try {
-			result = await render(maxFrames);
-			rebuiltTokens = this.#snapcompactSummaryTokens(result.summary, result.preserveData);
-			const rendered = snapcompact.getPreservedArchive(result.preserveData);
-			if (rebuiltTokens > bandTokens && rendered && rendered.frames.length > 1) {
-				const perFrame = this.#snapcompactArchiveFrameTokens(rendered) / rendered.frames.length;
-				result = await render(
-					Math.max(1, rendered.frames.length - Math.ceil((rebuiltTokens - bandTokens) / perFrame)),
-				);
-				rebuiltTokens = this.#snapcompactSummaryTokens(result.summary, result.preserveData);
-			}
 		} catch (error) {
 			logger.warn("Dead-end snapcompact frame rescue failed", {
 				error: error instanceof Error ? error.message : String(error),
@@ -4209,8 +4280,7 @@ export class SessionMaintenance {
 		}
 		if (signal.aborted) return undefined;
 		const rebuilt = snapcompact.getPreservedArchive(result.preserveData);
-		const staleTokens = this.#snapcompactSummaryTokens(staleEntry.summary, staleEntry.preserveData);
-		if (!rebuilt || rebuiltTokens >= staleTokens) return undefined;
+		if (!rebuilt || rebuilt.frames.length >= archive.frames.length) return undefined;
 
 		const rebuiltEntryId = this.#host.sessionManager.appendCompaction(
 			result.summary,
@@ -4256,7 +4326,7 @@ export class SessionMaintenance {
 		}
 		this.#host.emitNotice(
 			"info",
-			`Compaction dead-end recovery: rebuilt the trailing snapcompact archive for the current model (${archive.frames.length} → ${rebuilt.frames.length} frames, ~${staleTokens.toLocaleString()} → ~${rebuiltTokens.toLocaleString()} tokens) so maintenance could make progress.`,
+			`Compaction dead-end recovery: rebuilt the trailing snapcompact archive at a smaller frame budget (${archive.frames.length} → ${rebuilt.frames.length} frames) so maintenance could make progress.`,
 			"compaction",
 		);
 		return result;
@@ -4305,7 +4375,7 @@ export class SessionMaintenance {
 			excludeMediaMethods?: boolean;
 		} = {},
 	): Promise<CompactionCheckResult> {
-		const compactionSettings = cfgCompaction.get(this.#host.settings);
+		const compactionSettings = this.#compactionSettings;
 		// An explicit model-requested rollover bypasses the Auto-Compact toggle;
 		// automatic threshold rollover stays gated exactly as before.
 		const explicitNewContextRequest = options.explicitNewContextRequest === true;
@@ -4734,12 +4804,12 @@ export class SessionMaintenance {
 			let details: unknown;
 
 			// Snapcompact runs locally first. The post-compaction context = kept-recent
-			// + a summary message carrying the imaged archive at each frame's billed
-			// price; #computeSnapcompactMaxFrames sizes the frame cap from the room
-			// under the trigger so the compaction leaves space for new turns instead
-			// of re-firing a few turns later. Any local blocker (unsupported
-			// snapcompact glyphs, kept-history too large, post-render overflow)
-			// advances automatic maintenance to the next
+			// + a summary message carrying the imaged archive at the reading model's
+			// frame price; #computeSnapcompactMaxFrames sizes the frame cap from the
+			// room under the trigger so the compaction leaves space for new turns
+			// instead of re-firing a few turns later. Any local blocker (unsupported
+			// snapcompact glyphs, kept-history too large, post-render overflow, no room
+			// under the trigger) advances automatic maintenance to the next
 			// configured preference instead of wedging the session (#3659). Manual
 			// `/compact snapcompact` remains local-only because its one-method override
 			// leaves no fallback.
@@ -4778,18 +4848,19 @@ export class SessionMaintenance {
 						snapcompactBlocker =
 							"snapcompact: kept history alone exceeds the context budget; trying the next preferred compaction method.";
 					} else {
-						snapcompactResult = await this.#renderSnapcompactArchive(
+						const rendered = await this.#renderSnapcompactArchive(
 							preparation,
 							{
 								convertToLlm,
 								model: this.#model,
 								...(shapeSetting === "auto" ? {} : { shape }),
+								maxFrames,
 								includeThinking: snapcompactIncludeThinking,
 							},
-							maxFrames,
 							effectiveSettings,
 						);
-						const framePayloadBytes = this.#snapcompactFramePayloadBytes(snapcompactResult);
+						snapcompactResult = rendered.result;
+						const framePayloadBytes = rendered.framePayloadBytes;
 						if (framePayloadBytes > snapcompact.FRAME_DATA_BYTES_BUDGET) {
 							logger.warn("Snapcompact exceeded the per-request frame payload budget", {
 								model: this.#model?.id,
@@ -4949,6 +5020,9 @@ export class SessionMaintenance {
 									metadata: this.#host.agent.metadataForProvider(candidate.provider),
 									initiatorOverride: "agent",
 									convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
+									buildProviderContext: (summarized, retained, signal) =>
+										this.#host.buildLiveProviderContext(summarized, retained, signal),
+									isUserAuthored: isUserAuthoredMessage,
 									telemetry,
 									// Honor the user's /model thinking selection on the
 									// auto-compaction path — the most-fired compaction
@@ -5418,7 +5492,7 @@ export class SessionMaintenance {
 			// without that pre-shake savings, shake can advance to the next preference
 			// even though the post-prune history is already inside the recovery band.
 			const contextWindow = this.#model?.contextWindow ?? 0;
-			const compactionSettings = cfgCompaction.get(this.#host.settings);
+			const compactionSettings = this.#compactionSettings;
 			let stillOverThreshold = false;
 			if (contextWindow > 0) {
 				if (typeof triggerContextTokens === "number" && Number.isFinite(triggerContextTokens)) {
