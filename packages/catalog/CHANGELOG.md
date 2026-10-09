@@ -5,6 +5,7 @@
 ### Added
 
 - Added the `between-tools` disabled-thinking form and the `between-tools-effort` axis for Anthropic Messages routes.
+- Added Factory Droid Claude Haiku 5.5 and Mistral Large 4 (EU and global regions), each shown once the account's feature flag enables it.
 
 ### Fixed
 

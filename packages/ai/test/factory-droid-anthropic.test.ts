@@ -236,6 +236,7 @@ describe("Factory Droid native thinking-history boundary", () => {
 		["claude-opus-4-8", "anthropic"],
 		["claude-sonnet-4-6", "vertex_anthropic"],
 		["claude-opus-5", "snowflake"],
+		["claude-haiku-5-5", "bedrock_anthropic"],
 	] as const)("%s via %s at Off sends disabled thinking and replays no thinking", async (id, upstream) => {
 		const captured: CapturedRequest[] = [];
 		await streamFactoryDroid(

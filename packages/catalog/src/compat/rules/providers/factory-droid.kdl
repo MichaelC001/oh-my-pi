@@ -111,6 +111,12 @@ provider "factory-droid" {
 			cost input=0 output=0 cache-read=0 cache-write=0
 			limits context=180000 max-tokens=32000
 		}
+		model "claude-haiku-5-5" name="Haiku 5.5" {
+			reasoning #true
+			input "text" "image"
+			cost input=0 output=0 cache-read=0 cache-write=0
+			limits context=872000 max-tokens=128000
+		}
 		model "claude-haiku-4-5-20251001" name="Haiku 4.5" {
 			reasoning #true
 			input "text" "image"
@@ -272,6 +278,12 @@ provider "factory-droid" {
 			input "text" "image"
 			cost input=0 output=0 cache-read=0 cache-write=0
 			limits context=1007232 max-tokens=32768
+		}
+		model "mistral-large-4" name="Mistral Large 4" {
+			reasoning #true
+			input "text" "image"
+			cost input=0 output=0 cache-read=0 cache-write=0
+			limits context=524288 max-tokens=64000
 		}
 		model "mistral-medium-3.5" name="Mistral Medium 3.5" {
 			reasoning #true
@@ -540,6 +552,16 @@ provider "factory-droid" {
 		thinking-requires-effort #false
 		default-reasoning-off #true
 	}
+	models "claude-haiku-5-5" {
+		routing-family "anthropic"
+		upstream-rotation "anthropic" "vertex_anthropic" "bedrock_anthropic" "azure_anthropic"
+		credit-rates { input 0.04; output 5 }
+		list-price-from "anthropic"
+		thinking-efforts "low" "medium" "high" "xhigh" "max"
+		thinking-requires-effort #false
+		thinking-default-level "medium"
+		entitlement { feature-flag "claude_haiku_5_5" }
+	}
 	models "claude-haiku-4-5-20251001" {
 		routing-family "anthropic"
 		upstream-rotation "anthropic" "vertex_anthropic" "bedrock_anthropic"
@@ -801,6 +823,19 @@ provider "factory-droid" {
 		thinking-requires-effort #false
 		thinking-default-level "high"
 	}
+	// Factory bills the Standard list-price ceiling, above the bundled Mistral
+	// row, so no list price is borrowed.
+	models "mistral-large-4" {
+		routing-family "factory"
+		upstream-rotation "mistral"
+		region-upstreams-us
+		region-upstreams-eu "mistral"
+		credit-rates { input 0.544; output 3.08; cache-read 0.103 }
+		thinking-efforts "high"
+		thinking-requires-effort #false
+		thinking-default-level "high"
+		entitlement { feature-flag "mistral_large_4" }
+	}
 	models "mistral-medium-3.5" {
 		routing-family "factory"
 		upstream-rotation "mistral"
@@ -999,7 +1034,8 @@ provider "factory-droid" {
 		// Native declares every Responses tool `strict: false`; the field must reach the wire.
 		supports-strict-mode #true
 	}
-	models "glm-*" "kimi-*" "deepseek-*" "nemotron-*" "inkling" "mistral-medium-3.5" "qwen3.8-max" "minimax-m3" {
+	models "glm-*" "kimi-*" "deepseek-*" "nemotron-*" "inkling" "mistral-medium-3.5" "mistral-large-4" "qwen3.8-max" \
+		"minimax-m3" {
 		clamp-output-to-model-max #true
 		completions-reasoning-mode "none"
 		completions-reasoning-history "omit"
@@ -1039,7 +1075,7 @@ provider "factory-droid" {
 	}
 	// The replay codec follows the selected route, including EU GLM routes.
 	on-upstream "mistral" {
-		models "glm-*" "mistral-medium-3.5" {
+		models "glm-*" "mistral-medium-3.5" "mistral-large-4" {
 			completions-reasoning-mode "effort"
 			completions-reasoning-history "omit"
 			mistral-reasoning-content-parts #true
@@ -1077,7 +1113,7 @@ provider "factory-droid" {
 	// Adaptive models the registry marks `supportsDisabledThinking` send the
 	// explicit disabled form at Off on every upstream.
 	models "claude-sonnet-4-6" "claude-sonnet-5" "claude-opus-4-6" "claude-opus-4-7" "claude-opus-4-8" \
-		"claude-opus-4-8-fast" "claude-opus-5" "claude-opus-5-fast" {
+		"claude-opus-4-8-fast" "claude-opus-5" "claude-opus-5-fast" "claude-haiku-5-5" {
 		disabled-thinking "disabled"
 	}
 	models "claude-*" "atlas-07-21" "aster-07-15" {

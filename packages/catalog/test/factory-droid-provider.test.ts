@@ -184,6 +184,38 @@ describe("Factory Droid model builder", () => {
 		const unknown = buildFactoryDroidModel(syntheticModel({ listPriceFrom: { provider: "nope", modelId: "x" } }));
 		expect(unknown.cost).toEqual(zeroCost);
 	});
+
+	it("registers Haiku 5.5 as a gated adaptive Claude with an Off rung, priced from Anthropic", () => {
+		const haiku = registryModel("claude-haiku-5-5");
+		const model = buildFactoryDroidModel(haiku);
+		expect(haiku.policy.wire).toBe("anthropic-messages");
+		expect(haiku.policy.entitlement.featureFlag).toBe("claude_haiku_5_5");
+		expect(haiku.policy.rotation).toEqual(["anthropic", "vertex_anthropic", "bedrock_anthropic", "azure_anthropic"]);
+		expect(model.thinking).toMatchObject({
+			mode: "anthropic-adaptive",
+			efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+			requiresEffort: false,
+			defaultLevel: Effort.Medium,
+		});
+		expect([model.contextWindow, model.maxTokens]).toEqual([872_000, 128_000]);
+		expect(model.factoryDroidCredits).toBe(0.04);
+		expect(model.cost).toEqual(getBundledModel("anthropic", "claude-haiku-5-5").cost);
+		expect(quotaTierFor("factory-droid", "claude-haiku-5-5")).toBe("standard");
+	});
+
+	it("registers Mistral Large 4 as a gated Core model served by Mistral outside the US", () => {
+		const large = registryModel("mistral-large-4");
+		const model = buildFactoryDroidModel(large);
+		expect(large.policy.wire).toBe("openai-completions");
+		expect(large.policy.entitlement.featureFlag).toBe("mistral_large_4");
+		expect(large.policy.regionUpstreams).toMatchObject({ us: [], eu: ["mistral"] });
+		expect(model.thinking).toMatchObject({ efforts: [Effort.High], requiresEffort: false });
+		expect([model.contextWindow, model.maxTokens]).toEqual([524_288, 64_000]);
+		// Factory bills above the bundled Mistral list price, so none is borrowed.
+		expect(model.cost).toEqual(zeroCost);
+		expect(model.factoryDroidCredits).toBe(0.544);
+		expect(quotaTierFor("factory-droid", "mistral-large-4")).toBe("core");
+	});
 });
 
 describe("Factory Droid route policy scoping", () => {

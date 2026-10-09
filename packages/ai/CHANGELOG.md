@@ -5,6 +5,7 @@
 ### Added
 
 - Added Anthropic route controls that send `between_tools` with a pinned effort on thinking-off turns, and let routes that strip thinking history also strip it on every disabled-thinking turn.
+- Added Factory Droid Claude Haiku 5.5 (Messages, explicit disabled thinking at Off) and Mistral Large 4 (Mistral reasoning replay) request dialects.
 
 ### Fixed
 
