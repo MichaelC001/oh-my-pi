@@ -3817,7 +3817,7 @@ export class SessionMaintenance {
 	 * {@link #compactionCreatedHeadroom} requires after a threshold pass.
 	 * Committing such an archive there only re-enters the no-headroom rescue, so
 	 * the pass rejects it and lets the next configured method try; with no later
-	 * usable method it keeps an archive that still fits the window. Overflow and
+	 * usable summarizing method it keeps an archive that still fits the window. Overflow and
 	 * incomplete recovery retry the turn and need only the window fit
 	 * ({@link #compactionCreatedRetryFit}), idle passes check neither, and manual
 	 * `/compact` keeps its window-fit check: the user asked for it.
@@ -4947,18 +4947,21 @@ export class SessionMaintenance {
 									projected: projectedForReduction,
 									pendingTokens,
 								});
-								// With no later method to try, a reducing archive that fits the
-								// window still beats sending the whole history.
+								// With no later summarizing method to try, a reducing archive that
+								// fits the window still beats sending the whole history. Shake does
+								// not count: it only elides what it finds and may drop nothing.
 								const laterMethodUsable = methods
 									.slice(methodIndex + 1)
-									.some(next =>
-										isCompactionMethodUsable(
-											next,
-											reason,
-											this.#model,
-											compactionSettings,
-											options.excludeMediaMethods === true,
-										),
+									.some(
+										next =>
+											next !== "shake" &&
+											isCompactionMethodUsable(
+												next,
+												reason,
+												this.#model,
+												compactionSettings,
+												options.excludeMediaMethods === true,
+											),
 									);
 								if (laterMethodUsable || projected + pendingTokens > budget) {
 									snapcompactBlocker =
@@ -4967,7 +4970,7 @@ export class SessionMaintenance {
 								} else {
 									this.#host.emitNotice(
 										"warning",
-										"snapcompact could not leave room under the compaction trigger; keeping its archive because no later compaction method can run.",
+										"snapcompact could not leave room under the compaction trigger; keeping its archive because no later summarizing compaction method is usable.",
 										"compaction",
 									);
 								}

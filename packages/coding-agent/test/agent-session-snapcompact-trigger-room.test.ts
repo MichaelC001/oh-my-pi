@@ -394,48 +394,57 @@ describe("snapcompact archive sized by the compaction trigger", () => {
 		expect(snapcompact.getPreservedArchive(compactions[0]?.preserveData)).toBeUndefined();
 	});
 
-	it("keeps a snapcompact-only threshold archive that fits the window when even one frame leaves no room under the trigger", async () => {
-		const model = opus(1_000_000);
-		const { session, notices } = createSession(model, {
-			"compaction.thresholdTokens": 12_000,
-			"compaction.methodOrder": ["snapcompact"],
-		});
-		session.agent.replaceMessages(session.buildDisplaySessionContext().messages);
-		const uncompacted = storedContextTokens(session);
-		const { promise: done, resolve } = Promise.withResolvers<void>();
-		session.subscribe(event => {
-			if (event.type === "auto_compaction_end") resolve();
-		});
-		const assistant = {
-			role: "assistant" as const,
-			content: [{ type: "text" as const, text: "Done." }],
-			api: model.api,
-			provider: model.provider,
-			model: model.id,
-			stopReason: "stop" as const,
-			usage: {
-				input: 60_000,
-				output: 100,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 60_100,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			timestamp: Date.now(),
-		};
-		session.agent.emitExternalEvent({ type: "message_end", message: assistant });
-		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistant] });
-		await done;
-		await session.waitForIdle();
+	it.each([
+		{ label: "snapcompact-only", methodOrder: ["snapcompact"] },
+		// Shake finds nothing to drop in a text-only history, so it cannot replace the archive.
+		{ label: "snapcompact-then-shake", methodOrder: ["snapcompact", "shake"] },
+	])(
+		"keeps a $label threshold archive that fits the window when even one frame leaves no room under the trigger",
+		async ({ methodOrder }) => {
+			const model = opus(1_000_000);
+			const { session, notices } = createSession(model, {
+				"compaction.thresholdTokens": 12_000,
+				"compaction.methodOrder": methodOrder,
+			});
+			session.agent.replaceMessages(session.buildDisplaySessionContext().messages);
+			const uncompacted = storedContextTokens(session);
+			const { promise: done, resolve } = Promise.withResolvers<void>();
+			session.subscribe(event => {
+				if (event.type === "auto_compaction_end") resolve();
+			});
+			const assistant = {
+				role: "assistant" as const,
+				content: [{ type: "text" as const, text: "Done." }],
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				stopReason: "stop" as const,
+				usage: {
+					input: 60_000,
+					output: 100,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 60_100,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				timestamp: Date.now(),
+			};
+			session.agent.emitExternalEvent({ type: "message_end", message: assistant });
+			session.agent.emitExternalEvent({ type: "agent_end", messages: [assistant] });
+			await done;
+			await session.waitForIdle();
 
-		expect(
-			notices.some(notice => notice.includes("keeping its archive because no later compaction method can run")),
-		).toBe(true);
-		expect(latestArchive(session)?.frames.length).toBe(1);
-		const after = storedContextTokens(session);
-		expect(after).toBeLessThan(uncompacted / 2);
-		expect(after).toBeLessThanOrEqual(1_000_000 - 16_384);
-	});
+			expect(
+				notices.some(notice =>
+					notice.includes("keeping its archive because no later summarizing compaction method is usable"),
+				),
+			).toBe(true);
+			expect(latestArchive(session)?.frames.length).toBe(1);
+			const after = storedContextTokens(session);
+			expect(after).toBeLessThan(uncompacted / 2);
+			expect(after).toBeLessThanOrEqual(1_000_000 - 16_384);
+		},
+	);
 
 	it.each([
 		{
@@ -605,7 +614,9 @@ describe("snapcompact archive sized by the compaction trigger", () => {
 		await session.prompt(prompt);
 
 		expect(
-			notices.some(notice => notice.includes("keeping its archive because no later compaction method can run")),
+			notices.some(notice =>
+				notice.includes("keeping its archive because no later summarizing compaction method is usable"),
+			),
 		).toBe(true);
 		// The first request carries the archive, well below the uncompacted history, and fits the window.
 		expect(requests[0]?.compactions).toBe(1);
