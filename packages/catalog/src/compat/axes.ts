@@ -140,6 +140,7 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 	"qwen-preserve-thinking": wire("qwenPreserveThinking", ["openai"]),
 	"reject-root-object-union": wire("rejectRootObjectUnion", OAI),
 	"retry-without-strict-on-grammar-error": wire("retryWithoutStrictOnGrammarError", OAI),
+	"session-header": wire("sessionHeader", OAI, "scalar", ["x-litellm-session-id"]),
 	"reasoning-content-field": wire("reasoningContentField", OAI, "scalar", [
 		"reasoning_content",
 		"reasoning",

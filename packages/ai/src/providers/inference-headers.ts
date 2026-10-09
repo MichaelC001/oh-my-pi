@@ -54,12 +54,6 @@ export function applyInferenceHeaders(headers: Record<string, string>, options: 
 		setHeaderIfAbsent(headers, "User-Agent", USER_AGENT);
 		setHeader(headers, "x-opencode-session", sessionId);
 	}
-
-	// LiteLLM groups request logs into sessions by this header. It only affects
-	// log grouping, so a configured value (e.g. a run id) wins.
-	if (options.provider === "litellm") {
-		setHeaderIfAbsent(headers, "x-litellm-session-id", sessionId);
-	}
 }
 
 function isHeaderRecord(headers: RequestInit["headers"]): headers is Record<string, string> {

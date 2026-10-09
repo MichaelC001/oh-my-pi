@@ -148,7 +148,7 @@ export interface OpenAIStrictToolsState {
 export interface OpenAIRequestSetupModel extends OpenAIModelIdentity {
 	headers?: Record<string, string>;
 	premiumMultiplier?: number;
-	compat?: Pick<ResolvedOpenAISharedCompat, "promptCacheSessionHeader">;
+	compat?: Pick<ResolvedOpenAISharedCompat, "promptCacheSessionHeader" | "sessionHeader">;
 }
 
 /** Cache identity controls shared by OpenAI-family transports. */
@@ -327,6 +327,10 @@ export function resolveOpenAIRequestSetup(
 	});
 	if (options.promptCacheSessionId && model.compat?.promptCacheSessionHeader) {
 		setHeaderIfAbsent(headers, model.compat.promptCacheSessionHeader, options.promptCacheSessionId);
+	}
+	// Caller and configured headers win: this only labels the conversation.
+	if (sessionId && model.compat?.sessionHeader) {
+		setHeaderIfAbsent(headers, model.compat.sessionHeader, sessionId);
 	}
 
 	if (options.defaultBaseUrl !== undefined) {
