@@ -332,4 +332,39 @@ describe("Factory Droid native thinking-history boundary", () => {
 		expect(rebuilt.body.output_config).toEqual({ effort: "high" });
 		expect(rebuilt.headers["anthropic-beta"] ?? "").toContain("effort-2025-11-24");
 	});
+
+	it("builds a fresh request when the redemption expires while the request is prepared", async () => {
+		const captured: CapturedRequest[] = [];
+		// The first expiry read (at entry) is live; any later read sees it expired,
+		// as when async preparation outlasts the token.
+		let expiryReads = 0;
+		const redemption = {
+			token: "fct_late",
+			prefillClaim: false,
+			params: {
+				model: "claude-sonnet-5-5",
+				messages: [{ role: "user", content: "saved" }],
+				max_tokens: 1024,
+				stream: true,
+			},
+			betas: ["fallback-credit-2026-06-01"],
+			betaHeader: "fallback-credit-2026-06-01",
+			get expiresAt() {
+				return expiryReads++ === 0 ? Date.now() + 60_000 : Date.now() - 1;
+			},
+		};
+		await streamFactoryDroid(
+			factoryModel("claude-sonnet-5-5", ["bedrock_anthropic"]),
+			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+			{
+				apiKey: WORKOS_TOKEN,
+				reasoning: Effort.High,
+				fallbackCreditRedemption: redemption,
+				fetch: captureFetch(captured, anthropicChunks("OK")),
+			},
+		).result();
+		expect(captured).toHaveLength(1);
+		expect(captured[0].body.fallback_credit_token).toBeUndefined();
+		expect(captured[0].body.messages).not.toEqual([{ role: "user", content: "saved" }]);
+	});
 });

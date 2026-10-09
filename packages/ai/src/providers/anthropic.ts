@@ -2366,7 +2366,9 @@ const streamAnthropicOnce = (
 			let fallbackCreditShape: "continuation" | "unchanged" | undefined = undefined;
 			let fallbackCreditTransientRetries = 0;
 			let params: MessageCreateParamsStreaming;
-			if (frozenRedemption) {
+			// Recheck expiry here: preparation (image resizing) is async, and an
+			// expired token must fall back to a fresh request as before.
+			if (frozenRedemption && Date.now() <= frozenRedemption.expiresAt) {
 				const redemption = frozenRedemption;
 				usingFallbackCredit = true;
 				const frozenParams = structuredClone(redemption.params as MessageCreateParamsStreaming);
