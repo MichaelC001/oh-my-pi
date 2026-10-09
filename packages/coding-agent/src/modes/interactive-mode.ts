@@ -1568,7 +1568,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	/**
 	 * Settles pending `cfg://` approval prompts when the mode stops, so a
 	 * prompt armed without a deadline cannot outlive the UI waiting on it.
-	 * Replaced on every stop so later prompts start unaborted.
+	 * Stays aborted after a stop: queued approvals behind the approval mutex
+	 * then deny instead of prompting onto a torn-down UI. Refreshed by `init`.
 	 */
 	#dialogLifetime = new AbortController();
 	readonly #inputController: InputController;
@@ -2033,6 +2034,12 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	async init(options: InteractiveModeInitOptions = {}): Promise<void> {
 		if (this.isInitialized) return;
+
+		// Fresh dialog lifetime: a previous stop (if this mode is ever
+		// re-initialized) left the old controller aborted, and approvals queued
+		// behind the approval mutex must prompt on a live signal, not a dead one.
+		this.#dialogLifetime.abort();
+		this.#dialogLifetime = new AbortController();
 
 		this.keybindings = logger.time("InteractiveMode.init:keybindings", () => KeybindingsManager.create());
 		// Before first paint, so hints the user already learned never flash on.
@@ -6753,10 +6760,11 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	stop(): void {
 		this.#appearanceRefreshRequest = undefined;
-		// Settle any pending approval prompt as dismissed (deny), then hand
-		// later prompts a fresh signal.
+		// Settle any pending approval prompt as dismissed (deny). The
+		// controller stays aborted: approvals still queued behind the approval
+		// mutex deny on arrival instead of prompting a torn-down UI. `init`
+		// installs a fresh one.
 		this.#dialogLifetime.abort();
-		this.#dialogLifetime = new AbortController();
 		this.#streamPublisher?.dispose();
 		this.#streamPublisher = undefined;
 		void this.#recorder?.stop();

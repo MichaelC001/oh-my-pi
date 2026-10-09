@@ -89,11 +89,14 @@ describe("cfg:// approval prompt wiring", () => {
 		spyOn(ExtensionUiController.prototype, "showCollabAwareSelector").mockImplementation(
 			async (_title: string, _options: unknown, dialogOptions?: { timeout?: number; signal?: AbortSignal }) => {
 				seen.push(dialogOptions?.timeout);
+				// Mirror the real dialog: a pre-aborted signal settles dismissed
+				// without presenting; otherwise wait for the abort like a user
+				// dismissal that only arrives via stop().
+				if (dialogOptions?.signal?.aborted) return undefined;
 				if (hangSelector) {
-					// Mirror the real dialog: settle dismissed when the mode stops.
-					await new Promise<undefined>(resolve =>
-						dialogOptions?.signal?.addEventListener("abort", () => resolve(undefined), { once: true }),
-					);
+					const { promise, resolve } = Promise.withResolvers<undefined>();
+					dialogOptions?.signal?.addEventListener("abort", () => resolve(undefined), { once: true });
+					await promise;
 					return undefined;
 				}
 				return "Allow once";
@@ -102,6 +105,18 @@ describe("cfg:// approval prompt wiring", () => {
 		await mode.init({ suppressWelcomeIntro: true });
 		seen.length = 0;
 		return seen;
+	}
+
+	function outcomeOf(result: unknown): unknown {
+		return (result as { details?: { cfg?: { outcome?: string } } }).details?.cfg?.outcome;
+	}
+
+	async function waitForPrompt(seen: Array<number | undefined>): Promise<void> {
+		const start = Date.now();
+		while (seen.length === 0) {
+			if (Date.now() - start > 10_000) throw new Error("approval prompt never appeared");
+			await Bun.sleep(25);
+		}
 	}
 
 	function driveWrite(): Promise<unknown> {
@@ -137,13 +152,24 @@ describe("cfg:// approval prompt wiring", () => {
 		hangSelector = true;
 		const seen = await startMode(undefined);
 		const pending = driveWrite();
-		const start = Date.now();
-		while (seen.length === 0) {
-			if (Date.now() - start > 10_000) throw new Error("approval prompt never appeared");
-			await Bun.sleep(25);
-		}
+		await waitForPrompt(seen);
 		mode!.stop();
-		const result = (await pending) as { details?: { cfg?: { outcome?: string } } };
-		expect(result.details?.cfg?.outcome).toBe("declined");
+		expect(outcomeOf(await pending)).toBe("declined");
+	}, 60_000);
+
+	it("denies approvals still queued behind the mutex when the mode stops", async () => {
+		// The second write waits on approvalQueue behind the first. Stopping
+		// must deny it too, not leave it prompting a torn-down UI forever.
+		hangSelector = true;
+		const seen = await startMode(undefined);
+		const first = driveWrite();
+		const second = driveWrite();
+		await waitForPrompt(seen);
+		mode!.stop();
+		expect(outcomeOf(await first)).toBe("declined");
+		expect(outcomeOf(await second)).toBe("declined");
+		// Only the first write ever presented: the queued one denied on the
+		// already-aborted signal without prompting.
+		expect(seen).toEqual([undefined]);
 	}, 60_000);
 });
