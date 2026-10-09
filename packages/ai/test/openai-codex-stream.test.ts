@@ -2241,8 +2241,8 @@ describe("openai-codex streaming", () => {
 		const fetchMock: FetchImpl = async () =>
 			new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
 
-		// Astra is the only model with a published ultrafast rate. The Codex table
-		// uses OpenAI's included-usage multipliers: Ultrafast 8x, Fast 2.5x.
+		// Astra carries a published ultrafast rate. The Codex table uses OpenAI's
+		// included-usage multipliers: Ultrafast 8x, Fast 2.5x.
 		const astra = buildModel({
 			id: "gpt-6-astra",
 			name: "Codex",
