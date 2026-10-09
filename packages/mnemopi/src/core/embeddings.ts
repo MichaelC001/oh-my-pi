@@ -11,6 +11,7 @@ import {
 	fetchWithRetry,
 	getFastembedCacheDir,
 	logger,
+	withLoopPhase,
 } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { EmbeddingModel } from "fastembed";
@@ -315,9 +316,11 @@ export function embeddingDimFor(modelName: string): number {
 async function collectMatrix(batches: EmbeddingOutput): Promise<EmbeddingMatrix> {
 	const rows: Vector[] = [];
 	for await (const batch of batches) {
-		for (const row of batch) {
-			rows.push(new Float32Array(row));
-		}
+		withLoopPhase("mnemopi.embed", () => {
+			for (const row of batch) {
+				rows.push(new Float32Array(row));
+			}
+		});
 	}
 	return rows;
 }
@@ -409,12 +412,15 @@ async function embedApi(texts: readonly string[]): Promise<EmbeddingMatrix | nul
 		if (!response.ok) {
 			return null;
 		}
-		const { data: rows } = (await response.json()) as { data?: Array<{ embedding: number[] }> };
-		if (rows === undefined) {
-			return null;
-		}
-		apiCallCount += 1;
-		return rows.map(row => new Float32Array(row.embedding));
+		const data = (await response.json()) as { data?: Array<{ embedding: number[] }> };
+		return withLoopPhase("mnemopi.embed", () => {
+			const { data: rows } = data;
+			if (rows === undefined) {
+				return null;
+			}
+			apiCallCount += 1;
+			return rows.map(row => new Float32Array(row.embedding));
+		});
 	} catch (error) {
 		logger.debug("mnemopi embedding request failed", { status: extractHttpStatusFromError(error) });
 		return null;
@@ -546,7 +552,7 @@ export async function embed(texts: readonly string[]): Promise<EmbeddingMatrix |
 		return null;
 	}
 	try {
-		const vectors = await collectMatrix(model.embed([...texts]));
+		const vectors = await withLoopPhase("mnemopi.embed", () => collectMatrix(model.embed([...texts])));
 		if (vectors.length === 1) {
 			const vector = vectors[0];
 			if (vector !== undefined) {

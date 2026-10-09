@@ -1,5 +1,5 @@
 import type { Database, SQLQueryBindings } from "bun:sqlite";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, withLoopPhase } from "@oh-my-pi/pi-utils";
 import { transaction } from "../../db";
 import { toUtcIso } from "../../util/datetime";
 import { generateId } from "../../util/ids";
@@ -307,9 +307,11 @@ function proactiveLinkIfEnabled(
 async function runFactExtraction(beam: BeamMemoryState, memoryId: string, content: string): Promise<void> {
 	try {
 		const extracted = await extractFactCategoriesSafe(content);
-		if (countExtractedFactCategories(extracted) === 0) return;
-		storeExtractedFactCategories(beam, extracted, 0, memoryId);
-		invalidateCaches(beam);
+		withLoopPhase("mnemopi.extract", () => {
+			if (countExtractedFactCategories(extracted) === 0) return;
+			storeExtractedFactCategories(beam, extracted, 0, memoryId);
+			invalidateCaches(beam);
+		});
 	} catch {
 		// Background fact extraction is best-effort and never surfaces to the caller.
 	}

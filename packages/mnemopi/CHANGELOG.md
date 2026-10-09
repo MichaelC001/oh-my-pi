@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Loop-watchdog stalls caused by Mnemopi retention, recall, fact write-back, embedding persistence, bank open, stats and consolidation are now logged under a `mnemopi.*` phase instead of `unknown` ([#15001](https://github.com/can1357/oh-my-pi/pull/15001) by [@jaredlyon](https://github.com/jaredlyon)).
+
 ## [18.8.7] - 2026-10-09
 
 ### Fixed
