@@ -1995,6 +1995,28 @@ test("uses configured OpenAI-compatible compaction for custom providers", async 
 	expect(requestBody).toMatchObject({ model: "gpt-5.5" });
 });
 
+test("keeps the LiteLLM conversation session header on V1 compaction unless configured", async () => {
+	const sessionHeaders: (string | null)[] = [];
+	const fetchMock: FetchImpl = async (_input, init) => {
+		sessionHeaders.push(new Headers(init?.headers).get("x-litellm-session-id"));
+		return Response.json({ output: [{ type: "compaction_summary", summary: "compacted" }] });
+	};
+	const input = [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }];
+	for (const headers of [undefined, { "X-LiteLLM-Session-Id": "run-42" }]) {
+		const model = makeOpenAiModel({
+			provider: "litellm",
+			baseUrl: "https://litellm.example/v1",
+			headers,
+			remoteCompaction: { enabled: true },
+		});
+		await requestOpenAiRemoteCompaction(model, "test-key", input, "instructions", undefined, {
+			fetch: fetchMock,
+			sessionId: "session-1",
+		});
+	}
+	expect(sessionHeaders).toEqual(["session-1", "run-42"]);
+});
+
 test("uses Azure request shape for Azure Responses remote compaction", async () => {
 	const previousDeploymentMap = Bun.env.AZURE_OPENAI_DEPLOYMENT_NAME_MAP;
 	Bun.env.AZURE_OPENAI_DEPLOYMENT_NAME_MAP = "gpt-5-compact=azure-gpt-5-compact";
