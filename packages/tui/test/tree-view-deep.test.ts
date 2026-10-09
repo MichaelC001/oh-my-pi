@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { TreeView } from "../src/components/tree-view";
+import { theme } from "../src/theme/theme";
 
 interface Node {
 	id: string;
@@ -26,6 +27,8 @@ describe("TreeView deep projection", () => {
 			roots: [chain(50_000)],
 			getKey: node => node.id,
 			getChildren: node => node.children,
+			theme,
+			renderRow: node => node.id,
 			maxRows: 20,
 		});
 
