@@ -4754,7 +4754,10 @@ function buildParams(
 			disabledThinking !== undefined &&
 			!(disabledThinking === "disabled" && effortControlsBlockDisabledThinking(model, context.messages, records))
 		) {
-			if (disabledThinking !== "omit") {
+			if (disabledThinking === "between-tools") {
+				thinking = { type: "between_tools" };
+				outputConfigEffort = model.compat.betweenToolsEffort;
+			} else if (disabledThinking !== "omit") {
 				thinking =
 					disabledThinking === "adaptive"
 						? {
@@ -4797,9 +4800,11 @@ function buildParams(
 		} else if (options?.thinkingEnabled === false) {
 			if (model.compat.supportsBetweenToolsThinking) {
 				// Sonnet 5.5 rejects `disabled` with a 400; `between_tools` is its lowest
-				// thinking setting. It takes no other field and leaves effort untouched:
-				// pinning `low` here would cap the whole turn's quality, not only thinking.
+				// thinking setting. It takes no other field and leaves effort untouched
+				// unless the route pins one: pinning `low` here would cap the whole
+				// turn's quality, not only thinking.
 				thinking = { type: "between_tools" };
+				outputConfigEffort = model.compat.betweenToolsEffort;
 			} else if (isAdaptiveOnlyThinking(model)) {
 				// Adaptive-only Claude models (Opus 4.6+, Sonnet 4.6+, Fable/Mythos 5) reject
 				// `thinking.type: "disabled"` — adaptive thinking cannot be switched off.
@@ -4828,19 +4833,18 @@ function buildParams(
 		}
 	}
 
-	// Factory Droid's native thinking-history rule for non-adaptive budget
-	// models: when the conversation is not thinking-led (an assistant turn
+	// Factory Droid's native thinking-history rule. For non-adaptive budget
+	// models, when the conversation is not thinking-led (an assistant turn
 	// exists but none opens with a thinking block, or the turn after the last
 	// user does not), the CLI drops the `thinking` field and replays the
 	// history without thinking blocks — budget-effort models keep
-	// `output_config.effort`, interleaved budget models carry none. Off turns
-	// never strip (native only applies this to an active non-adaptive
-	// `thinking` config).
+	// `output_config.effort`, interleaved budget models carry none. A turn that
+	// sends `thinking: { type: "disabled" }` always replays without thinking
+	// blocks, which an assistant message may not carry once thinking is off.
 	const stripThinkingHistory =
 		model.compat.stripThinkingHistory === true &&
-		thinking?.type === "enabled" &&
-		shouldStripThinkingHistory(context.messages);
-	if (stripThinkingHistory) thinking = undefined;
+		(thinking?.type === "disabled" || (thinking?.type === "enabled" && shouldStripThinkingHistory(context.messages)));
+	if (stripThinkingHistory && thinking?.type === "enabled") thinking = undefined;
 
 	// Pre-compute context_management. Send keep: "all" for every enabled or
 	// adaptive thinking request (OAuth + API-key) — not just OAuth. Without

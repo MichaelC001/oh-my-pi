@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `between-tools` disabled-thinking form and the `between-tools-effort` axis for Anthropic Messages routes.
+
 ## [18.8.7] - 2026-10-09
 
 ### Added

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Anthropic route controls that send `between_tools` with a pinned effort on thinking-off turns, and let routes that strip thinking history also strip it on every disabled-thinking turn.
+
 ## [18.8.7] - 2026-10-09
 
 ### Added
