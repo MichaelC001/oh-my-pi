@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- LiteLLM proxy logs now group requests by omp conversation instead of showing a separate session for each request ([#8836](https://github.com/can1357/oh-my-pi/issues/8836), [#15096](https://github.com/can1357/oh-my-pi/pull/15096) by [@occ](https://github.com/occ)).
+
 ## [18.8.7] - 2026-10-09
 
 ### Added
