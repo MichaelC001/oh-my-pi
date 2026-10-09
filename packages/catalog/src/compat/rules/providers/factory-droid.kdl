@@ -412,7 +412,7 @@ provider "factory-droid" {
 	models "claude-fable-5.1" {
 		routing-family "anthropic"
 		upstream-rotation "anthropic" "vertex_anthropic" "bedrock_anthropic"
-		region-upstreams-eu
+		region-upstreams-eu "vertex_anthropic"
 		credit-rates { input 4; output 5; cache-read 0.025 }
 		thinking-efforts "low" "medium" "high" "xhigh" "max"
 		thinking-requires-effort #false
@@ -422,7 +422,7 @@ provider "factory-droid" {
 	models "claude-fable-5" {
 		routing-family "anthropic"
 		upstream-rotation "anthropic" "vertex_anthropic" "bedrock_anthropic"
-		region-upstreams-eu
+		region-upstreams-eu "vertex_anthropic"
 		credit-rates { input 4; output 5 }
 		list-price-from "anthropic"
 		thinking-efforts "low" "medium" "high" "xhigh" "max"
@@ -451,7 +451,7 @@ provider "factory-droid" {
 	models "claude-opus-5" {
 		routing-family "anthropic"
 		upstream-rotation "anthropic" "vertex_anthropic" "bedrock_anthropic" "azure_anthropic" "snowflake"
-		region-upstreams-eu "bedrock_anthropic"
+		region-upstreams-eu "vertex_anthropic" "bedrock_anthropic"
 		credit-rates { input 2 }
 		list-price-from "anthropic"
 		thinking-efforts "low" "medium" "high" "xhigh" "max"
@@ -470,7 +470,7 @@ provider "factory-droid" {
 	models "claude-opus-4-8" {
 		routing-family "anthropic"
 		upstream-rotation "anthropic" "vertex_anthropic" "bedrock_anthropic" "azure_anthropic" "snowflake"
-		region-upstreams-eu "bedrock_anthropic"
+		region-upstreams-eu "vertex_anthropic" "bedrock_anthropic"
 		credit-rates { input 2 }
 		list-price-from "anthropic"
 		thinking-efforts "low" "medium" "high" "xhigh" "max"
@@ -489,7 +489,7 @@ provider "factory-droid" {
 	models "claude-opus-4-7" {
 		routing-family "anthropic"
 		upstream-rotation "anthropic" "vertex_anthropic" "bedrock_anthropic"
-		region-upstreams-eu "bedrock_anthropic"
+		region-upstreams-eu "vertex_anthropic" "bedrock_anthropic"
 		credit-rates { input 2 }
 		list-price-from "anthropic"
 		thinking-efforts "low" "medium" "high" "xhigh" "max"
@@ -519,6 +519,7 @@ provider "factory-droid" {
 		routing-family "anthropic"
 		upstream-rotation "anthropic" "vertex_anthropic" "bedrock_anthropic" "azure_anthropic"
 		credit-rates { input 0.8; output 5; cache-read 0.05 }
+		list-price-from "anthropic"
 		thinking-efforts "low" "medium" "high" "xhigh" "max"
 		thinking-requires-effort #false
 		thinking-default-level "high"
@@ -584,7 +585,7 @@ provider "factory-droid" {
 	}
 	models "gpt-6.1-sol" {
 		routing-family "openai"
-		upstream-rotation "openai"
+		upstream-rotation "openai" "bedrock_openai" "databricks"
 		region-upstreams-eu "openai"
 		credit-rates { input 0.8; output 5; cache-read 0.05 }
 		thinking-efforts "low" "medium" "high" "xhigh" "max"
@@ -611,7 +612,6 @@ provider "factory-droid" {
 		thinking-efforts "low" "medium" "high" "xhigh" "max"
 		thinking-requires-effort #false
 		thinking-default-level "medium"
-		entitlement { feature-flag "gpt_6_luna" }
 	}
 	models "gpt-5.6-sol" {
 		routing-family "openai"
@@ -771,6 +771,7 @@ provider "factory-droid" {
 	models "gemini-3.8-flash" {
 		routing-family "google"
 		upstream-rotation "google"
+		region-upstreams-eu "google"
 		credit-rates { input 0.6; output 5 }
 		list-price-from "google"
 		thinking-efforts "low" "medium" "high"
@@ -780,6 +781,7 @@ provider "factory-droid" {
 	models "gemini-3.7-flash" {
 		routing-family "google"
 		upstream-rotation "google"
+		region-upstreams-eu "google"
 		credit-rates { input 0.6; output 5 }
 		list-price-from "google"
 		thinking-efforts "low" "medium" "high"
@@ -789,6 +791,7 @@ provider "factory-droid" {
 	models "gemini-3.6-flash" {
 		routing-family "google"
 		upstream-rotation "google"
+		region-upstreams-eu "google"
 		credit-rates { input 0.6; output 5 }
 		list-price-from "google"
 		thinking-efforts "low" "medium" "high"
@@ -798,6 +801,7 @@ provider "factory-droid" {
 	models "gemini-3.5-flash" {
 		routing-family "google"
 		upstream-rotation "google"
+		region-upstreams-eu "google"
 		credit-rates { input 0.6 }
 		list-price-from "google"
 		thinking-efforts "minimal" "low" "medium" "high"
@@ -924,7 +928,6 @@ provider "factory-droid" {
 		thinking-efforts "low" "high" "max"
 		thinking-requires-effort #false
 		thinking-default-level "high"
-		entitlement { feature-flag "deepseek_v4_1_flash" }
 	}
 	models "deepseek-v4-flash-0731" {
 		routing-family "factory"

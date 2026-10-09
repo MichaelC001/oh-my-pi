@@ -216,6 +216,12 @@ describe("Factory Droid model builder", () => {
 		expect(model.factoryDroidCredits).toBe(0.544);
 		expect(quotaTierFor("factory-droid", "mistral-large-4")).toBe("core");
 	});
+
+	it("carries droid 0.237 upstream rotations and ungated GA models", () => {
+		expect(registryModel("gpt-6.1-sol").policy.rotation).toEqual(["openai", "bedrock_openai", "databricks"]);
+		expect(registryModel("gpt-6-luna").policy.entitlement.featureFlag).toBeUndefined();
+		expect(registryModel("deepseek-v4.1-flash").policy.entitlement.featureFlag).toBeUndefined();
+	});
 });
 
 describe("Factory Droid route policy scoping", () => {
@@ -279,7 +285,7 @@ describe("Factory Droid offline seed", () => {
 		expect(models.some(model => model.id === "kimi-k3")).toBe(false);
 		const opus = models.find(model => model.id === "claude-opus-5");
 		expect(opus?.baseUrl).toBe("https://api.eu.factory.ai/api/llm/a");
-		expect(opus?.factoryDroidApiProviders).toEqual(["bedrock_anthropic"]);
+		expect(opus?.factoryDroidApiProviders).toEqual(["vertex_anthropic", "bedrock_anthropic"]);
 	});
 });
 
@@ -518,15 +524,19 @@ describe("Factory Droid EU region", () => {
 		expect(urls[0]).toBe("https://api.eu.factory.ai/api/feature-flags");
 		expect(urls[1]).toBe("https://api.eu.factory.ai/api/organization/managed-settings");
 
-		// Hidden for EU: Droid Core (fireworks/baseten-only), Gemini (google-only),
-		// grok (xai-only), and fable-5 (explicit empty EU override).
+		// Hidden for EU: Droid Core (fireworks/baseten-only), Gemini Pro (google
+		// outside the EU table, no override) and grok (xai-only).
 		expect(ids).not.toContain("kimi-k3");
 		expect(ids).not.toContain("gemini-3.1-pro-preview");
 		expect(ids).not.toContain("grok-4.5");
-		expect(ids).not.toContain("claude-fable-5");
-		// Available with region-resolved rotations and EU wire URLs.
+		// Available with region-resolved rotations and EU wire URLs; per-model
+		// overrides may name upstreams the EU table omits.
 		const opus5 = models!.find(model => model.id === "claude-opus-5")!;
-		expect(opus5.factoryDroidApiProviders).toEqual(["bedrock_anthropic"]);
+		expect(opus5.factoryDroidApiProviders).toEqual(["vertex_anthropic", "bedrock_anthropic"]);
+		// Fable stays behind its opt-in gate, but the EU now serves it on Vertex.
+		expect(registryModel("claude-fable-5").policy.regionUpstreams.eu).toEqual(["vertex_anthropic"]);
+		const flash = models!.find(model => model.id === "gemini-3.8-flash")!;
+		expect(flash.factoryDroidApiProviders).toEqual(["google"]);
 		expect(opus5.baseUrl).toBe("https://api.eu.factory.ai/api/llm/a");
 		const sonnet = models!.find(model => model.id === "claude-sonnet-4-5-20250929")!;
 		expect(sonnet.factoryDroidApiProviders).toEqual(["vertex_anthropic", "bedrock_anthropic"]);
