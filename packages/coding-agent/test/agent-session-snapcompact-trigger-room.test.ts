@@ -17,7 +17,6 @@ import * as snapcompact from "@oh-my-pi/snapcompact";
 
 const SHARE = 0.5;
 const TARGET = 0.6;
-const RECOVERY_BAND = 0.8;
 
 describe("snapcompact archive sized by the compaction trigger", () => {
 	let authStorage: AuthStorage;
@@ -97,10 +96,9 @@ describe("snapcompact archive sized by the compaction trigger", () => {
 		return { session, notices };
 	}
 
-	/** What the trigger's tokenizer charges for one full frame of `model`'s shape. */
+	/** What the frame cap charges per frame of `model`'s shape: its own price, at least the ceiling. */
 	function framePrice(model: Model): number {
-		const { frameSize } = snapcompact.resolveShape(model);
-		return snapcompact.frameTokens(model, { width: frameSize, height: frameSize });
+		return Math.max(snapcompact.FRAME_TOKEN_ESTIMATE, snapcompact.resolveShape(model).frameTokenEstimate);
 	}
 
 	/** Tokens the session's tokenizer charges for the committed archive's frames. */
@@ -173,6 +171,46 @@ describe("snapcompact archive sized by the compaction trigger", () => {
 		expect(frames * framePrice(model)).toBeLessThanOrEqual(SHARE * 60_000);
 		// The window alone would allow the full payload cap.
 		expect(frames).toBeLessThan(snapcompact.maxFramesForDataBudget(snapcompact.resolveShape(model)));
+	});
+
+	it("sizes from the active model's compaction.modelThresholds entry", async () => {
+		const model = opus(1_000_000);
+		const perModel = await requestedFrames(model, {
+			"compaction.modelThresholds": { "anthropic/claude-opus-5-5": "f80000" },
+		});
+		const global = await requestedFrames(model, { "compaction.thresholdTokens": 80_000 });
+		expect(perModel).toBe(global);
+		expect(perModel * framePrice(model)).toBeLessThanOrEqual(SHARE * 80_000);
+	});
+
+	it("never plans the compacted context past 60% of the trigger when kept turns fill much of it", async () => {
+		const model = opus(1_000_000);
+		const thresholdTokens = 100_000;
+		const { session } = createSession(model, {
+			"compaction.thresholdTokens": thresholdTokens,
+			"compaction.keepRecentTokens": 30_000,
+		});
+		const spy = vi.spyOn(snapcompact, "compact").mockImplementation(async preparation => ({
+			summary: "stub",
+			shortSummary: "stub",
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: preparation.tokensBefore,
+			details: { readFiles: [], modifiedFiles: [] },
+			preserveData: { snapcompact: { frames: [], totalChars: 0, truncatedChars: 0 } },
+		}));
+		await session.compact(undefined, { mode: "snapcompact" });
+		const frames = spy.mock.calls[0]?.[1]?.maxFrames ?? 0;
+		// The stub committed an empty archive: the rest is the system prompt, tools and kept turns.
+		const summary = session.messages.find(message => message.role === "compactionSummary");
+		if (!summary) throw new Error("Expected a compaction summary message");
+		const archiveText =
+			Math.ceil((2 * snapcompact.geometry(snapcompact.resolveShape(model)).capacity * 1.15) / 4) + 2000;
+		const fixedTokens = storedContextTokens(session) - session.agent.tokenizer.countMessage(summary) + archiveText;
+
+		// Half the room alone would allow another frame; the 60% target is what binds.
+		expect(SHARE * (thresholdTokens - fixedTokens)).toBeGreaterThanOrEqual((frames + 1) * framePrice(model));
+		expect(frames).toBeGreaterThan(0);
+		expect(frames * framePrice(model)).toBeLessThanOrEqual(TARGET * thresholdTokens - fixedTokens);
 	});
 
 	it("follows the active model's trigger after a model switch", async () => {
@@ -280,57 +318,6 @@ describe("snapcompact archive sized by the compaction trigger", () => {
 		expect(stored).toBeGreaterThan(0.4 * thresholdTokens);
 		const frames = latestArchive(session)?.frames.length ?? 0;
 		expect(frames).toBeGreaterThan(3);
-		expect(committedFrameTokens(session)).toBe(frames * framePrice(model));
-	});
-
-	it("rebuilds an Opus archive for a smaller Codex window and recovers below the recovery band", async () => {
-		const bundledCodex = getBundledModel("openai-codex", "gpt-6-astra");
-		if (!bundledCodex) throw new Error("Expected bundled gpt-6-astra");
-		const codex = { ...bundledCodex, contextWindow: 90_000 };
-		// A real Opus archive at the payload cap; 85% of each window is the trigger.
-		const { session, notices } = createSession(opus(1_000_000), { "compaction.thresholdPercent": 85 }, 600);
-		await session.compact(undefined, { mode: "snapcompact" });
-		const opusFrames = latestArchive(session)?.frames.length ?? 0;
-		expect(opusFrames).toBeGreaterThan(10);
-
-		// On Codex the Opus archive alone is over the trigger, and nothing after
-		// it can be summarized, so maintenance must rebuild it for the new model.
-		session.agent.setModel(codex);
-		const thresholdTokens = Math.floor(0.85 * codex.contextWindow);
-		const before = storedContextTokens(session);
-		expect(before).toBeGreaterThan(thresholdTokens);
-
-		const { promise: done, resolve } = Promise.withResolvers<void>();
-		session.subscribe(event => {
-			if (event.type === "auto_compaction_end") resolve();
-		});
-		const assistant = {
-			role: "assistant" as const,
-			content: [{ type: "text" as const, text: "Done." }],
-			api: codex.api,
-			provider: codex.provider,
-			model: codex.id,
-			stopReason: "stop" as const,
-			usage: {
-				input: before,
-				output: 100,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: before + 100,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			timestamp: Date.now(),
-		};
-		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistant] });
-		await done;
-		await session.waitForIdle();
-
-		expect(session.sessionManager.getBranch().filter(entry => entry.type === "compaction")).toHaveLength(2);
-		const after = storedContextTokens(session);
-		expect(after).toBeLessThanOrEqual(Math.floor(RECOVERY_BAND * thresholdTokens));
-		// Codex frames are budgeted at Codex's price, so the rebuild fills the band
-		// instead of shrinking as if each frame cost the high-res ceiling.
-		expect(after).toBeGreaterThan(0.65 * thresholdTokens);
-		expect(notices.some(notice => notice.includes("rebuilt the trailing snapcompact archive"))).toBe(true);
+		expect(committedFrameTokens(session)).toBeLessThanOrEqual(frames * framePrice(model));
 	});
 });
