@@ -119,7 +119,7 @@ describe("cfg:// approval prompt wiring", () => {
 		}
 	}
 
-	function driveWrite(): Promise<unknown> {
+	function driveWrite(signal?: AbortSignal): Promise<unknown> {
 		const session: ToolSession = {
 			cwd: testSession!.tempDir,
 			hasUI: true,
@@ -129,7 +129,7 @@ describe("cfg:// approval prompt wiring", () => {
 			getSessionSpawns: () => "*",
 			settings: testSession!.session.settings,
 		};
-		return new CfgProtocolHandler().write(parseInternalUrl("cfg://advisor/enabled"), "true", { session });
+		return new CfgProtocolHandler().write(parseInternalUrl("cfg://advisor/enabled"), "true", { session, signal });
 	}
 
 	it("prompts without a deadline when ask.timeout is at its default", async () => {
@@ -171,5 +171,17 @@ describe("cfg:// approval prompt wiring", () => {
 		// Only the first write ever presented: the queued one denied on the
 		// already-aborted signal without prompting.
 		expect(seen).toEqual([undefined]);
+	}, 60_000);
+
+	it("denies a pending approval when the calling turn aborts", async () => {
+		// A collab guest interrupting the agent aborts the turn without
+		// stopping the mode; the orphaned prompt must not linger past it.
+		hangSelector = true;
+		const seen = await startMode(undefined);
+		const turn = new AbortController();
+		const pending = driveWrite(turn.signal);
+		await waitForPrompt(seen);
+		turn.abort();
+		expect(outcomeOf(await pending)).toBe("declined");
 	}, 60_000);
 });

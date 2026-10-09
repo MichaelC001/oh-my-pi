@@ -2087,7 +2087,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// to this session's settings get the settings panel's in-process side
 		// effects (a `defaultThinkingLevel` change also switches the live session).
 		setCfgApprovalHost({
-			approve: request => this.#promptCfgChange(request),
+			approve: (request, options) => this.#promptCfgChange(request, options?.signal),
 			applied: change => {
 				if (change.settings !== this.session.settings) return;
 				this.#selectorController.handleSettingChange(change.path, change.value);
@@ -6724,11 +6724,12 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/**
 	 * Ask the user to approve one `cfg://` settings change; writable `/collab` guests get the
-	 * same prompt and the first answer wins. Dismissing the dialog denies it. The wait honors
-	 * `ask.timeout` (seconds, 0 waits indefinitely); while a deadline is armed, any host
+	 * same prompt and the first answer wins. Dismissing the dialog denies it, as does
+	 * aborting the calling turn or stopping the mode. The wait honors `ask.timeout`
+	 * (seconds, 0 waits indefinitely); while a deadline is armed, any host
 	 * keypress restarts the countdown, and an unanswered prompt drops the write as `timeout`.
 	 */
-	async #promptCfgChange(request: CfgChangeRequest): Promise<CfgApproval> {
+	async #promptCfgChange(request: CfgChangeRequest, callerSignal?: AbortSignal): Promise<CfgApproval> {
 		const headline = request.save
 			? `💾 Your agent wants to save \`${request.path}\` to your config.`
 			: `⚙️ Your agent wants to change \`${request.path}\` for this session.`;
@@ -6737,6 +6738,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			: "";
 		let timedOut = false;
 		const timeout = askTimeoutMs(this.session.settings);
+		// Settle dismissed when the caller's turn aborts (a collab guest
+		// interrupting the agent) or when the mode stops, whichever first.
+		const signal =
+			callerSignal === undefined ? this.#dialogLifetime.signal : AbortSignal.any([callerSignal, this.#dialogLifetime.signal]);
 		const choice = await this.#extensionUiController.showCollabAwareSelector(
 			`${headline}\n${request.previous} → ${request.value}${warning}`,
 			[CFG_APPROVE_SESSION, CFG_APPROVE_ONCE, CFG_DENY],
@@ -6744,7 +6749,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				// A reflexive Enter approves this change only, never the whole session.
 				initialIndex: 1,
 				timeout,
-				signal: this.#dialogLifetime.signal,
+				signal,
 				// With a deadline armed the selector auto-picks the highlighted option on
 				// expiry; an unanswered prompt approves nothing.
 				onTimeout: () => {
