@@ -7162,6 +7162,91 @@ describe("openai-codex streaming", () => {
 			.join("");
 		expect(text).toBe("Second");
 	});
+
+	it("omits auto while preserving omitted and explicit default websocket routes", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-tier-route-matrix-");
+		setAgentDir(tempDir.path());
+		const fetchMock = vi.fn(async () => {
+			throw new Error("SSE fallback should not run for tier routing");
+		});
+		const sentRequests: Array<Record<string, unknown>> = [];
+		const routingHints: Array<string | undefined> = [];
+		class TierRouteWebSocket extends MockWebSocket {
+			constructor(url: string, options?: { headers?: WsHeaders }) {
+				super(url, options);
+				routingHints.push(options?.headers?.["x-codex-routing-hint"]);
+				this.scheduleOpen();
+			}
+
+			override send(data: string): void {
+				sentRequests.push(JSON.parse(data) as Record<string, unknown>);
+				const index = sentRequests.length;
+				this.emitCodexResponse({
+					messageId: `msg_tier_${index}`,
+					responseId: `resp_tier_${index}`,
+					text: "tier",
+					includeCreated: true,
+				});
+			}
+		}
+		global.WebSocket = TierRouteWebSocket as unknown as typeof WebSocket;
+		const model = createCodexTestModel("https://chatgpt.com/backend-api");
+		const context = createCodexTestContext();
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const baseOptions = {
+			fetch: fetchMock as FetchImpl,
+			apiKey: createCodexTestToken(),
+			providerSessionState,
+		};
+		await streamOpenAICodexResponses(model, context, { ...baseOptions, sessionId: "tier-omitted" }).result();
+		await streamOpenAICodexResponses(model, context, {
+			...baseOptions,
+			sessionId: "tier-auto",
+			serviceTier: "auto",
+		}).result();
+		await streamOpenAICodexResponses(model, context, {
+			...baseOptions,
+			sessionId: "tier-default",
+			serviceTier: "default",
+		}).result();
+
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(sentRequests.map(request => request.service_tier)).toEqual([undefined, undefined, "default"]);
+		expect(routingHints).toEqual([
+			`model=${model.requestModelId ?? model.id}`,
+			`model=${model.requestModelId ?? model.id}`,
+			`model=${model.requestModelId ?? model.id};tier=default`,
+		]);
+	});
+
+	it("passes explicit service tier routing through websocket prewarm", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-prewarm-tier-");
+		setAgentDir(tempDir.path());
+		const model = createCodexTestModel("https://chatgpt.com/backend-api");
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const constructorHints: Array<string | undefined> = [];
+
+		class PrewarmTierWebSocket extends MockWebSocket {
+			constructor(url: string, options?: { headers?: WsHeaders }) {
+				super(url, options);
+				constructorHints.push(options?.headers?.["x-codex-routing-hint"]);
+				this.scheduleOpen();
+			}
+		}
+		global.WebSocket = PrewarmTierWebSocket as unknown as typeof WebSocket;
+
+		try {
+			await prewarmOpenAICodexResponses(model, {
+				apiKey: createCodexTestToken(),
+				sessionId: "ws-prewarm-tier-session",
+				providerSessionState,
+				serviceTier: "priority",
+			});
+			expect(constructorHints).toEqual([`model=${model.requestModelId ?? model.id};tier=priority`]);
+		} finally {
+			for (const state of providerSessionState.values()) state.close();
+		}
+	});
 });
 
 describe("openai-codex SSE statelessness", () => {
