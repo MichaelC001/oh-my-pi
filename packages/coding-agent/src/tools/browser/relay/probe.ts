@@ -139,6 +139,8 @@ export async function waitForRelayExtension(cdpUrl: string, signal?: AbortSignal
 		if (response.status >= 200 && response.status < 300) return readyOutcome(response.body);
 		if (response.status !== 503) return "unreachable";
 		const info = parseUnavailableInfo(response.body);
+		// Past the dial window a relay from another version reads as outdated even
+		// with CDP clients connected: no extension, so no browser, is behind them.
 		staleRelay = info !== null && info.ompRelayVersion !== VERSION;
 		if (info && !info.extensionSeen) {
 			// Never connected: the window is measured from server start, not from now.
