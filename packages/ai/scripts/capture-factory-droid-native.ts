@@ -20,6 +20,10 @@
  * credentials and conversation content never leave the process. Every case
  * spends Factory credits and creates a session on the account. With `--only`,
  * the selected model's cases are recaptured and merged into the existing file.
+ * Any case that cannot be captured aborts the run before the corpus is written.
+ * Side effect: droid caches the rewritten feature-flag and routing response in
+ * its own config, so a forced `flag` or pinned upstream can outlive the run
+ * until droid next refreshes flags; run `droid` once afterwards to refetch.
  */
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -182,6 +186,7 @@ const previous: NativeCapture[] = values.only ? await Bun.file(values.out).json(
 const workdir = await fs.mkdtemp(path.join(os.tmpdir(), "droid-native-capture-"));
 await Bun.write(path.join(workdir, "probe.txt"), `${NONCE}\n`);
 const captures: NativeCapture[] = [];
+const failed: string[] = [];
 try {
 	for (const testCase of NATIVE_CASES) {
 		if (values.only && !values.only.includes(testCase.model)) {
@@ -198,6 +203,7 @@ try {
 		const result = await capture(testCase, workdir);
 		if (typeof result === "string") {
 			console.error(`skipped ${label(testCase)}: ${result}`);
+			failed.push(label(testCase));
 			continue;
 		}
 		captures.push({ ...testCase, requests: result });
@@ -208,5 +214,9 @@ try {
 	await fs.rm(workdir, { recursive: true, force: true });
 }
 
+if (failed.length > 0) {
+	console.error(`not writing ${values.out}: ${failed.length} case(s) failed: ${failed.join(", ")}`);
+	process.exit(1);
+}
 await Bun.write(values.out, `${JSON.stringify(captures, null, "\t")}\n`);
 console.error(`wrote ${captures.length}/${NATIVE_CASES.length} cases to ${values.out}`);

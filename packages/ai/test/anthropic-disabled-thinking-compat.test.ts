@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
-import type { AnthropicCompat, Context, Model } from "@oh-my-pi/pi-ai/types";
+import type { AnthropicCompat, AssistantMessage, Context, Model } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 
 /**
  * A direct Anthropic model carrying the disabled-thinking dialect a KDL route
@@ -124,4 +125,83 @@ describe("Anthropic disabled-thinking compat", () => {
 		expect(payload.thinking).toEqual({ type: "disabled" });
 		expect(assistantBlockTypes(payload)).toEqual(["thinking", "tool_use"]);
 	});
+});
+
+/** Haiku 5.5 on a binding-controls host; the request is captured at the fetch boundary. */
+function haiku(provider: "anthropic" | "cloudflare-ai-gateway"): Model<"anthropic-messages"> {
+	return buildModel({
+		id: "claude-haiku-5-5",
+		name: "Claude Haiku 5.5",
+		api: "anthropic-messages",
+		provider,
+		baseUrl:
+			provider === "anthropic"
+				? "https://api.anthropic.com"
+				: "https://gateway.ai.cloudflare.com/v1/account-id/my-gateway/anthropic",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 1_000_000,
+		maxTokens: 128_000,
+	});
+}
+
+async function haikuRequest(
+	target: Model<"anthropic-messages">,
+	messages: Context["messages"],
+	reasoning: Effort | undefined,
+): Promise<{ body: Payload & { thinking?: { type: string; block_binding?: unknown } }; beta: string }> {
+	let captured: { body: Payload & { thinking?: { type: string; block_binding?: unknown } }; beta: string } | undefined;
+	await streamAnthropic(
+		target,
+		{ messages },
+		{
+			apiKey: "sk-ant-api-test",
+			thinkingEnabled: reasoning !== undefined,
+			reasoning,
+			fetch: async (_url, init) => {
+				captured ??= {
+					body: JSON.parse(String(init?.body)),
+					beta: new Headers(init?.headers).get("anthropic-beta") ?? "",
+				};
+				return Response.json({ error: { type: "invalid_request_error", message: "captured" } }, { status: 400 });
+			},
+		},
+	).result();
+	if (!captured) throw new Error("expected a captured request");
+	return captured;
+}
+
+describe("Anthropic thinking-binding beta follows block_binding", () => {
+	it.each(["anthropic", "cloudflare-ai-gateway"] as const)(
+		"%s Haiku 5.5 Off sends neither, but its xhigh fallback to adaptive sends both",
+		async provider => {
+			const target = haiku(provider);
+			const off = await haikuRequest(target, [{ role: "user", content: "q0", timestamp: 1 }], undefined);
+			expect(off.body.thinking).toEqual({ type: "disabled" });
+			expect(off.beta).not.toContain("thinking-binding-controls-2026-08-01");
+
+			const controller = new AbortController();
+			controller.abort();
+			const first: AssistantMessage = await streamAnthropic(
+				target,
+				{ messages: [{ role: "user", content: "q0", timestamp: 1 }] },
+				{
+					apiKey: "sk-ant-api-test",
+					signal: controller.signal,
+					thinkingEnabled: true,
+					reasoning: Effort.XHigh,
+				},
+			).result();
+			const history: Context["messages"] = [
+				{ role: "user", content: "q0", timestamp: 1 },
+				{ ...first, content: [{ type: "text", text: "ok" }], stopReason: "stop", timestamp: 2 },
+				{ role: "user", content: "q1", timestamp: 3 },
+			];
+			const fallback = await haikuRequest(target, history, undefined);
+			expect(fallback.body.thinking?.type).toBe("adaptive");
+			expect(fallback.body.thinking?.block_binding).toEqual({ prefix_mismatch_behavior: "drop_block" });
+			expect(fallback.beta).toContain("thinking-binding-controls-2026-08-01");
+		},
+	);
 });

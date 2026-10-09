@@ -2,19 +2,10 @@
 
 ## [Unreleased]
 
-### Added
-
-- Added Anthropic route controls that send `between_tools` with a pinned effort on thinking-off turns, and let routes that strip thinking history also strip it on every disabled-thinking turn.
-- Added Factory Droid Claude Haiku 5.5 (Messages, explicit disabled thinking at Off) and Mistral Large 4 (Mistral reasoning replay) request dialects.
-
 ### Fixed
 
-- Fixed Factory Droid Claude Off turns replaying thinking blocks after sending disabled thinking (including Snowflake), which native droid strips.
-- Fixed Factory Droid Azure Anthropic requests for prefix-bound Claude models omitting `block_binding` drop_block and the thinking-binding-controls beta.
-
-### Changed
-
-- Changed the Factory Droid native parity corpus to droid 0.237.0 traffic, adding Off-over-thinking-history, Sonnet 5.5 Off, Azure prefix-binding, GPT none on Azure and Mistral Large 4 cases.
+- Fixed Factory Droid Claude turns with thinking off replaying earlier thinking blocks, which Snowflake rejects, and Sonnet 5.5 Off now matching droid's between-tools thinking at high effort.
+- Fixed Anthropic requests sending the thinking-binding-controls beta on thinking-off turns that carry no thinking binding.
 
 ## [18.8.7] - 2026-10-09
 

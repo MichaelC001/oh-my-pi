@@ -2112,8 +2112,27 @@ const streamAnthropicOnce = (
 			let droppedAllThinkingForSignature = providerSessionState?.thinkingReplayDisabled ?? false;
 			let dropAllThinking = droppedAllThinkingForSignature;
 			let prefixBindingRetryAttempted = false;
+			// A live fallback-credit redemption replays its frozen body, so it is
+			// selected first: only a freshly built body decides its thinking binding.
+			const frozenRedemption =
+				options?.fallbackCreditRedemption &&
+				Date.now() <= options.fallbackCreditRedemption.expiresAt &&
+				options.fallbackCreditRedemption.params
+					? options.fallbackCreditRedemption
+					: undefined;
+			// Collected at most once, on first use, by the beta decision and every
+			// params (re)build; a frozen redemption body evaluates neither.
+			let controlRecords: AnthropicControlRecord[] | undefined;
+			const getControlRecords = () => (controlRecords ??= collectAnthropicControlRecords(context.messages));
+			// The binding-controls beta rides only with `block_binding`, which only
+			// adaptive thinking carries; see thinkingOffSendsNoAdaptive. A frozen
+			// body keeps the pre-existing rule, including when it is forfeited and
+			// rebuilt on the same client headers.
 			let prefixMismatchBehavior =
-				model.thinking?.prefixBinding && model.compat.supportsThinkingBindingControls
+				model.thinking?.prefixBinding &&
+				model.compat.supportsThinkingBindingControls &&
+				(frozenRedemption !== undefined ||
+					!thinkingOffSendsNoAdaptive(model, context.messages, getControlRecords, options))
 					? (options?.anthropicPrefixMismatchBehavior ?? "drop_block")
 					: undefined;
 			const controlBetas = resolveAnthropicControlBetas(model, prefixMismatchBehavior);
@@ -2310,6 +2329,7 @@ const streamAnthropicOnce = (
 					prefixMismatchBehavior,
 					dropAllThinking,
 					droppedThinkingBlocks: providerSessionState?.prefixDroppedThinkingBlocks,
+					controlRecords: getControlRecords(),
 					fallbacks,
 					effectiveBaseUrl: baseUrl,
 				});
@@ -2345,12 +2365,8 @@ const streamAnthropicOnce = (
 			let fallbackCreditShape: "continuation" | "unchanged" | undefined = undefined;
 			let fallbackCreditTransientRetries = 0;
 			let params: MessageCreateParamsStreaming;
-			if (
-				options?.fallbackCreditRedemption &&
-				Date.now() <= options.fallbackCreditRedemption.expiresAt &&
-				options.fallbackCreditRedemption.params
-			) {
-				const redemption = options.fallbackCreditRedemption;
+			if (frozenRedemption) {
+				const redemption = frozenRedemption;
 				usingFallbackCredit = true;
 				const frozenParams = structuredClone(redemption.params as MessageCreateParamsStreaming);
 				const targetModelId = options?.requestModelId ?? model.requestModelId ?? model.id;
@@ -4515,6 +4531,31 @@ export function resolveAnthropicCompactionEffort(
 }
 
 /**
+ * Whether a thinking-off turn resolves to a wire form without adaptive
+ * thinking (`disabled`, `between_tools` or an omitted field), so it can carry
+ * no `block_binding`. Mirrors buildParams, including the fallback to adaptive
+ * when earlier effort controls rule out `disabled`.
+ */
+function thinkingOffSendsNoAdaptive(
+	model: Model<"anthropic-messages">,
+	messages: readonly Message[],
+	records: () => readonly AnthropicControlRecord[],
+	options: AnthropicOptions | undefined,
+): boolean {
+	if (options?.thinkingEnabled !== false || !model.reasoning) return false;
+	const disabledThinking = model.compat.disabledThinking;
+	if (disabledThinking === "disabled") {
+		// Without per-message effort the effort controls never block `disabled`.
+		if (model.compat.supportsPerMessageEffort !== true) return true;
+		if (!effortControlsBlockDisabledThinking(model, messages, records())) return true;
+	} else if (disabledThinking !== undefined) {
+		return disabledThinking !== "adaptive";
+	}
+	if (model.compat.requiresThinkingEnabled) return false;
+	return model.compat.supportsBetweenToolsThinking || !isAdaptiveOnlyThinking(model);
+}
+
+/**
  * Whether effort controls earlier requests left in `messages` rule out
  * `thinking: {type: "disabled"}`: Anthropic rejects a per-message effort
  * control with thinking off, and `disabled` above `high` effort. Both stay in
@@ -4584,6 +4625,8 @@ type AnthropicParamBuildOptions = {
 	prefixMismatchBehavior?: "drop_block" | "error";
 	dropAllThinking: boolean;
 	droppedThinkingBlocks?: ReadonlySet<string>;
+	/** Control records of `context.messages`, when the caller already collected them. */
+	controlRecords?: readonly AnthropicControlRecord[];
 	/** Sanitized server-side fallback entries; defaults to `options?.fallbacks` when omitted. */
 	fallbacks?: AnthropicOptions["fallbacks"];
 	/**
@@ -4679,6 +4722,7 @@ function buildParams(
 		prefixMismatchBehavior,
 		dropAllThinking,
 		droppedThinkingBlocks,
+		controlRecords,
 		fallbacks = options?.fallbacks,
 		compactionSupported = supportsAnthropicCompaction(model),
 		effectiveBaseUrl,
@@ -4709,7 +4753,7 @@ function buildParams(
 	const compactionRequest = compactionSupported ? options?.anthropicCompaction : undefined;
 	// Controls earlier requests recorded on their responses fix the declared
 	// tools, the top-level effort and every control message in between.
-	const records = collectAnthropicControlRecords(context.messages);
+	const records = controlRecords ?? collectAnthropicControlRecords(context.messages);
 	const toolPlan = planAnthropicToolControls(
 		context,
 		records,

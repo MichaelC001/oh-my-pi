@@ -84,7 +84,8 @@ describe("Factory Droid anthropic wire (Claude)", () => {
 	it.each([
 		["claude-opus-5-5", "azure_anthropic", true],
 		["claude-sonnet-5-5", "azure_anthropic", true],
-		["claude-fable-5.1", "azure_anthropic", true],
+		// Haiku 5.5 is the third prefix-bound model droid serves on Azure.
+		["claude-haiku-5-5", "azure_anthropic", true],
 		["claude-opus-5-5", "anthropic", false],
 		["claude-sonnet-5-5", "vertex_anthropic", false],
 		["claude-opus-4-8", "azure_anthropic", false],
@@ -98,6 +99,24 @@ describe("Factory Droid anthropic wire (Claude)", () => {
 		const thinking = captured[0].body.thinking as { type: string; block_binding?: unknown };
 		expect(thinking.type).toBe("adaptive");
 		expect(thinking.block_binding).toEqual(bound ? { prefix_mismatch_behavior: "drop_block" } : undefined);
+		expect((captured[0].headers["anthropic-beta"] ?? "").includes("thinking-binding-controls-2026-08-01")).toBe(
+			bound,
+		);
+	});
+
+	it.each([
+		["claude-sonnet-5-5", "between_tools", false],
+		["claude-opus-5-5", "adaptive", true],
+	] as const)("%s via azure_anthropic at Off sends %s with binding and beta together: %p", async (id, type, bound) => {
+		const captured: CapturedRequest[] = [];
+		await streamFactoryDroid(
+			factoryModel(id, ["azure_anthropic"]),
+			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+			{ apiKey: WORKOS_TOKEN, disableReasoning: true, fetch: captureFetch(captured, anthropicChunks("OK")) },
+		).result();
+		const thinking = captured[0].body.thinking as { type: string; block_binding?: unknown };
+		expect(thinking.type).toBe(type);
+		expect(thinking.block_binding !== undefined).toBe(bound);
 		expect((captured[0].headers["anthropic-beta"] ?? "").includes("thinking-binding-controls-2026-08-01")).toBe(
 			bound,
 		);
