@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { TtyWriter } from "@oh-my-pi/pi-natives";
 import { $env, isBunTestRuntime, isTerminalHeadless, isWsl } from "@oh-my-pi/pi-utils/env";
 import * as logger from "@oh-my-pi/pi-utils/logger";
+import { popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils/loop-phase";
 import * as postmortem from "@oh-my-pi/pi-utils/postmortem";
 import { restoreTerminalStderr, suppressTerminalStderr } from "@oh-my-pi/pi-utils/stderr-guard";
 import { TSP_VERSION } from "@oh-my-pi/pi-wire";
@@ -2388,11 +2389,14 @@ export class ProcessTerminal implements Terminal {
 			this.#trackStdoutBacklog(pending);
 			return;
 		}
-		// A console-sharing child process may have flipped the console codepage
-		// away from UTF-8; repair it before any bytes hit WriteFile so no frame
-		// is ever translated through an OEM codepage. See ensureWindowsConsoleUtf8.
-		if (process.platform === "win32") ensureWindowsConsoleUtf8();
+		// Without the pump, writes (and the codepage guard's console calls) block
+		// the event loop until the terminal drains; label them for the watchdog.
+		pushLoopPhase("ui.terminal-write");
 		try {
+			// A console-sharing child process may have flipped the console codepage
+			// away from UTF-8; repair it before any bytes hit WriteFile so no frame
+			// is ever translated through an OEM codepage. See ensureWindowsConsoleUtf8.
+			if (process.platform === "win32") ensureWindowsConsoleUtf8();
 			// Windows ConPTY drops viewport tracking when a single write exceeds
 			// ~32-64 KB: the host UI's scroll position stays parked at wherever
 			// the write began, even though every byte landed in scrollback. Split
@@ -2421,6 +2425,8 @@ export class ProcessTerminal implements Terminal {
 			this.#trackStdoutBacklog(process.stdout.writableLength ?? 0);
 		} catch (err) {
 			this.#markTerminalDisconnected("stdout failed", err);
+		} finally {
+			popLoopPhase();
 		}
 	}
 
