@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed the episodic graph linking each new memory to every stored memory with the same time scope (any mention of a date or of words like "today"), which grew `graph_edges` quadratically with the store size; `ctx` links now require lexical or entity overlap.
+- Fixed the episodic graph linking each new memory to every stored memory with the same time scope (any mention of a date or of words like "today"), which grew `graph_edges` quadratically with the store size; `ctx` links now require lexical or entity overlap ([#15013](https://github.com/can1357/oh-my-pi/pull/15013) by [@tickernelz](https://github.com/tickernelz)).
 
 ## [18.8.5] - 2026-10-08
 
