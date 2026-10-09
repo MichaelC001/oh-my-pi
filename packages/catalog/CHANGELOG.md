@@ -13,6 +13,10 @@
 - Fixed Factory Droid prefix-bound Claude models (Opus 5.5, Sonnet 5.5, Fable 5.1) on Azure Anthropic failing replays after a prompt or tool change, by asking Azure to drop stale thinking blocks as droid does.
 - Fixed Factory Droid model availability to match droid 0.237: EU accounts now see Opus 4.7/4.8/5 on Vertex and Bedrock, Fable 5/5.1 on Vertex and Gemini 3.5–3.8 Flash, GPT-6.1 Sol rotates across OpenAI, Bedrock and Databricks, GPT-6 Luna and DeepSeek V4.1 Flash no longer wait on feature flags, and Sonnet 5.5 shows its Anthropic list price.
 
+### Changed
+
+- Changed Factory Droid requests to identify as droid 0.237.0.
+
 ## [18.8.7] - 2026-10-09
 
 ### Added

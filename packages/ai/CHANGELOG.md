@@ -12,6 +12,10 @@
 - Fixed Factory Droid Claude Off turns replaying thinking blocks after sending disabled thinking (including Snowflake), which native droid strips.
 - Fixed Factory Droid Azure Anthropic requests for prefix-bound Claude models omitting `block_binding` drop_block and the thinking-binding-controls beta.
 
+### Changed
+
+- Changed the Factory Droid native parity corpus to droid 0.237.0 traffic, adding Off-over-thinking-history, Sonnet 5.5 Off, Azure prefix-binding, GPT none on Azure and Mistral Large 4 cases.
+
 ## [18.8.7] - 2026-10-09
 
 ### Added
