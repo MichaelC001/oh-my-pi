@@ -11,10 +11,10 @@ const SKIP_REPLY = "NO_PREDICTION";
 /** Longer replies are rambling, not a message the user would type; drop them. */
 const MAX_PREDICTION_LENGTH = 500;
 /**
- * Output cap for the side turn. The prediction always keeps the session's reasoning settings,
- * because providers key their prompt caches on them (Anthropic thinking/effort, OpenAI reasoning
- * effort), and sends this cap only where it leaves them unchanged. Leaves room for a short
- * reasoning pass on effort models.
+ * Output cap for the side turn. Providers key prompt caches on reasoning parameters, so the
+ * prediction runs at the lowest effort only where that change rides a per-message control (see
+ * `minimizeEffort`), keeps the session's reasoning elsewhere, and sends this cap only where it
+ * leaves reasoning unchanged. Leaves room for a short reasoning pass on effort models.
  */
 const PREDICTION_MAX_TOKENS = 1024;
 /** A prediction that has not arrived by then is no longer worth paying for or showing. */
@@ -109,6 +109,7 @@ export class ComposerPredictionController {
 			const { replyText, assistantMessage } = await source.session.runEphemeralTurn({
 				promptText: prompt.render(composerPredictionPrompt, { skip: SKIP_REPLY }),
 				maxTokens: source.session.ephemeralMaxTokensPreservesRequest() ? PREDICTION_MAX_TOKENS : undefined,
+				minimizeEffort: true,
 				signal: AbortSignal.any([abort.signal, AbortSignal.timeout(this.#deadlineMs)]),
 			});
 			// Paid for even when the reply arrives too late to show.

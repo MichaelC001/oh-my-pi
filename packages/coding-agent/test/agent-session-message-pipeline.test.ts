@@ -1417,6 +1417,65 @@ describe("AgentSession message pipeline", () => {
 		},
 	);
 
+	it.each([
+		["a per-message-effort model with a recorded effort", "claude-sonnet-5-5", true, "low"],
+		["a per-message-effort model without a recorded effort", "claude-sonnet-5-5", false, undefined],
+		["a model without per-message effort", "claude-sonnet-4-6", false, undefined],
+	] as const)(
+		"minimizes side-turn effort on %s only where the cached prefix and top-level reasoning stay put",
+		async (_label, id, recorded, controlEffort) => {
+			const model = getBundledModel("anthropic", id);
+			const reply = {
+				...createAssistantMessage("Fixed."),
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				...(recorded ? { requestControls: { messageIndex: 1, effort: { topLevel: "high", tail: "high" } } } : {}),
+			} as AgentMessage;
+			const bodies: Record<string, unknown>[] = [];
+			const session = new AgentSession({
+				agent: new Agent({
+					initialState: {
+						model,
+						systemPrompt: ["system prompt"],
+						messages: [{ role: "user", content: "fix it", timestamp: 1 }, reply],
+						tools: [],
+					},
+				}),
+				sessionManager: SessionManager.inMemory(),
+				settings: Settings.isolated({ "compaction.enabled": false }),
+				modelRegistry: createModelRegistryStub() as never,
+				sideStreamFn: (target, context, options) =>
+					streamSimple(target, context, {
+						...options,
+						apiKey: "test-key",
+						fetch: async (_url, init) => {
+							bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+							return new Response(JSON.stringify({ error: { message: "Request captured" } }), { status: 400 });
+						},
+					}),
+			});
+			sessions.push(session);
+			session.setThinkingLevel(ThinkingLevel.High);
+
+			await expect(session.runEphemeralTurn({ promptText: "Predict." })).rejects.toThrow();
+			await expect(session.runEphemeralTurn({ promptText: "Predict.", minimizeEffort: true })).rejects.toThrow();
+			const [plain, minimized] = bodies as [Record<string, unknown>, Record<string, unknown>];
+			const history = (body: Record<string, unknown>) =>
+				(body.messages as { role: string; content: unknown }[]).slice(0, 2).map(({ role, content }) => ({
+					role,
+					content: JSON.stringify(content).replaceAll(',"cache_control":{"type":"ephemeral"}', ""),
+				}));
+			// Cache keys: tools, system, thinking, top-level effort, and the history before the side prompt.
+			for (const key of ["tools", "system", "thinking", "output_config"]) expect(minimized[key]).toEqual(plain[key]);
+			expect(history(minimized)).toEqual(history(plain));
+			const controls = (minimized.messages as { role: string; output_config?: { effort: string } }[]).filter(
+				message => message.role === "system",
+			);
+			expect(controls.map(message => message.output_config?.effort)).toEqual(controlEffort ? [controlEffort] : []);
+		},
+	);
+
 	it("rejects a tool-free Bedrock side turn with historical tool blocks before inference", async () => {
 		const agent = new Agent({
 			initialState: {

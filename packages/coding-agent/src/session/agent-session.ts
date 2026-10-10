@@ -11040,6 +11040,21 @@ export class AgentSession implements SettingsScope {
 				throw new Error(`${field} must be a positive safe integer.`);
 			}
 		}
+		const sessionEffort = toReasoningEffort(this.thinkingLevel);
+		// Providers key prompt caches on reasoning parameters, so a lower effort is free only where
+		// the request keeps them and carries the change as a per-message control. Anthropic records
+		// the effort it kept on responses from models that take such controls; without that record
+		// on this model's last reply the change would rewrite the top-level effort.
+		const lastReply = this.messages.findLast(message => message.role === "assistant");
+		const lowestEffort =
+			args.minimizeEffort &&
+			sessionEffort !== undefined &&
+			lastReply?.role === "assistant" &&
+			lastReply.provider === model.provider &&
+			lastReply.model === model.id &&
+			lastReply.requestControls?.effort !== undefined
+				? model.thinking?.efforts[0]
+				: undefined;
 		const cappedBudgetThinking =
 			args.maxTokens !== undefined &&
 			(model.thinking?.mode === "budget" || model.thinking?.mode === "anthropic-budget-effort");
@@ -11105,7 +11120,7 @@ export class AgentSession implements SettingsScope {
 				promptCacheKey: this.agent.promptCacheKey ?? this.agent.sessionId,
 				preferWebsockets: this.preferWebsockets,
 				providerSessionState: this.#providerSessionState,
-				reasoning: toReasoningEffort(this.thinkingLevel),
+				reasoning: lowestEffort ?? sessionEffort,
 				// Budget-thinking transports can raise explicit caps to make room for their
 				// default thinking budget. A side turn's cap is a hard resource boundary.
 				disableReasoning: shouldDisableReasoning(this.thinkingLevel) || cappedBudgetThinking,
