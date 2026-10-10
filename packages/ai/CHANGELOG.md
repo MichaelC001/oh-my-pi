@@ -7,6 +7,9 @@
 ### Changed
 
 - Updated state field rendering to trim trailing whitespace and normalize empty collection formatting for consistent prompt output
+### Fixed
+
+- Fixed Anthropic requests failing with 400 "All tools cannot be deferred" when a conversation that had no tools gains them (`omp -p --no-tools`, then `omp -c`), or a resumed session keeps none of its earlier tools ([#15233](https://github.com/can1357/oh-my-pi/pull/15233) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.8] - 2026-10-10
 
