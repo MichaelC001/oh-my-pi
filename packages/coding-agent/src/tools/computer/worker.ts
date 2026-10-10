@@ -42,6 +42,7 @@ import {
 	type ComputerWorkerTransport,
 	type RunErrorPayload,
 	SCREEN_LOCKED_CAPTURE_NOTE,
+	screenStateNotice,
 	type ToolReply,
 } from "./protocol";
 
@@ -772,7 +773,12 @@ export class ComputerWorkerCore {
 			if (this.#active?.id === message.id) this.#active = null;
 		}
 		if (failure !== undefined) {
-			this.#transport.send({ type: "result", id: message.id, ok: false, error: errorPayload(failure.error) });
+			this.#transport.send({
+				type: "result",
+				id: message.id,
+				ok: false,
+				error: this.#withScreenState(errorPayload(failure.error)),
+			});
 			return;
 		}
 		if (completed) {
@@ -795,6 +801,26 @@ export class ComputerWorkerCore {
 				payload: { displays: output.finish(), returnValue: cloneSafe(returnValue), screenshots, capabilities },
 			});
 		}
+	}
+
+	/**
+	 * A run that fails while the macOS screen is locked or the display asleep
+	 * says so after its own message, which stays first and intact. Aborts and
+	 * sessions that never started are returned unchanged.
+	 */
+	#withScreenState(payload: RunErrorPayload): RunErrorPayload {
+		if (payload.isAbort || !this.#session) return payload;
+		let notice: string | undefined;
+		try {
+			notice = screenStateNotice(this.#session.capabilities);
+		} catch {
+			return payload;
+		}
+		if (!notice) return payload;
+		const message = payload.message ? `${payload.message}\n${notice}` : notice;
+		const stack =
+			payload.stack && payload.message ? payload.stack.replace(payload.message, () => message) : payload.stack;
+		return { ...payload, message, stack };
 	}
 
 	/**

@@ -488,7 +488,11 @@ impl Worker {
 		token: &OperationToken,
 	) -> CoreResult<DesktopCapture> {
 		let selector = target.display_selector();
+		// Bracket the acquisition: a lock on either side marks the frame, so a
+		// later unlock during encoding cannot pass lock-screen pixels as the app.
+		let locked_before = self.backend()?.screen_state().locked;
 		let (image, mut geometry) = self.backend()?.capture(target, caps, selector.as_ref())?;
+		let screen_locked = locked_before || self.backend()?.screen_state().locked;
 		let source_width = image.width();
 		let source_height = image.height();
 		let layout = self.backend()?.displays()?;
@@ -519,7 +523,7 @@ impl Worker {
 			displays,
 			backend: capabilities.backend,
 			display_server: capabilities.display_server,
-			screen_locked: capabilities.screen_locked,
+			screen_locked,
 		})
 	}
 
@@ -760,10 +764,12 @@ impl Worker {
 				base.validate_region(region)?;
 				let selector = base.capture_selector();
 				token.check()?;
+				let locked_before = self.backend()?.screen_state().locked;
 				let (image, fresh) =
 					self
 						.backend()?
 						.capture(target, &CaptureCaps::default(), selector.as_ref())?;
+				let screen_locked = locked_before || self.backend()?.screen_state().locked;
 				let layout = self.backend()?.displays().map_err(|error| {
 					DesktopError::invalid_coordinate_frame(format!(
 						"could not validate captured display layout: {error}"
@@ -794,7 +800,7 @@ impl Worker {
 					displays,
 					backend: capabilities.backend,
 					display_server: capabilities.display_server,
-					screen_locked: capabilities.screen_locked,
+					screen_locked,
 				}))
 			},
 			Request::Click { target, x, y, options, .. } => {
@@ -1815,6 +1821,8 @@ mod capture_tests {
 		screen:                 Arc<Mutex<ScreenState>>,
 		/// Display-awake hold transitions, in order.
 		awake:                  Arc<Mutex<Vec<bool>>>,
+		/// Unlock the session on the next layout read, i.e. after the frame.
+		unlock_on_layout:       Arc<Mutex<bool>>,
 	}
 
 	impl FakeWaylandBackend {
@@ -1856,6 +1864,7 @@ mod capture_tests {
 				cancel_on_snapshot:     Arc::new(Mutex::new(None)),
 				screen:                 Arc::new(Mutex::new(ScreenState::default())),
 				awake:                  Arc::new(Mutex::new(Vec::new())),
+				unlock_on_layout:       Arc::new(Mutex::new(false)),
 			}
 		}
 	}
@@ -1946,6 +1955,9 @@ mod capture_tests {
 		}
 
 		fn displays(&mut self) -> CoreResult<Vec<DesktopDisplay>> {
+			if std::mem::take(&mut *self.unlock_on_layout.lock()) {
+				*self.screen.lock() = ScreenState::default();
+			}
 			Ok(self.layout.lock().clone())
 		}
 
@@ -2204,6 +2216,23 @@ mod capture_tests {
 			"{}",
 			asleep.message
 		);
+	}
+
+	#[test]
+	fn a_frame_taken_while_locked_stays_marked_after_an_unlock_during_processing() {
+		let backend = FakeWaylandBackend::new();
+		*backend.screen.lock() = ScreenState { locked: true, display_asleep: false };
+		let unlock = Arc::clone(&backend.unlock_on_layout);
+		let screen = Arc::clone(&backend.screen);
+		let mut worker = worker_with(backend);
+		let token = CancellationSource::default().token();
+		*unlock.lock() = true;
+		let Ok(Response::Capture(full)) = worker.process(&capture_request(Target::Desktop), &token)
+		else {
+			panic!("desktop capture");
+		};
+		assert!(!screen.lock().locked, "the session unlocked after the frame");
+		assert!(full.screen_locked, "the frame was taken behind the lock screen");
 	}
 
 	#[test]

@@ -1125,6 +1125,27 @@ describe("computer worker round trips", () => {
 		}
 	});
 
+	it("keeps a failed run's own error first and adds the lock state after it", async () => {
+		for (const locked of [true, false]) {
+			const transport = new MemoryTransport();
+			const native = new FakeNativeSession();
+			native.screenLocked = locked;
+			new ComputerWorkerCore(transport, () => native);
+			const result = await runWorker(
+				transport,
+				`failed-${locked}`,
+				'await desktop.screenshot({ silent: true }); await desktop.click(1, 2); assert(false, "verification failed")',
+			);
+			expect(native.clickCount).toBe(1);
+			expect(result.ok).toBe(false);
+			if (result.ok) return;
+			const [first, ...rest] = result.error.message.split("\n");
+			expect(first).toBe("verification failed");
+			if (locked) expect(rest.join("\n")).toMatch(/^Note: when this run ended the screen is locked\. /);
+			else expect(rest).toEqual([]);
+		}
+	});
+
 	it("blocks read-only click after capture before invoking native input", async () => {
 		const transport = new MemoryTransport();
 		const native = new FakeNativeSession();

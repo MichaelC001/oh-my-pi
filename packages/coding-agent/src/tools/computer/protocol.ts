@@ -38,6 +38,34 @@ export interface ComputerRunOk {
 export const SCREEN_LOCKED_CAPTURE_NOTE =
 	"screen locked: macOS is showing its lock screen, so a display capture shows the lock screen and a window capture shows that window's last frame behind it";
 
+/**
+ * Tells the model a run ended with the macOS screen locked or the display
+ * asleep, so lock-screen pixels and failed captures are not taken for the
+ * app's state. Input is never refused because of it.
+ */
+export function screenStateNotice(capabilities: DesktopCapabilities | undefined): string | undefined {
+	if (!capabilities?.screenLocked && !capabilities?.displayAsleep) return undefined;
+	const { screenLocked, displayAsleep } = capabilities;
+	const state =
+		screenLocked && displayAsleep
+			? "the screen is locked and the display is asleep"
+			: screenLocked
+				? "the screen is locked"
+				: "the display is asleep";
+	const effects: string[] = [];
+	if (displayAsleep) effects.push("Nothing can be captured or clicked until the display wakes.");
+	else
+		effects.push(
+			"A display screenshot shows the lock screen and a window screenshot shows that window's last frame behind it, so neither confirms what this run did. A background click still reaches the app behind the lock screen.",
+		);
+	if (screenLocked) {
+		effects.push(
+			"While locked, apps expose no accessibility windows, so keystrokes, takeover and accessibility actions fail. The lock stays until someone unlocks the Mac.",
+		);
+	}
+	return `Note: when this run ended ${state}. ${effects.join(" ")}`;
+}
+
 /** Screenshot or zoom emitted during one computer run, with its full input coordinate frame. */
 export interface ComputerScreenshot {
 	path: string;
