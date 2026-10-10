@@ -584,7 +584,7 @@ describe("claudeResetStatusesFromReports", () => {
 		return { ...usage, resetCredits: { availableCount, redeemableCount, eligible, nextCreditId, credits } };
 	}
 
-	it("salvages for a credential stored without its organization under the one discovery stamped on its report", () => {
+	it("finds a candidate for a credential stored without its organization under the one discovery stamped on its report", () => {
 		const reports = [withInventory(report({ orgId: "org-a", weeklyUsed: 0.4 }))];
 		const statuses = claudeResetStatusesFromReports([legacy], reports);
 		const plan = planClaudeResetRedemptions(input({ trigger: "sweep", reports, statuses }));
@@ -597,12 +597,29 @@ describe("claudeResetStatusesFromReports", () => {
 		]);
 	});
 
-	it("never hands a credential stored without its organization a stored sibling organization's report", () => {
+	it("never hands a credential stored without its organization the report of a stored credential for the same account", () => {
 		const sibling: OAuthAccountSummary = { ...legacy, position: 1, credentialId: 22, orgId: "org-a", active: false };
 		const reports = [withInventory(report({ orgId: "org-a", weeklyUsed: 0.4 }))];
 		const statuses = claudeResetStatusesFromReports([legacy, sibling], reports);
 		const plan = planClaudeResetRedemptions(input({ trigger: "sweep", reports, statuses }));
 		expect(plan.actions.map(action => action.target.credentialId)).toEqual([22]);
 		expect(plan.skipped).toContainEqual({ accountKey: "anthropic|-|11", rule: "account", reason: "credits-unknown" });
+	});
+
+	it("keeps a credential stored without its organization apart from another member of that organization", () => {
+		const member: OAuthAccountSummary = {
+			position: 1,
+			credentialId: 22,
+			email: "member@example.com",
+			orgId: "org-a",
+			active: false,
+		};
+		const reports = [
+			withInventory(report({ orgId: "org-a", weeklyUsed: 0.4 })),
+			withInventory(report({ orgId: "org-a", email: "member@example.com", weeklyUsed: 0.4 })),
+		];
+		const statuses = claudeResetStatusesFromReports([legacy, member], reports);
+		const plan = planClaudeResetRedemptions(input({ trigger: "sweep", reports, statuses }));
+		expect(plan.actions.map(action => action.accountKey)).toEqual(["anthropic|org-a|11", "anthropic|org-a|22"]);
 	});
 });
