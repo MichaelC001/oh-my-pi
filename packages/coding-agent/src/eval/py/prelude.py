@@ -98,26 +98,38 @@ if "__omp_prelude_loaded__" not in globals():
             return result["text"]
         return result
 
-    def _resolve_artifact_path(root: str, artifact_id: str, path: str) -> Path:
-        """The file backing `artifact://<id>` in the artifacts dir: `<id>.<tool>.log`."""
+    def _is_artifact_url(path: str | Path) -> bool:
+        return isinstance(path, str) and path[:11].lower() == "artifact://"
+
+    def _artifact_file(path: str) -> Path | None:
+        """This session's file for `artifact://<id>` (`<id>.<tool>.log` in its
+        artifacts dir), or None when the id is not there."""
+        root = _omp_url_roots()["artifact"]
+        artifact_id = path[11:]
         try:
             names = os.listdir(root)
         except FileNotFoundError:
-            names = []
+            return None
         for name in names:
             if name.startswith(f"{artifact_id}."):
                 return Path(os.path.join(os.path.abspath(root), name))
-        raise FileNotFoundError(f"Artifact {artifact_id} not found: {path}")
+        return None
 
-    def _resolve_omp_path(path: str | Path, op: str) -> Path:
+    def _read_through_tool(path: str, offset: int, limit: int | None) -> str:
+        if limit is not None and limit <= 0:
+            return ""
+        selector = _read_line_selector(offset, limit)
+        return _read_tool_text(path if selector is None else f"{path}:{selector}")
+
+    def _resolve_omp_path(path: str | Path) -> Path:
         """Map a helper path to a real filesystem Path.
 
         A `scheme://…` whose scheme has an injected on-disk root (via
         PI_EVAL_LOCAL_ROOTS) is rewritten under that root so it lands where
         `read scheme://…` resolves — not a literal `scheme:/` directory under
-        the cwd (which `Path("scheme://x")` collapses to). `artifact://<id>`
-        resolves to its file for reads only. Plain paths pass through
-        unchanged; any other `scheme://` is rejected."""
+        the cwd (which `Path("scheme://x")` collapses to). Plain paths pass
+        through unchanged; any other `scheme://` is rejected, as is
+        `artifact://`, whose root is a lookup dir for reads, not a path prefix."""
         if not isinstance(path, str):
             return Path(path)
         match = _OMP_INTERNAL_URL_RE.match(path)
@@ -125,8 +137,6 @@ if "__omp_prelude_loaded__" not in globals():
             return Path(path)
         scheme = match.group(1).lower()
         root = _omp_url_roots().get(scheme)
-        if root and scheme == "artifact" and op == "read" and _OMP_ARTIFACT_ID_RE.match(match.group(2)):
-            return _resolve_artifact_path(root, match.group(2), path)
         if not root or scheme == "artifact":
             raise ValueError(f"Protocol paths are not supported by this helper: {path}")
         relative = unquote(match.group(2).replace("\\", "/"))
@@ -147,12 +157,16 @@ if "__omp_prelude_loaded__" not in globals():
     def read(path: str | Path, offset: int = 1, limit: int | None = None) -> str:
         """Read file or read-tool URI contents. offset/limit are 1-indexed lines."""
         if _should_delegate_read(path):
+            return _read_through_tool(path, offset, limit)
+        if _is_artifact_url(path):
             if limit is not None and limit <= 0:
                 return ""
-            selector = _read_line_selector(offset, limit)
-            tool_path = path if selector is None else f"{path}:{selector}"
-            return _read_tool_text(tool_path)
-        p = _resolve_omp_path(path, "read")
+            p = _artifact_file(path)
+            if p is None:
+                # Held by another session: the read tool searches every registered artifacts dir.
+                return _read_through_tool(f"{path}:raw", offset, limit)
+        else:
+            p = _resolve_omp_path(path)
         data = p.read_text(encoding="utf-8")
         lines = data.splitlines(keepends=True)
         if offset > 1 or limit is not None:
@@ -166,7 +180,7 @@ if "__omp_prelude_loaded__" not in globals():
 
     def write(path: str | Path, content: str) -> Path:
         """Write file contents (create parents)."""
-        p = _resolve_omp_path(path, "write")
+        p = _resolve_omp_path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         _emit_status("write", path=str(p), chars=len(content))
