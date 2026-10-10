@@ -328,6 +328,15 @@ describe("GrepTool internal URL resolution", () => {
 		expect(result.details?.meta?.limits?.columnTruncated).toEqual({ maxColumn: 512, unit: "bytes" });
 	});
 
+	it("windows a long line around a cross-line look-ahead match", async () => {
+		registerVirtualDocs(new Map([["ahead.md", `${"a".repeat(12_000)}needle\nend\n`]]));
+		const result = await new GrepTool(createSession()).execute("long-line-ahead", {
+			pattern: "needle(?=\\nend)",
+			path: "virtual://ahead.md",
+		});
+		expect(getResultText(result)).toMatch(/\.\.\.a+needle \[col 12001\]/);
+	});
+
 	it("rejects a malformed selector on a selector-capable internal URL instead of widening the search", async () => {
 		const session = createSession();
 		const tool = new GrepTool(session);
