@@ -643,7 +643,7 @@ describe("/annotate contracts", () => {
 		const generateTextReviewContextSummary = vi.fn(async () => {
 			throw new Error("direct prompts must not request a summary");
 		});
-		const showTextReviewOverlay = vi.fn(async (_ctx: CustomCommandContext, source: TextReviewSource) => {
+		const showTextReviewOverlay = vi.fn(async (_ctx: AnnotationOverlayContext, source: TextReviewSource) => {
 			expect(source.kind).toBe("prompt");
 			expect(source.text).toBe(exactPrompt);
 			return {
