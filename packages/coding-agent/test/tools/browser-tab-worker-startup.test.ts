@@ -962,4 +962,34 @@ describe("browser tabs whose renderer crashed", () => {
 		},
 		45_000,
 	);
+	it.skipIf(!CHROMIUM_AVAILABLE)(
+		"reattaches a crashed tab whose crash report the supervisor missed",
+		async () => {
+			const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+			const name = `crashed-missed-${process.pid}`;
+			const url = `data:text/html,<title>${name}</title>`;
+			try {
+				await acquireTab(name, browser, { url, timeoutMs: 30_000 });
+				const tab = getTab(name);
+				if (tab?.backend !== "worker") throw new Error("Expected a worker tab");
+				const reported = crashReport(name);
+				await crashRenderer(browser, url);
+				await reported;
+				// As if the report arrived between the worker's `ready` and the supervisor's listener taking over.
+				tab.crashed = false;
+				const missed = await runInTab(name, {
+					code: "return await page.title();",
+					timeoutMs: 10_000,
+					session,
+				}).catch((error: unknown) => error);
+				expect(String(missed)).toContain("Browser tab's renderer crashed");
+				const next = await runInTab(name, { code: "return await page.title();", timeoutMs: 10_000, session });
+				expect(next.returnValue).toBe(name);
+			} finally {
+				await releaseTab(name, { kill: true });
+				if ("browser" in browser && browser.browser.connected) await releaseBrowser(browser, { kill: true });
+			}
+		},
+		45_000,
+	);
 });

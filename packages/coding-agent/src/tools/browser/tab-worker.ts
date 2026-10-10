@@ -1706,6 +1706,9 @@ export class WorkerCore {
 	}
 
 	async #run(msg: Extract<WorkerInbound, { type: "run" }>): Promise<void> {
+		// Report the crash again with the refusal: a notification the supervisor missed (one sent between
+		// `ready` and its listener taking over) would otherwise leave the tab failing every call without a reattach.
+		if (this.#crashed) this.#transport.send({ type: "crashed" });
 		if (this.#active || this.#crashed) {
 			this.#transport.send({
 				type: "result",
