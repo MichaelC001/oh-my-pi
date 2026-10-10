@@ -6,7 +6,7 @@
 
 - Added `ctx.annotations` so extensions can submit or collect `/annotate` feedback on text and diffs ([#15260](https://github.com/can1357/oh-my-pi/pull/15260) by [@Shadorain](https://github.com/Shadorain)).
 - Added **Extra Context Files** to `/settings` → **Context** so custom instruction filenames can be configured without editing YAML ([#15252](https://github.com/can1357/oh-my-pi/pull/15252) by [@Shadorain](https://github.com/Shadorain)).
-- Added composer predictions (`composer.predictions`, off by default): after a turn completes, omp asks the session's model for your likely next message and shows it as ghost text in the empty composer; Tab or Right inserts it, typing anything else dismisses it. Each prediction is an extra billed request after every completed turn: settings and the enable notice say so, its usage counts toward session totals and `/stats`, and **Prediction Thinking** chooses between the session's thinking (keeps the prompt cache) and none ([#15137](https://github.com/can1357/oh-my-pi/pull/15137) by [@wolfiesch](https://github.com/wolfiesch))
+- Added composer predictions (`composer.predictions`, off by default): after a turn completes, omp asks the session's model for your likely next message and shows it as ghost text in the empty composer; Tab or Right inserts it, typing anything else dismisses it. Each prediction is an extra billed request after every completed turn, which the setting and the enable notice point out; it keeps the session's thinking settings so it reads the prompt cache, and its usage counts toward session totals and `/stats` ([#15137](https://github.com/can1357/oh-my-pi/pull/15137) by [@wolfiesch](https://github.com/wolfiesch))
 
 ### Fixed
 

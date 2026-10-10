@@ -577,8 +577,6 @@ export interface EphemeralTurnOptions {
 	tools?: false;
 	/** Optional positive safe-integer output-token cap. Transports that omit or overwrite caller output limits reject this option before inference. On budget-thinking models a cap disables optional thinking (models that require it reject the cap). */
 	maxTokens?: number;
-	/** Turn reasoning off for this side turn whatever the session thinking level. A change from the session's thinking parameters makes Anthropic-style caches miss the cached conversation. */
-	disableReasoning?: boolean;
 	/** Positive safe-integer UTF-8 byte cap. Reject before inference when the serialized post-transform, secret-obfuscated provider context exceeds it. Measured before `before_provider_request` hooks; payload replacements are not re-measured. */
 	maxContextBytes?: number;
 	/** Awaited in order; a delivery failure rejects the side turn and aborts the request. */

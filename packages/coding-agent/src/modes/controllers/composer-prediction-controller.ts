@@ -3,7 +3,7 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import composerPredictionPrompt from "../../prompts/system/composer-prediction-user.md" with { type: "text" };
 import type { AgentSession } from "../../session/agent-session";
-import { cfgComposerPredictions, cfgComposerPredictionThinking } from "../settings";
+import { cfgComposerPredictions } from "../settings";
 import type { InteractiveModeContext } from "../types";
 
 /** Reply the prediction prompt asks for when the model has no confident guess. */
@@ -11,8 +11,10 @@ const SKIP_REPLY = "NO_PREDICTION";
 /** Longer replies are rambling, not a message the user would type; drop them. */
 const MAX_PREDICTION_LENGTH = 500;
 /**
- * Output cap for the side turn, sent only where it leaves the request otherwise unchanged so the
- * prediction still reads the prompt cache. Leaves room for a short reasoning pass on effort models.
+ * Output cap for the side turn. The prediction always keeps the session's reasoning settings,
+ * because providers key their prompt caches on them (Anthropic thinking/effort, OpenAI reasoning
+ * effort), and sends this cap only where it leaves them unchanged. Leaves room for a short
+ * reasoning pass on effort models.
  */
 const PREDICTION_MAX_TOKENS = 1024;
 /** A prediction that has not arrived by then is no longer worth paying for or showing. */
@@ -90,7 +92,7 @@ export class ComposerPredictionController {
 			sessionId: session.sessionManager.getSessionId(),
 			leafId: session.sessionManager.getLeafId(),
 		};
-		void this.#run(source, cfgComposerPredictionThinking.get(this.#ctx.settings) === "off", abort);
+		void this.#run(source, abort);
 	}
 
 	/** Abort an in-flight prediction and clear the shown one. */
@@ -102,14 +104,11 @@ export class ComposerPredictionController {
 		this.#ctx.ui.requestRender();
 	}
 
-	async #run(source: PredictionSource, disableReasoning: boolean, abort: AbortController): Promise<void> {
+	async #run(source: PredictionSource, abort: AbortController): Promise<void> {
 		try {
 			const { replyText, assistantMessage } = await source.session.runEphemeralTurn({
 				promptText: prompt.render(composerPredictionPrompt, { skip: SKIP_REPLY }),
-				maxTokens: source.session.ephemeralMaxTokensPreservesRequest(disableReasoning)
-					? PREDICTION_MAX_TOKENS
-					: undefined,
-				disableReasoning,
+				maxTokens: source.session.ephemeralMaxTokensPreservesRequest() ? PREDICTION_MAX_TOKENS : undefined,
 				signal: AbortSignal.any([abort.signal, AbortSignal.timeout(this.#deadlineMs)]),
 			});
 			// Paid for even when the reply arrives too late to show.

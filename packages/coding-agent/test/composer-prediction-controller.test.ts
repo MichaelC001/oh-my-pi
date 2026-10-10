@@ -34,7 +34,6 @@ interface PendingTurn {
 
 interface HarnessOptions {
 	enabled?: boolean;
-	thinking?: "session" | "off";
 	draft?: string;
 	compacting?: boolean;
 	focusedAgentId?: string;
@@ -51,7 +50,6 @@ function userMessage(content: string, timestamp: number): Message {
 
 function harness(options: HarnessOptions = {}) {
 	const turns: PendingTurn[] = [];
-	const capQueries: boolean[] = [];
 	const sessionManager = SessionManager.inMemory();
 	const firstLeafId = sessionManager.appendMessage(userMessage("fix the bug", 1));
 	const messages: AgentMessage[] = [userMessage("fix the bug", 1)];
@@ -63,10 +61,7 @@ function harness(options: HarnessOptions = {}) {
 		isCompacting: options.compacting ?? false,
 		messages,
 		sessionManager,
-		ephemeralMaxTokensPreservesRequest: (disableReasoning: boolean) => {
-			capQueries.push(disableReasoning);
-			return options.capPreservesRequest ?? true;
-		},
+		ephemeralMaxTokensPreservesRequest: () => options.capPreservesRequest ?? true,
 		runEphemeralTurn(turnOptions: EphemeralTurnOptions): Promise<EphemeralTurnResult> {
 			const { promise, resolve } = Promise.withResolvers<EphemeralTurnResult>();
 			turns.push({ options: turnOptions, resolve, promise });
@@ -75,10 +70,7 @@ function harness(options: HarnessOptions = {}) {
 	};
 	let renders = 0;
 	const ctx = {
-		settings: Settings.isolated({
-			"composer.predictions": options.enabled ?? true,
-			"composer.predictionThinking": options.thinking ?? "session",
-		}),
+		settings: Settings.isolated({ "composer.predictions": options.enabled ?? true }),
 		viewSession: session,
 		focusedAgentId: options.focusedAgentId,
 		editor: { getText: () => options.draft ?? "" },
@@ -99,7 +91,6 @@ function harness(options: HarnessOptions = {}) {
 	return {
 		controller: new ComposerPredictionController(ctx, { deadlineMs: options.deadlineMs }),
 		turns,
-		capQueries,
 		messages,
 		firstLeafId,
 		reply,
@@ -147,18 +138,6 @@ describe("ComposerPredictionController", () => {
 		expect(capped.turns[0]!.options.maxTokens).toBe(1024);
 		expect(uncapped.turns).toHaveLength(1);
 		expect(uncapped.turns[0]!.options.maxTokens).toBeUndefined();
-	});
-
-	it("turns reasoning off for the side turn, and judges the cap against that, only when Prediction Thinking is off", () => {
-		const session = harness({ thinking: "session" });
-		session.controller.request();
-		const off = harness({ thinking: "off" });
-		off.controller.request();
-
-		expect(session.turns[0]!.options.disableReasoning).toBe(false);
-		expect(session.capQueries).toEqual([false]);
-		expect(off.turns[0]!.options.disableReasoning).toBe(true);
-		expect(off.capQueries).toEqual([true]);
 	});
 
 	it("aborts a stalled prediction at the deadline", async () => {

@@ -10993,15 +10993,14 @@ export class AgentSession implements SettingsScope {
 	/**
 	 * Whether {@link runEphemeralTurn} would honor a `maxTokens` cap on the current model without
 	 * otherwise changing the request. On budget-thinking models a cap forces thinking off; when the
-	 * side turn would otherwise think, that changes the thinking parameters, which forfeits the
-	 * cached conversation on Anthropic-style caches. Pass the side turn's own `disableReasoning`.
-	 * Callers whose cap is optional send one only when this holds.
+	 * session thinks, that changes the thinking parameters, which providers key their prompt caches
+	 * on. Callers whose cap is optional send one only when this holds.
 	 */
-	ephemeralMaxTokensPreservesRequest(disableReasoning = false): boolean {
+	ephemeralMaxTokensPreservesRequest(): boolean {
 		const model = this.model;
 		if (!model || ephemeralMaxTokensRejection(model)) return false;
 		const budgetThinking = model.thinking?.mode === "budget" || model.thinking?.mode === "anthropic-budget-effort";
-		return !budgetThinking || disableReasoning || shouldDisableReasoning(this.thinkingLevel);
+		return !budgetThinking || shouldDisableReasoning(this.thinkingLevel);
 	}
 
 	/**
@@ -11041,7 +11040,6 @@ export class AgentSession implements SettingsScope {
 				throw new Error(`${field} must be a positive safe integer.`);
 			}
 		}
-		const reasoningOff = args.disableReasoning === true || shouldDisableReasoning(this.thinkingLevel);
 		const cappedBudgetThinking =
 			args.maxTokens !== undefined &&
 			(model.thinking?.mode === "budget" || model.thinking?.mode === "anthropic-budget-effort");
@@ -11107,10 +11105,10 @@ export class AgentSession implements SettingsScope {
 				promptCacheKey: this.agent.promptCacheKey ?? this.agent.sessionId,
 				preferWebsockets: this.preferWebsockets,
 				providerSessionState: this.#providerSessionState,
-				reasoning: reasoningOff ? undefined : toReasoningEffort(this.thinkingLevel),
+				reasoning: toReasoningEffort(this.thinkingLevel),
 				// Budget-thinking transports can raise explicit caps to make room for their
 				// default thinking budget. A side turn's cap is a hard resource boundary.
-				disableReasoning: reasoningOff || cappedBudgetThinking,
+				disableReasoning: shouldDisableReasoning(this.thinkingLevel) || cappedBudgetThinking,
 				hideThinkingSummary: this.agent.hideThinkingSummary,
 				serviceTier: this.#models.effectiveServiceTier(model),
 				maxTokens: args.maxTokens,

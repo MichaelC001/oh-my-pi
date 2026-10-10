@@ -890,35 +890,6 @@ export const cfgComposerPredictions = register({
 	},
 });
 
-export const cfgComposerPredictionThinking = register({
-	id: "composer.predictionThinking",
-	type: "enum",
-	values: ["session", "off"] as const,
-	default: "session",
-	ui: {
-		tab: "interaction",
-		group: "Input",
-		label: "Prediction Thinking",
-		description:
-			"Whether prediction requests reason like the session or skip reasoning; both cost an extra request per turn",
-		condition: "composerPredictionsEnabled",
-		options: [
-			{
-				value: "session",
-				label: "Session",
-				description:
-					"Same thinking as the session, so the request reads the prompt cache; high-effort sessions also pay reasoning tokens on every prediction",
-			},
-			{
-				value: "off",
-				label: "Off",
-				description:
-					"No reasoning tokens; on models whose cache depends on thinking settings (older Claude) each prediction re-reads the conversation uncached",
-			},
-		],
-	},
-});
-
 export const cfgDoubleEscapeAction = register({
 	id: "doubleEscapeAction",
 	type: "enum",

@@ -1378,13 +1378,12 @@ describe("AgentSession message pipeline", () => {
 	});
 
 	it.each([
-		["adaptive thinking", "anthropic-adaptive", ThinkingLevel.Medium, false, true],
-		["budget thinking while thinking", "budget", ThinkingLevel.Medium, false, false],
-		["budget thinking while off", "budget", ThinkingLevel.Off, false, true],
-		["budget thinking with reasoning turned off for the side turn", "budget", ThinkingLevel.Medium, true, true],
+		["adaptive thinking", "anthropic-adaptive", ThinkingLevel.Medium, true],
+		["budget thinking while thinking", "budget", ThinkingLevel.Medium, false],
+		["budget thinking while off", "budget", ThinkingLevel.Off, true],
 	] as const)(
 		"reports a side-turn cap on %s as request-preserving exactly when it leaves reasoning unchanged",
-		async (_label, mode, level, disableReasoning, preserves) => {
+		async (_label, mode, level, preserves) => {
 			const captured: (SimpleStreamOptions | undefined)[] = [];
 			const model = buildModel({
 				...getBundledModel("anthropic", "claude-haiku-4-5-20251001"),
@@ -1409,13 +1408,10 @@ describe("AgentSession message pipeline", () => {
 			sessions.push(session);
 			session.setThinkingLevel(level);
 
-			expect(session.ephemeralMaxTokensPreservesRequest(disableReasoning)).toBe(preserves);
-			await session.runEphemeralTurn({ promptText: "Question?", disableReasoning });
-			await session.runEphemeralTurn({ promptText: "Question?", disableReasoning, maxTokens: 32 });
+			expect(session.ephemeralMaxTokensPreservesRequest()).toBe(preserves);
+			await session.runEphemeralTurn({ promptText: "Question?" });
+			await session.runEphemeralTurn({ promptText: "Question?", maxTokens: 32 });
 			const [uncapped, capped] = captured;
-			const reasoningOff = disableReasoning || level === ThinkingLevel.Off;
-			expect(uncapped?.disableReasoning).toBe(reasoningOff);
-			expect(uncapped?.reasoning).toBe(reasoningOff ? undefined : Effort.Medium);
 			expect(capped?.reasoning).toBe(uncapped?.reasoning);
 			expect(capped?.disableReasoning === uncapped?.disableReasoning).toBe(preserves);
 		},
