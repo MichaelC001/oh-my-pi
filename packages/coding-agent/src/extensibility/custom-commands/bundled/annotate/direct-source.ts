@@ -15,15 +15,22 @@ export async function readFileTextReviewSource(
 	if (!filePath) throw new Error("Enter a file path to annotate.");
 	const resolvedPath = resolveReadPath(filePath, cwd);
 	const file = Bun.file(resolvedPath);
+	const readFailure = (error: unknown) => {
+		const detail = error instanceof Error && error.message ? error.message : String(error);
+		return new Error(`Unable to read annotation file "${filePath}": ${detail}`);
+	};
+	let isFile: boolean;
+	try {
+		isFile = (await file.stat()).isFile();
+	} catch (error) {
+		throw readFailure(error);
+	}
+	if (!isFile) throw new Error(`Cannot annotate "${filePath}": it is not a regular file.`);
 	let text: string;
 	try {
-		const stat = await file.stat();
-		if (!stat.isFile()) throw new Error(`Cannot annotate "${filePath}": it is not a regular file.`);
 		text = await file.text();
 	} catch (error) {
-		if (error instanceof Error && error.message.startsWith("Cannot annotate")) throw error;
-		const detail = error instanceof Error && error.message ? error.message : String(error);
-		throw new Error(`Unable to read annotation file "${filePath}": ${detail}`);
+		throw readFailure(error);
 	}
 	return {
 		id: `file:${resolvedPath}`,
