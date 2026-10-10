@@ -376,7 +376,11 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 
 					if (msg.deltaThinking) {
 						markFirstToken();
-						const block: ThinkingContent = currentThinkingBlock ?? { type: "thinking", thinking: "", summary: false };
+						const block: ThinkingContent = currentThinkingBlock ?? {
+							type: "thinking",
+							thinking: "",
+							summary: false,
+						};
 						if (currentThinkingBlock !== block) {
 							blockIndices.set(block, output.content.push(block) - 1);
 							currentThinkingBlock = block;
