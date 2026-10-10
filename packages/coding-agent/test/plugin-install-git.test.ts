@@ -398,6 +398,53 @@ describe("PluginManager.install with git sources", () => {
 		expect(result.version).toBe("1.0.0");
 	});
 
+	test("forwards GitHub URLs verbatim, including inline credentials", async () => {
+		await Bun.write(
+			pluginsPkgJson,
+			JSON.stringify({ name: "omp-plugins", private: true, dependencies: {} }, null, 2),
+		);
+
+		const spec = "https://token@github.com/foo/private-plugin#v1.0.0";
+		vi.spyOn(Bun, "spawn").mockImplementation(((cmd: string[]) => {
+			expect(cmd[0]).toBe("bun");
+			expect(cmd[1]).toBe("install");
+			// bun resolves GitHub URLs natively (inline credentials go through
+			// git clone), so neither a `git+` prefix nor credential stripping
+			// may alter the spec.
+			expect(cmd[2]).toBe(spec);
+
+			const prepare = (async () => {
+				await Bun.write(
+					pluginsPkgJson,
+					JSON.stringify(
+						{ name: "omp-plugins", private: true, dependencies: { "gh-plugin": spec } },
+						null,
+						2,
+					),
+				);
+				const installedDir = path.join(pluginsNodeModules, "gh-plugin");
+				await fs.mkdir(installedDir, { recursive: true });
+				await Bun.write(
+					path.join(installedDir, "package.json"),
+					JSON.stringify({ name: "gh-plugin", version: "1.0.0" }, null, 2),
+				);
+			})();
+
+			return {
+				pid: 1,
+				stdout: emptyStream(),
+				stderr: emptyStream(),
+				exited: prepare.then(() => 0),
+			} as Subprocess;
+		}) as typeof Bun.spawn);
+
+		const mgr = new PluginManager(tmpRoot);
+		const result = await mgr.install(spec);
+
+		expect(result.name).toBe("gh-plugin");
+		expect(result.version).toBe("1.0.0");
+	});
+
 	test("refreshes Bun's git cache before updating a re-installed github plugin (#3063)", async () => {
 		// Seed plugins/package.json + node_modules with a previously-installed
 		// github plugin. `findGitPackageName` matches the new install spec to

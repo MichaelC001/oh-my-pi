@@ -75,10 +75,12 @@ function validateGitSpec(spec: string): void {
 }
 
 function gitInstallSpec(original: string, source: GitSource): string {
-	const withRef = !source.ref || source.repo.includes("#") ? source.repo : `${source.repo}#${source.ref}`;
-	if (/^github:/i.test(original)) {
+	// bun resolves GitHub specs natively (shorthand → tarball, inline-credential
+	// URLs → git clone with those credentials); forward them untouched.
+	if (source.host === "github.com") {
 		return original;
 	}
+	const withRef = !source.ref || source.repo.includes("#") ? source.repo : `${source.repo}#${source.ref}`;
 	if (/^(https?|ssh):\/\//i.test(withRef) && !/^git\+/i.test(withRef)) {
 		// bun auto-detects git only for GitHub-hosted URLs — prefix `git+` so any
 		// git host is cloned via git instead of being misread as an npm tarball
