@@ -134,7 +134,12 @@ function resolveHelperPath(ctx: HelperContext, rawPath: string, op: "read" | "wr
 	return resolveUnderRoot(scheme, root, match[2], rawPath);
 }
 
-/** The file backing `artifact://<id>` in the artifacts dir `root` (`<id>.<tool>.log`), or `undefined` when absent. */
+/**
+ * The file backing `artifact://<id>` in the artifacts dir `root` (`<id>.<tool>.log`), or `undefined` when absent.
+ * Mirrors `ArtifactManager.getPath`, which lives on the host (the worker cannot import it without loading the
+ * native addon), as `resolveUnderRoot` mirrors the local:// handler. A miss, including a dir still being seeded,
+ * falls back to the read tool, which resolves through the manager.
+ */
 async function resolveArtifactPath(root: string, id: string): Promise<string | undefined> {
 	let files: string[];
 	try {

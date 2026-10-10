@@ -83,8 +83,14 @@ describe("eval js helpers internal-url resolution", () => {
 		expect(await Bun.file(path.join(artifacts, "12")).exists()).toBe(false);
 	});
 
-	it("roots artifact:// at the session's artifacts dir", () => {
-		const session = { cwd: "/tmp", getArtifactsDir: () => "/tmp/session-artifacts" } as unknown as ToolSession;
-		expect(resolveEvalUrlRoots(session).artifact).toBe("/tmp/session-artifacts");
+	it("serves artifact:// from the session's artifacts dir, and leaves it to the read tool without one", async () => {
+		using tmp = TempDir.createSync("@eval-helpers-session-artifacts-");
+		await Bun.write(path.join(tmp.path(), "12.eval.log"), "artifact text");
+		const withDir = { cwd: tmp.path(), getArtifactsDir: () => tmp.path() } as unknown as ToolSession;
+		const withoutDir = { cwd: tmp.path() } as unknown as ToolSession;
+
+		const helpers = createHelpers(makeCtx(tmp.path(), resolveEvalUrlRoots(withDir)));
+		expect(await helpers.read("artifact://12")).toBe("artifact text");
+		expect(createHelpers(makeCtx(tmp.path(), resolveEvalUrlRoots(withoutDir))).hasRoot("artifact://12")).toBe(false);
 	});
 });
