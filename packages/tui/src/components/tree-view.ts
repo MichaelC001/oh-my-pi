@@ -43,6 +43,13 @@ export interface FlattenTreeOptions<T, K extends TreeKey> {
 	rootDepth?: number;
 	/** Override the display depth inherited by direct children. */
 	getChildDepth?: (item: T, row: TreeRow<T, K>, children: readonly T[]) => number;
+	/**
+	 * Reuse the parent ancestor list when a child keeps the same display depth
+	 * and the current item has no siblings (`siblingCount === 1`). Otherwise
+	 * retain the current item as an ancestor so connector gutters remain
+	 * accurate, including when the item has multiple children.
+	 */
+	compactSameDepthAncestors?: boolean;
 	/** Stop projection after this many structural items. Omit for no traversal cap. */
 	maxItems?: number;
 }
@@ -124,10 +131,13 @@ function projectTree<T, K extends TreeKey>(options: FlattenTreeOptions<T, K>): F
 			0,
 			Math.trunc(options.getChildDepth?.(pending.item, row, children) ?? pending.depth + 1),
 		);
-		const childChain: AncestorChain<K> = {
-			value: { key, depth: pending.depth, isLast: row.isLast, siblingCount: pending.siblingCount },
-			parent: chain,
-		};
+		const childChain: AncestorChain<K> | undefined =
+			options.compactSameDepthAncestors && childDepth === pending.depth && pending.siblingCount === 1
+				? chain
+				: {
+						value: { key, depth: pending.depth, isLast: row.isLast, siblingCount: pending.siblingCount },
+						parent: chain,
+					};
 		for (let index = children.length - 1; index >= 0; index--) {
 			stack.push({
 				item: children[index],

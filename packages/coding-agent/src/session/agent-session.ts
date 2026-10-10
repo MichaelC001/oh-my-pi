@@ -154,7 +154,7 @@ import type {
 	ToolInfo,
 	TreePreparation,
 } from "../extensibility/extensions";
-import { emitSessionShutdownEvent, TOP_LEVEL_AGENT } from "../extensibility/extensions";
+import { emitSessionShutdownEvent, TOP_LEVEL_AGENT, UNAVAILABLE_ANNOTATIONS } from "../extensibility/extensions";
 import { extensionEventFromSessionEvent } from "../extensibility/extensions/lifecycle-mirror";
 import { ManagedTimers } from "../extensibility/extensions/managed-timers";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
@@ -194,6 +194,7 @@ import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool
 import rewindReportTemplate from "../prompts/system/rewind-report.md" with { type: "text" };
 import sessionStopBlockedPrompt from "../prompts/system/session-stop-blocked.md" with { type: "text" };
 import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
+import titleCardPrompt from "../prompts/system/title-card.md" with { type: "text" };
 import titleForkPrompt from "../prompts/system/title-fork.md" with { type: "text" };
 import skillfulNoticePrompt from "../prompts/system/skillful-notice.md" with { type: "text" };
 import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
@@ -204,6 +205,7 @@ import {
 	obfuscateProviderContext,
 } from "../secrets/message-transform";
 import type { SecretObfuscator } from "../secrets/obfuscator";
+import { type AgentRef, AgentRegistry } from "../registry/agent-registry";
 import { cfgSecretsEnabled } from "../secrets/settings";
 import { releaseSharpshooterSession } from "../sharpshooter/backend";
 import { flushSharpshooterExtraction } from "../sharpshooter/extract";
@@ -252,7 +254,13 @@ import { extractFileMentions, generateFileMentionMessages } from "../utils/file-
 import { normalizeModelContextImages } from "../utils/image-loading";
 import { TokenRateMeter } from "../utils/token-rate";
 import { resumeCommand } from "../utils/resume-command";
-import { parseCardTitleReply, splitCardTitle } from "../utils/title-card";
+import {
+	formatCardTitle,
+	keepTitleCard,
+	parseCardReply,
+	parseCardTitleReply,
+	splitCardTitle,
+} from "../utils/title-card";
 import { generateSessionTitle, nerdGlyphsActive } from "../utils/title-generator";
 import { buildNamedToolChoice, isToolChoiceActive } from "../utils/tool-choice";
 import type { VibeModeState } from "../vibe/state";
@@ -398,7 +406,13 @@ import type { BuildSessionContextOptions, SessionContext } from "./session-conte
 import { buildSessionContext, getRestorableSessionModels, isTranscriptEntry } from "./session-context";
 import type { CacheWarmer, CacheWarmingMode, CacheWarmingStatus } from "./cache-warmer";
 import { isUserRequestEntry, transcriptEntryMessage, userTurnDraft } from "@oh-my-pi/pi-tui/chat/transcript-entry";
-import { formatSessionDumpText, formatSubagentDumpText, type SessionDumpArchive } from "./session-dump-format";
+import { anonymizeSessionTranscripts } from "./session-anonymizer";
+import {
+	formatSessionDumpText,
+	formatSubagentDumpText,
+	type SessionDumpArchive,
+	type SessionDumpLiveState,
+} from "./session-dump-format";
 import { collectSubSessions, type SubSession } from "./sub-sessions";
 import type { BranchSummaryEntry, NewSessionOptions } from "./session-entries";
 import { SessionHandoff, type SessionHandoffHost } from "./session-handoff";
@@ -485,10 +499,12 @@ import {
 import { cfgTaskBatch, cfgTaskDisabledAgents } from "../task/settings";
 import {
 	cfgBranchSummaryReserveTokens,
+	cfgCompactionModelThresholds,
+	cfgCompactionModelThresholdsEnabled,
 	cfgExtendedContext,
 	cfgWorkspaceAdditionalDirectories,
 } from "./context-settings";
-import { cfgTitleGenerator, cfgTitleIcons, cfgTitleRefreshOnReplan } from "../utils/title-settings";
+import { cfgTitleGenerator, cfgTitleIcons, cfgTitleRefreshOnReplan, type TitleIcons } from "../utils/title-settings";
 import {
 	cfgArchiveEnabled,
 	cfgComputerEnabled,
@@ -692,6 +708,42 @@ export function powerAssertionOptions(mode: "off" | "idle" | "display" | "system
 		display: mode === "display" || mode === "system",
 		system: mode === "system",
 		user: mode === "system",
+	};
+}
+
+/**
+ * Snapshot a live subagent for `/dump all`: registry status/heartbeat, the
+ * partial assistant message still streaming (never persisted until
+ * `message_end`), and tool calls dispatched but not finished.
+ */
+function captureLiveDumpState(ref: AgentRef): SessionDumpLiveState | undefined {
+	const session = ref.session;
+	if (!session) return undefined;
+	const state = session.agent.state;
+	let streamMessage = state.streamMessage;
+	const obfuscator = session.obfuscator;
+	if (streamMessage?.role === "assistant" && obfuscator?.hasSecrets()) {
+		streamMessage = { ...streamMessage, content: deobfuscateAssistantContent(obfuscator, streamMessage.content) };
+	}
+	// Tools run after their assistant message ends, so pending calls live in the newest
+	// persisted assistant turns; scan backwards and stop once every pending id is named.
+	const toolNames = new Map<string, string>();
+	const messages = state.messages;
+	for (let i = messages.length - 1; i >= 0 && toolNames.size < state.pendingToolCalls.size; i--) {
+		const message = messages[i];
+		if (message.role !== "assistant") continue;
+		for (const block of message.content) {
+			if (block.type === "toolCall" && state.pendingToolCalls.has(block.id)) toolNames.set(block.id, block.name);
+		}
+	}
+	return {
+		status: ref.status,
+		capturedAt: Date.now(),
+		lastActivity: ref.lastActivity,
+		activity: ref.activity,
+		busy: session.isStreaming,
+		streamMessage,
+		pendingToolCalls: [...state.pendingToolCalls].map(id => `${toolNames.get(id) ?? "unknown"} (${id})`),
 	};
 }
 
@@ -1477,14 +1529,22 @@ export class AgentSession implements SettingsScope {
 		// after the loop's final queue/aside poll. Such a tail arrival is a real
 		// continuation, not a terminal stop: mark this end non-terminal so
 		// subscribers wait through the queued steer/follow-up or stranded IRC wake.
-		const canDrain =
-			!this.#abortInProgress && this.#unsubscribeAgent !== undefined && this.#modeExitDrainSuppressionDepth === 0;
+		// An abort flushes here before its own `finally` drain, which still delivers
+		// a queued steer (interrupt-and-send), so queued work counts during an abort
+		// too. Stranded IRC does not: a user interrupt folds most of it into context
+		// instead of waking.
+		const canDrain = this.#unsubscribeAgent !== undefined && this.#modeExitDrainSuppressionDepth === 0;
 		const queuedContinuation =
 			canDrain &&
 			!this.#queuedMessageDrainBlocked &&
 			this.#canAutoContinueForFollowUp() &&
 			this.agent.hasQueuedMessages();
-		const ircContinuation = canDrain && !this.#isDisposed && !this.#planModeState?.enabled && this.#irc.hasPending();
+		const ircContinuation =
+			canDrain &&
+			!this.#abortInProgress &&
+			!this.#isDisposed &&
+			!this.#planModeState?.enabled &&
+			this.#irc.hasPending();
 		this.#emit(queuedContinuation || ircContinuation ? { ...pending, isTerminal: false } : pending);
 	}
 
@@ -2356,10 +2416,13 @@ export class AgentSession implements SettingsScope {
 		cfgProviderAppendOnlyContext.listen(this, () => this.#syncAppendOnlyContext(this.model));
 		cfgModelRoles.listen(this, () => this.#advisors.reconcileModelRoles());
 		// Re-derive the active model's effective context window when the
-		// extended-context setting flips at runtime: the registry re-clamps (or
-		// restores) premium long-context windows, and the live model object must
+		// extended-context setting flips at runtime, or a per-model compaction
+		// point moves past (or back inside) a standard window or is switched on/off: the registry
+		// re-clamps (or restores) extended windows, and the live model object must
 		// follow so compaction thresholds and context display react immediately.
-		cfgExtendedContext.listen(this, () => this.#reapplyExtendedContextPolicy());
+		cfgExtendedContext.listen(this, () => this.#reapplyContextWindowPolicy());
+		cfgCompactionModelThresholds.listen(this, () => this.#reapplyContextWindowPolicy());
+		cfgCompactionModelThresholdsEnabled.listen(this, () => this.#reapplyContextWindowPolicy());
 		cfgBrowserEnabled.listen(this, enabled => this.#reconcileEvalPreludeSetting("browser.enabled", enabled));
 		cfgComputerEnabled.listen(this, enabled => this.#reconcileEvalPreludeSetting("computer.enabled", enabled));
 		cfgRatchetEnabled.listen(this, enabled => this.#reconcileEvalPreludeSetting("ratchet.enabled", enabled));
@@ -5902,7 +5965,10 @@ export class AgentSession implements SettingsScope {
 
 	async #refreshLazyLocalContext(model: Model): Promise<void> {
 		try {
-			const refreshed = await this.#modelRegistry.refreshSelectedModelMetadata(model);
+			const refreshed = this.#modelRegistry.fitContextWindow(
+				await this.#modelRegistry.refreshSelectedModelMetadata(model),
+				this.settings,
+			);
 			const current = this.model;
 			// Skip if the user switched models mid-stream, or the runtime window
 			// matches what the session already holds.
@@ -8029,6 +8095,9 @@ export class AgentSession implements SettingsScope {
 			},
 			getSystemPrompt: () => this.systemPrompt,
 			runEphemeralTurn: args => this.runEphemeralTurn(args),
+			// The SDK always builds a runner (which receives the annotations factory); this runner-less
+			// context only exists for directly constructed sessions, which have no `/annotate` wiring.
+			annotations: UNAVAILABLE_ANNOTATIONS,
 			setInterval: (callback, ms, ...args) => this.#fallbackTimers().setInterval(callback, ms, ...args),
 			setTimeout: (callback, ms, ...args) => this.#fallbackTimers().setTimeout(callback, ms, ...args),
 			clearTimer: timer => this.#fallbackTimers().clear(timer),
@@ -9259,9 +9328,7 @@ export class AgentSession implements SettingsScope {
 		this.#titleGenerationInFlightFor = sessionId;
 		const signal = this.#titleGenerationAbortController.signal;
 		const started = performance.now();
-		// Ask only for the icons the title can show: an emoji without Nerd Fonts, no card when boring.
-		const configuredIcons = cfgTitleIcons.get(this.settings);
-		const icons = configuredIcons === "nf+emoji" && !nerdGlyphsActive() ? "emoji" : configuredIcons;
+		const icons = this.#cardIcons();
 		this.runEphemeralTurn({
 			promptText: prompt.render(titleForkPrompt, {
 				card: icons !== "boring",
@@ -9304,6 +9371,12 @@ export class AgentSession implements SettingsScope {
 					error: err instanceof Error ? err.message : String(err),
 				});
 			});
+	}
+
+	/** The icons a new card may show: `title.icons`, an emoji where Nerd Fonts glyphs do not render, no card when boring. */
+	#cardIcons(): TitleIcons {
+		const icons = cfgTitleIcons.get(this.settings);
+		return icons === "nf+emoji" && !nerdGlyphsActive() ? "emoji" : icons;
 	}
 
 	#fallBackFromTitleFork(input: TitleInput, signal: AbortSignal): void {
@@ -9448,22 +9521,59 @@ export class AgentSession implements SettingsScope {
 		return this.#titleGenerationAbortController.signal;
 	}
 
+	/**
+	 * The title `/rename` gives the session: `title` as typed, else a fresh
+	 * title-model title for the recent conversation that keeps the current
+	 * title's card. A result without a card is headed by one the title model
+	 * names for it, unless `title.icons` is `boring`; a failed card leaves it plain.
+	 *
+	 * A request that asks a model reserves a title revision first, which
+	 * discards an older rename still generating; one with nothing to generate
+	 * leaves it running.
+	 *
+	 * Resolves `null` when the conversation names no task or title generation
+	 * fails, and `undefined` when a session switch or newer rename invalidated
+	 * the request, or an interrupt cancelled a generated title (a typed title
+	 * still applies, without the card it was waiting for).
+	 */
+	async renameTitle(title?: string, signal?: AbortSignal): Promise<string | null | undefined> {
+		const icons = this.#cardIcons();
+		const needsCard = (name: string) => icons !== "boring" && !splitCardTitle(name);
+		if (title && !needsCard(title)) return title;
+		const context = title ? undefined : this.#buildReplanTitleContext();
+		if (context !== undefined && (!context || isLowSignalTitleInput(context))) return null;
+		const { sessionManager } = this;
+		const revision = sessionManager.reserveTitleRevision();
+		const sessionId = sessionManager.getSessionId();
+		const titleSignal = this.titleGenerationSignal;
+		const stale = () =>
+			(!title && titleSignal.aborted) ||
+			sessionManager.getSessionId() !== sessionId ||
+			sessionManager.titleRevision !== revision;
+		const named = context === undefined ? title : await this.#retitle(context, signal);
+		if (stale()) return undefined;
+		if (!named || !needsCard(named)) return named ?? null;
+		const cardPrompt = prompt.render(titleCardPrompt, { nerdFonts: icons === "nf+emoji" });
+		const reply = await this.generateTitle(named, cardPrompt, signal);
+		if (stale()) return undefined;
+		const card = reply ? parseCardReply(reply, icons) : undefined;
+		return card ? formatCardTitle(card, named) : named;
+	}
+
+	/** A fresh title-model title for `context` that keeps the current title's card; null when generation fails. */
+	async #retitle(context: string, signal?: AbortSignal): Promise<string | null> {
+		const title = await this.generateTitle(context, undefined, signal);
+		return title && keepTitleCard(this.sessionName, title);
+	}
+
 	async #refreshTitleAfterReplan(context: string, sessionId: string): Promise<void> {
-		const title = await this.generateTitle(context);
+		const title = await this.#retitle(context);
 		if (!title) return;
 		if (this.sessionManager.getSessionId() !== sessionId) return;
 		if (!cfgTitleRefreshOnReplan.get(this.settings)) return;
 		if (this.sessionManager.titleSource === "user") return;
-		// A replan refines the same task: the title keeps its card (the title
-		// model names none), so a card terminal's index stays stable.
-		const card = splitCardTitle(this.sessionManager.getSessionName() ?? "");
 		const setSessionName = this.sessionManager.setSessionName as SetSessionNameWithTrigger;
-		await setSessionName.call(
-			this.sessionManager,
-			card ? `${card.icon} ${card.code}: ${title}` : title,
-			"auto",
-			"replan",
-		);
+		await setSessionName.call(this.sessionManager, title, "auto", "replan");
 	}
 
 	/** Currently-applied {@link TITLE_SYSTEM.md} override, or undefined when the
@@ -10508,22 +10618,32 @@ export class AgentSession implements SettingsScope {
 	}
 
 	/**
-	 * Rebuild the model catalog after an `extendedContext` toggle and rebind the
-	 * active model when its effective context window changed. Same-model rebinds
-	 * skip provider-session resets (`modelsAreEqual` sees no change), so this
-	 * only refreshes metadata consumers (compaction thresholds, context display).
+	 * Rebuild the model catalog after an `extendedContext` toggle or a
+	 * `compaction.modelThresholds` edit and rebind the active model when its
+	 * effective context window changed. Same-model rebinds skip provider-session
+	 * resets (`modelsAreEqual` sees no change), so this only refreshes metadata
+	 * consumers (compaction thresholds, context display).
 	 */
-	async #reapplyExtendedContextPolicy(): Promise<void> {
+	async #reapplyContextWindowPolicy(): Promise<void> {
+		// Refit the bound row right away (the agent's model resolver applies this
+		// session's settings to its known tiers), so a prompt started before the
+		// catalog rebuild settles already runs with the new window.
+		const previousModel = this.model;
+		if (previousModel) this.agent.setModel(previousModel);
 		try {
 			await this.#modelRegistry.reapplyModelPolicies();
 			const currentModel = this.model;
 			if (!currentModel || this.#isDisposed) return;
-			const updated = this.#modelRegistry.find(currentModel.provider, currentModel.id);
-			if (updated && updated.contextWindow !== currentModel.contextWindow) {
+			const found = this.#modelRegistry.find(currentModel.provider, currentModel.id);
+			const updated = found && this.#modelRegistry.fitContextWindow(found, this.settings);
+			// Compare against the window bound before the refit so dependent state
+			// still reconciles once even though the refit already moved the row.
+			const baseline = previousModel && modelsAreEqual(previousModel, currentModel) ? previousModel : currentModel;
+			if (updated && updated.contextWindow !== baseline.contextWindow) {
 				await this.#setModelWithProviderSessionReset(updated);
 			}
 		} catch (error) {
-			logger.warn("extended-context policy reapply failed", { error: String(error) });
+			logger.warn("context-window policy reapply failed", { error: String(error) });
 		}
 	}
 
@@ -10592,11 +10712,16 @@ export class AgentSession implements SettingsScope {
 
 	#resetCurrentResponsesProviderSession(reason: string): void {
 		const currentModel = this.model;
-		if (currentModel?.api !== "openai-responses" && currentModel?.api !== "openai-codex-responses") {
+		if (currentModel?.api === "openai-responses") {
+			// Keep the closed record: it rebuilds history from message content until
+			// the next success, while a fresh one on a host without connection
+			// binding would resend the native items the server just refused.
+			this.#providerSessionState.get(`openai-responses:${currentModel.provider}`)?.close();
+		} else if (currentModel?.api === "openai-codex-responses") {
+			this.#closeProviderSessionsForModelSwitch(currentModel, currentModel);
+		} else {
 			return;
 		}
-
-		this.#closeProviderSessionsForModelSwitch(currentModel, currentModel);
 		this.agent.appendOnlyContext?.invalidateForModelChange();
 		logger.debug("Reset Responses provider session after stale replay error", {
 			provider: currentModel.provider,
@@ -13018,9 +13143,11 @@ export class AgentSession implements SettingsScope {
 	 * {@link formatSessionAsText} transcript), `llm-request.json` (the
 	 * {@link dumpLlmRequestToTmpDir} payload), and one `subagents/<path>.md` per
 	 * persisted subagent transcript stored next to the session file, nested
-	 * subagents included. Subagents with no messages are skipped. A subagent
-	 * discovery failure still writes the main dump and is reported in
-	 * `subagentError`.
+	 * subagents included. Subagents still live in this process also carry their
+	 * registry status, last activity, pending tool calls, and the in-flight
+	 * assistant turn that is not persisted yet. Subagents with no messages and
+	 * no in-flight turn are skipped. A subagent discovery failure still writes
+	 * the main dump and is reported in `subagentError`.
 	 *
 	 * The archive persists on disk and may contain raw context/secrets.
 	 *
@@ -13046,16 +13173,26 @@ export class AgentSession implements SettingsScope {
 			subagentError = error instanceof Error ? error.message : String(error);
 			logger.warn("Failed to collect subagent transcripts for dump", { sessionFile, error: subagentError });
 		}
+		const liveByFile = new Map<string, AgentRef>();
+		for (const ref of AgentRegistry.global().list()) {
+			if (ref.session && ref.sessionFile) liveByFile.set(path.resolve(ref.sessionFile), ref);
+		}
+		const subagentRoot = sessionFile?.endsWith(".jsonl") ? sessionFile.slice(0, -6) : undefined;
 		let subagentCount = 0;
 		for (const [key, sub] of Object.entries(subSessions)) {
 			const context = deobfuscateSessionContext(buildSessionContext(sub.entries, sub.leafId), this.#obfuscator);
-			if (context.messages.length === 0) continue;
+			const liveRef = subagentRoot
+				? liveByFile.get(path.resolve(path.join(subagentRoot, ...key.split("/")) + ".jsonl"))
+				: undefined;
+			const live = liveRef ? captureLiveDumpState(liveRef) : undefined;
+			if (context.messages.length === 0 && !live?.streamMessage) continue;
 			const text = formatSubagentDumpText({
 				key,
 				messages: context.messages,
 				model: context.models.default,
 				thinkingLevel: context.thinkingLevel,
 				aborted: sub.aborted,
+				live,
 			});
 			entries.push([`subagents/${key}.md`, `${text}\n`]);
 			subagentCount++;
@@ -13063,6 +13200,35 @@ export class AgentSession implements SettingsScope {
 		const filePath = path.join(os.tmpdir(), `omp-dump-${Snowflake.next()}.zip`);
 		await writeArchive(filePath, "zip", entries);
 		return { path: filePath, files: entries.map(([name]) => name), subagentCount, subagentError };
+	}
+
+	/**
+	 * Write `/dump anon` to an auto-named zip in `os.tmpdir()`: `session.jsonl`
+	 * and one `subagents/<path>.jsonl` per persisted subagent, anonymized with one
+	 * shared token table (see {@link anonymizeSessionTranscripts}).
+	 *
+	 * @returns the archive path and member names, or `undefined` when the main
+	 * session has no messages.
+	 */
+	async dumpAnonymizedArchiveToTmpDir(): Promise<SessionDumpArchive | undefined> {
+		if (this.messages.length === 0) return undefined;
+		const result = await anonymizeSessionTranscripts({
+			header: this.sessionManager.getHeader(),
+			entries: this.sessionManager.getEntries(),
+			sessionFile: this.sessionManager.getSessionFile(),
+			malformedRecords: this.sessionManager.loadedMalformedRecords,
+		});
+		const filePath = path.join(os.tmpdir(), `omp-dump-anon-${Snowflake.next()}.zip`);
+		await writeArchive(filePath, "zip", result.files);
+		return {
+			path: filePath,
+			files: result.files.map(([name]) => name),
+			subagentCount: result.subagentCount,
+			subagentError: result.subagentError,
+			anonymized: true,
+			malformed: result.malformed,
+			unreadable: result.unreadable,
+		};
 	}
 
 	/**
@@ -13189,7 +13355,8 @@ export class AgentSession implements SettingsScope {
 		// switched models while discovery was in flight.
 		const current = this.model;
 		if (!current || !modelsAreEqual(current, boundAtStartup)) return;
-		const refreshed = this.#modelRegistry.find(current.provider, current.id);
+		const found = this.#modelRegistry.find(current.provider, current.id);
+		const refreshed = found && this.#modelRegistry.fitContextWindow(found, this.settings);
 		if (!refreshed || refreshed.contextWindow === current.contextWindow) return;
 		this.agent.setModel(refreshed);
 		await this.#reconcileModelDependentState(current, refreshed);
