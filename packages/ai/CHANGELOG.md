@@ -4,7 +4,7 @@
 
 ### Changed
 
-- When a session moves to another host serving the same model (Kimi K3, DeepSeek V4, GLM 5+, MiniMax M3), the model's earlier reasoning now reaches the new host in its reasoning field instead of as `<think>` text inside earlier replies, which the model could start imitating in its own replies. Reasoning summaries from OpenAI Responses and Gemini are marked on the stored thinking block and never carried.
+- When a session moves to another host serving the same model (Kimi K3, DeepSeek V4, GLM 5+, MiniMax M3), the model's earlier reasoning now reaches the new host in its reasoning field instead of as `<think>` text inside earlier replies, which the model could start imitating in its own replies. Reasoning summaries from OpenAI Responses and Gemini are marked on the stored thinking block and never carried ([#15123](https://github.com/can1357/oh-my-pi/pull/15123) by [@will-bogusz](https://github.com/will-bogusz)).
 
 ## [18.8.7] - 2026-10-09
 
