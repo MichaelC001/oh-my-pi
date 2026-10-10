@@ -529,6 +529,52 @@ describe("browser tabs whose renderer crashed", () => {
 	);
 
 	it.skipIf(!CHROMIUM_AVAILABLE)(
+		"keeps a crashed tab busy while the failing call reloads it",
+		async () => {
+			const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+			const name = `crashed-busy-${process.pid}`;
+			const url = `data:text/html,<title>${name}</title>`;
+			try {
+				await acquireTab(name, browser, { url, timeoutMs: 30_000 });
+				const tab = getTab(name);
+				if (tab?.backend !== "worker") throw new Error("Expected a worker tab");
+				await crashRenderer(browser, url);
+				const crashedWorker = tab.worker;
+				const terminate = crashedWorker.terminate.bind(crashedWorker);
+				const recycling = Promise.withResolvers<void>();
+				const resume = Promise.withResolvers<void>();
+				// The recycle terminates the crashed page's worker before starting a new one: hold it there.
+				const terminateSpy = spyOn(crashedWorker, "terminate").mockImplementation(async () => {
+					await terminate();
+					recycling.resolve();
+					await resume.promise;
+				});
+				try {
+					const failure = runInTab(name, { code: "return 1;", timeoutMs: 10_000, session }).catch(
+						(error: unknown) => error,
+					);
+					await recycling.promise;
+					const sibling = await runInTab(name, { code: "return 2;", timeoutMs: 10_000, session }).catch(
+						(error: unknown) => error,
+					);
+					expect(String(sibling)).toContain("is busy");
+					resume.resolve();
+					expect(String(await failure)).toContain("its page reloaded");
+				} finally {
+					resume.resolve();
+					terminateSpy.mockRestore();
+				}
+				const next = await runInTab(name, { code: "return await page.title();", timeoutMs: 10_000, session });
+				expect(next.returnValue).toBe(name);
+			} finally {
+				await releaseTab(name, { kill: true });
+				if ("browser" in browser && browser.browser.connected) await releaseBrowser(browser, { kill: true });
+			}
+		},
+		45_000,
+	);
+
+	it.skipIf(!CHROMIUM_AVAILABLE)(
 		"closes a tab whose page crashes again as it reloads",
 		async () => {
 			const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
