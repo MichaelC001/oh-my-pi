@@ -87,6 +87,8 @@
 - Fixed a session staying busy for good, with every later message queued and never answered, when the session file could not be written as an automatic retry ended (a full disk or an unwritable transcript) ([#15177](https://github.com/can1357/oh-my-pi/pull/15177) by [@sjawhar](https://github.com/sjawhar))
 - Fixed browser calls on a tab whose renderer crashed waiting out their timeout: the call now fails at once with the page reloaded, or the tab closed when the page cannot come back (headless, connected Chrome, relay) ([#15142](https://github.com/can1357/oh-my-pi/pull/15142) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed the custom-tool quickstart: it used a `--tool` flag omp does not have and pointed at a `todo/` example that is not in the repo; it now uses the shipped `hello` example and the supported discovery routes ([#15088](https://github.com/can1357/oh-my-pi/pull/15088) by [@danzaio](https://github.com/danzaio), fixes [#15069](https://github.com/can1357/oh-my-pi/issues/15069))
+- Fixed `/tan` forks retaining nested task-result billing after inherited spend is reset ([#15039](https://github.com/can1357/oh-my-pi/pull/15039) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
+- Fixed subagent completion-probe charges disappearing after parking or restart ([#15038](https://github.com/can1357/oh-my-pi/pull/15038) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
 
 ## [18.8.7] - 2026-10-09
 
