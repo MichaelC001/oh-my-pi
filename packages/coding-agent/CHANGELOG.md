@@ -6,6 +6,9 @@
 
 - Added `ctx.annotations` so extensions can submit or collect `/annotate` feedback on text and diffs ([#15260](https://github.com/can1357/oh-my-pi/pull/15260) by [@Shadorain](https://github.com/Shadorain)).
 - Added **Extra Context Files** to `/settings` → **Context** so custom instruction filenames can be configured without editing YAML ([#15252](https://github.com/can1357/oh-my-pi/pull/15252) by [@Shadorain](https://github.com/Shadorain)).
+### Fixed
+
+- Fixed computer-use `await win.observe()` as a cell's last expression printing the accessibility tree twice, once as text and again inside the displayed value ([#15270](https://github.com/can1357/oh-my-pi/pull/15270) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.9] - 2026-10-10
 

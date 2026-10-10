@@ -58,7 +58,6 @@
 		"press",
 		"raise",
 		"ax",
-		"observe",
 		"holdKeys",
 		"holdMouse",
 		"bringToCurrentSpace",
@@ -127,6 +126,16 @@
 			defineMethod(win, namespace, Object.freeze(nested));
 		}
 		defineMethod(win, "find", async query => (await callValue(via(step("find", [query])))).map(makeElement));
+		// A non-silent observe() already printed its tree; `ax` stays readable but is left out
+		// of display, spread and serialization, so a trailing `await win.observe()` shows it once.
+		defineMethod(win, "observe", async options => {
+			const silent = Boolean(options?.silent);
+			const observation = await callValue(via(step("observe", [options])));
+			if (!silent && typeof observation?.ax === "string") {
+				Object.defineProperty(observation, "ax", { enumerable: false });
+			}
+			return observation;
+		});
 		defineMethod(win, "ref", ref => resolveElement([step("ref", [ref])]));
 		return Object.freeze(win);
 	};

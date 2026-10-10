@@ -1760,6 +1760,92 @@ describe("expanded computer APIs", () => {
 		}
 	});
 
+	it("leaves a printed observe() tree out of the JavaScript value's display, but keeps ax readable", async () => {
+		const session = toolSession();
+		const native = new ZoomNativeSession();
+		const prelude = workerPrelude(session, native);
+		const context = { session, toolCallId: "observe-once-js" };
+		const printed: string[] = [];
+		const realm = createContext({
+			__omp_display__: (text: string) => printed.push(text),
+			__omp_prelude__: async (_name: string, parameters: unknown) => {
+				const result = await prelude.invoke(parameters, context);
+				const text = result.content.flatMap(block => (block.type === "text" ? [block.text] : [])).join("\n");
+				return { text, details: result.details };
+			},
+		});
+		runInContext(prelude.javascript, realm);
+		try {
+			const [mutated, observation, silent] = await runInContext(
+				`(async () => {
+					const win = await computer.window(42);
+					const options = { silent: true };
+					const pending = win.observe(options);
+					options.silent = false;
+					const mutated = await pending;
+					return [mutated, await win.observe(), await win.observe({ silent: true })];
+				})()`,
+				realm,
+			);
+			expect(printed.join("\n").split("- button [ref=e1]")).toHaveLength(2);
+			expect(observation.ax).toBe("- button [ref=e1]");
+			// Eval displays a trailing value as its structured clone.
+			expect(structuredClone(observation)).not.toHaveProperty("ax");
+			expect(structuredClone(observation)).toMatchObject({ nodeCount: 1, truncated: false });
+			expect({ ...observation }).not.toHaveProperty("ax");
+			expect(JSON.parse(JSON.stringify(observation))).not.toHaveProperty("ax");
+			expect(structuredClone(silent)).toMatchObject({ ax: "- button [ref=e1]", nodeCount: 1 });
+			// The call ran silent, so its value keeps the only copy of the tree.
+			expect(structuredClone(mutated)).toMatchObject({ ax: "- button [ref=e1]" });
+		} finally {
+			await prelude.invoke({ action: "close" }, context);
+		}
+	});
+
+	it("prints a trailing Python observe() tree once and keeps ax readable", async () => {
+		let definitions: readonly EvalPreludeDefinition[] = [];
+		const session: ToolSession = { ...toolSession(), getEvalPreludes: () => definitions };
+		const native = new ZoomNativeSession();
+		const prelude = workerPrelude(session, native);
+		definitions = [prelude];
+		const run = (code: string) =>
+			executePython(code, {
+				cwd: process.cwd(),
+				sessionId: `computer-observe-once-${crypto.randomUUID()}`,
+				toolSession: session,
+				kernelMode: "per-call",
+			});
+		// Everything the model reads from a cell: printed text and structured displays.
+		const trees = async (call: string) => {
+			const result = await run(`win = await computer.window(42)\n${call}`);
+			expect(result.exitCode).toBe(0);
+			return `${result.output}${JSON.stringify(result.displayOutputs)}`.split("- button [ref=e1]").length - 1;
+		};
+		try {
+			for (const call of [
+				"await win.observe()",
+				"display(await win.observe())",
+				"await win.observe(silent=True)",
+				"await win.observe({'silent': True})",
+				"await win.observe({'silent': True}, silent=None)",
+				"await win.observe({'silent': True}, silent=False)",
+				"await win.observe({'silent': False}, silent=True)",
+			]) {
+				expect([call, await trees(call)]).toEqual([call, 1]);
+			}
+			const read = await run(
+				"obs = await (await computer.window(42)).observe()\nprint(obs['ax'] == '- button [ref=e1]')",
+			);
+			expect(read.output.trim().split("\n").at(-1)).toBe("True");
+			const pickled = await run(
+				"import pickle\nobs = await (await computer.window(42)).observe()\ncopy = pickle.loads(pickle.dumps(obs))\nprint(type(copy) is dict and copy == dict(obs) and 'ax' in copy)",
+			);
+			expect(pickled.output.trim().split("\n").at(-1)).toBe("True");
+		} finally {
+			await prelude.invoke({ action: "close" }, { session, toolCallId: "observe-once-py" });
+		}
+	});
+
 	it("does not emit a failed observation or replace the prior frame before the next click", async () => {
 		class FailingObservation extends ZoomNativeSession {
 			override async observe(_target: string): Promise<{
