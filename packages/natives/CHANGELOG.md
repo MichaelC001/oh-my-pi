@@ -4,7 +4,7 @@
 
 ### Added
 
-- macOS desktop sessions keep the display awake while in use (released five minutes after the last call or on close); capabilities report `screenLocked`/`displayAsleep`, captures carry `screenLocked`, and failures name the state
+- macOS desktop sessions keep the display awake while in use (released five minutes after the last call or on close); capabilities report `screenLocked`/`displayAsleep`, captures carry `screenLocked`, and failures name the state ([#15188](https://github.com/can1357/oh-my-pi/pull/15188) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.7] - 2026-10-09
 
