@@ -80,6 +80,7 @@
 ### Fixed
 
 - Fixed the loop watchdog attributing `ui.loop-blocked` to work outside the late window or outweighed by unlabeled time. Named phases now include `phaseMs`; earlier work and unlabeled stalls remain `unknown`, including after a TUI restart ([#15019](https://github.com/can1357/oh-my-pi/pull/15019) by [@jaredlyon](https://github.com/jaredlyon)).
+- Fixed `ui.loop-blocked` reporting `unknown` when a terminal write blocks the event loop while the terminal drains (Windows, or when the output pump is unavailable); those stalls are now logged as `ui.terminal-write` ([#15029](https://github.com/can1357/oh-my-pi/pull/15029) by [@jaredlyon](https://github.com/jaredlyon)).
 
 ## [18.8.7] - 2026-10-09
 
