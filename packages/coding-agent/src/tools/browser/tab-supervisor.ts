@@ -122,9 +122,7 @@ export interface WorkerTabSession extends TabSessionBase<PuppeteerBrowserHandle>
 	backend: "worker";
 	worker: WorkerHandle;
 	activateForScreenshot: boolean;
-	/** The page's renderer crashed since the last run; the next run reattaches the page first. */
-	crashed?: boolean;
-	/** A recycle gave the tab a worker that attached to its page instead of creating it; that worker's close leaves the page open. */
+	/** A recycle gave the tab a worker that adopted its page instead of creating it; that worker's close leaves the page open. */
 	reattached?: boolean;
 }
 
@@ -236,16 +234,15 @@ const OPEN_NAVIGATION_REPORT_MS = 500;
 // mapped to the kill reason. Lets the next `run` on that name explain WHY the tab
 // vanished instead of a bare "not alive". Cleared when the name is opened again.
 const killedTabs = new Map<string, string>();
-const RENDERER_CRASHED_MESSAGE = "Browser tab's renderer crashed and the page's state is lost";
+const DEFAULT_TAB_CLOSE_TIMEOUT_MS = 5_000;
 // What a worker recycle (`recycleTimedOutWorkerTab`) resets, for results that report one.
 const RECYCLE_RESETS =
 	"Tab state set since it was opened was reset (tab.route routes, emulation and user agent, init scripts, element ids, the request log, HAR recording, run globals), any open dialog was dismissed, and any page still loading was stopped.";
 const RENDERER_RELOADED_NOTE = `This tab's renderer had crashed, so the tab was reattached to a new worker and its page reloaded. ${RECYCLE_RESETS}`;
-const DEFAULT_TAB_CLOSE_TIMEOUT_MS = 5_000;
 class RecoverableWorkerError extends ToolError {}
 /** A worker `tab.goto` outlasted its budget; the page stays on what loaded. */
 class NavigationTimeoutError extends ToolError {}
-/** The page's renderer crashed while a worker was starting on it. */
+/** The page's renderer crashed; the run that reports it recycles the worker. */
 class RendererCrashedError extends ToolError {}
 const REPORTED_INIT_FAILURE = Symbol("reported-init-failure");
 
@@ -362,29 +359,6 @@ async function acquireTabImpl(
 	// below cannot drop it to refCount 0 and dispose the instance we are about
 	// to reuse (e.g. reopening the sole tab with a different dialogs policy).
 	let tempHold = false;
-	let reattachedAfterCrash = false;
-	const crashed = tabs.get(name);
-	if (crashed?.backend === "worker" && crashed.crashed && crashed.browser === browser && crashed.state === "alive") {
-		// An empty run reattaches it holding the tab busy like any call. A page that does not come back gets
-		// its tab killed, and this open makes a new one on the held browser.
-		holdBrowser(browser);
-		try {
-			await runInTabWithSnapshot(
-				name,
-				{ code: "", timeoutMs: opts.timeoutMs, signal: opts.signal },
-				{ cwd: getProjectDir() },
-			);
-			reattachedAfterCrash = true;
-		} catch (error) {
-			if (tabs.get(name) === crashed && crashed.state === "alive") {
-				await releaseBrowser(browser, { kill: false });
-				throw error;
-			}
-			killedTabs.delete(name);
-		}
-		if (reattachedAfterCrash) await releaseBrowser(browser, { kill: false });
-		else tempHold = true;
-	}
 	const existing = tabs.get(name);
 	if (existing) {
 		if (existing.browser === browser && existing.state === "alive") {
@@ -439,27 +413,37 @@ async function acquireTabImpl(
 						`await tab.emulate({ viewport: ${JSON.stringify({ width: opts.viewport.width, height: opts.viewport.height, scale: opts.viewport.deviceScaleFactor })} });`,
 					);
 				}
-				if (reuseSteps.length) {
-					await runInTabWithSnapshot(
-						name,
-						{
-							code: reuseSteps.join("\n"),
-							timeoutMs: opts.timeoutMs,
-							signal: opts.signal,
-						},
-						{ cwd: getProjectDir() },
-					);
-				}
-				if (opts.url) await navigateOpenedTab(name, opts.url, opts, startedAt);
-				return {
-					tab: tabs.get(name)!,
-					created: false,
-					note: reattachedAfterCrash ? RENDERER_RELOADED_NOTE : undefined,
+				const reuse = async (): Promise<void> => {
+					if (reuseSteps.length) {
+						await runInTabWithSnapshot(
+							name,
+							{
+								code: reuseSteps.join("\n"),
+								timeoutMs: opts.timeoutMs,
+								signal: opts.signal,
+							},
+							{ cwd: getProjectDir() },
+						);
+					}
+					if (opts.url) await navigateOpenedTab(name, opts.url, opts, startedAt);
 				};
+				let note: string | undefined;
+				try {
+					await reuse();
+				} catch (error) {
+					// The tab's renderer had crashed: the failed step reloaded the page on a new worker, so the
+					// open goes on with it once. A tab closed by the crash, or a second crash, fails the open.
+					if (
+						!(error instanceof RendererCrashedError && tabs.get(name) === existing && existing.state === "alive")
+					)
+						throw error;
+					note = RENDERER_RELOADED_NOTE;
+					await reuse();
+				}
+				return { tab: tabs.get(name)!, created: false, note };
 			}
 		} else {
-			// A failed crash reattach already holds it while a close still tears the tab down.
-			if (existing.browser === browser && !tempHold) {
+			if (existing.browser === browser) {
 				holdBrowser(browser);
 				tempHold = true;
 			}
@@ -614,7 +598,12 @@ async function navigateOpenedTab(
 			await rollBackCreatedTab(name, created);
 			throw error;
 		}
-		if (error instanceof ToolAbortError || !(error instanceof Error) || tabs.get(name)?.state !== "alive")
+		if (
+			error instanceof ToolAbortError ||
+			error instanceof RendererCrashedError ||
+			!(error instanceof Error) ||
+			tabs.get(name)?.state !== "alive"
+		)
 			throw error;
 		throw new ToolError(
 			`${error.message}\nTab ${JSON.stringify(name)} stays open on what loaded; reach it with browser.tab(${JSON.stringify(name)}).`,
@@ -897,29 +886,13 @@ async function runInTabWithSnapshot(
 			}
 		}
 	}
-	// Rejected on abort, for the crashed tab's reattach below: the worker being replaced cannot answer `abort`.
-	const aborted = Promise.withResolvers<never>();
-	aborted.promise.catch(() => undefined);
 	const abort = (): void => {
 		safeSend(tab, { type: "abort", id });
 		for (const ctrl of pending.toolCalls.values()) ctrl.abort(opts.signal?.reason);
-		aborted.reject(new ToolAbortError());
 	};
 	if (opts.signal?.aborted) abort();
 	else opts.signal?.addEventListener("abort", abort, { once: true });
-	// A reattach this run stopped waiting for; the tab stays busy until it settles.
-	let reattachInFlight: Promise<boolean> | undefined;
 	try {
-		const reattachedAfterCrash = tab.crashed === true;
-		if (reattachedAfterCrash) {
-			const reattach = reattachCrashedTab(tab, name, opts.timeoutMs);
-			reattachInFlight = reattach;
-			// Killed or closed instead: that rejected this run with its reason.
-			if (!(await Promise.race([reattach, aborted.promise]))) return await promise;
-			reattachInFlight = undefined;
-			// The worker ignores `abort` for a run it never started.
-			if (opts.signal?.aborted) throw new ToolAbortError();
-		}
 		tab.worker.send({
 			type: "run",
 			id,
@@ -949,9 +922,21 @@ async function runInTabWithSnapshot(
 						: "Browser request interception could not be reset after this run; the tab was closed.",
 				});
 			}
-			if (reattachedAfterCrash) result.displays.unshift({ type: "text", text: RENDERER_RELOADED_NOTE });
 			return result;
 		} catch (error) {
+			if (error instanceof RendererCrashedError) {
+				const reattached = await recoverWorkerTab(
+					tab,
+					name,
+					opts.timeoutMs,
+					"Browser tab's renderer crashed; tab killed",
+				);
+				throw new RendererCrashedError(
+					reattached
+						? `${error.message}. The tab was reattached to a new worker and its page reloaded. ${RECYCLE_RESETS}`
+						: `${error.message}; the tab could not be reattached and was closed.`,
+				);
+			}
 			const runTimedOut =
 				error instanceof ToolError && error.message.startsWith("Browser code execution timed out after ");
 			if (runTimedOut || error instanceof RecoverableWorkerError) {
@@ -964,14 +949,10 @@ async function runInTabWithSnapshot(
 		}
 	} finally {
 		opts.signal?.removeEventListener("abort", abort);
-		const settle = (): void => {
-			tab.pending.delete(id);
-			// Completion is use too: a run outlasting the idle timeout must
-			// not look stale to the sweep right after it finishes.
-			tab.lastActivityAt = Date.now();
-		};
-		if (reattachInFlight) void reattachInFlight.then(settle);
-		else settle();
+		tab.pending.delete(id);
+		// Completion is use too: a run outlasting the idle timeout must
+		// not look stale to the sweep right after it finishes.
+		tab.lastActivityAt = Date.now();
 	}
 }
 
@@ -997,28 +978,8 @@ async function recoverWorkerTab(
 		logger.warn("Failed to recycle browser tab worker; killing tab", {
 			error: recycleError instanceof Error ? recycleError.message : String(recycleError),
 		});
-		return await killTab(
-			recycleError instanceof RendererCrashedError
-				? "Browser tab's renderer crashed and reattaching did not bring the page back; tab killed"
-				: "Browser tab worker recovery failed; tab killed",
-		);
+		return await killTab("Browser tab worker recovery failed; tab killed");
 	}
-}
-
-/**
- * Bring back a tab whose renderer crashed: a new worker's attach revives the renderer with the page reloaded
- * (headless and connected Chrome; a relay attach does not, and the tab is killed). The new renderer is not frozen.
- */
-async function reattachCrashedTab(tab: WorkerTabSession, name: string, timeoutMs: number): Promise<boolean> {
-	tab.crashed = false;
-	const reattached = await recoverWorkerTab(
-		tab,
-		name,
-		timeoutMs,
-		"Browser tab's renderer crashed and the tab could not be reattached; tab killed",
-	);
-	if (reattached) tab.frozen = false;
-	return reattached;
 }
 
 /**
@@ -1177,7 +1138,7 @@ async function releaseTabInner(tab: TabSession, name: string, opts: ReleaseTabOp
 		}
 	}
 	await tab.worker.terminate().catch(() => undefined);
-	// A reattached worker does not close the omp-owned headless page it adopted, so close it here.
+	// A recycled worker adopted the omp-owned headless page and leaves it open on close, so close it here.
 	if ((forced || (wasAlive && tab.reattached)) && tab.kindTag === "headless") {
 		try {
 			// `false` is "not confirmed closed" (the CDP session could not be
@@ -1315,8 +1276,6 @@ async function findTargetForTab(tab: WorkerTabSession): Promise<Target | undefin
  */
 async function setTabFrozen(tab: TabSession, frozen: boolean): Promise<boolean> {
 	if (!isSettleManaged(tab) || tab.backend !== "worker") return false;
-	// A crashed renderer answers no lifecycle call; the reattach that revives it leaves it active.
-	if (tab.crashed) return false;
 	if (tab.frozen === frozen) return false;
 	if (frozen && tab.pending.size > 0) return false;
 	const target = await findTargetForTab(tab).catch(() => undefined);
@@ -1385,17 +1344,40 @@ export function setTabFrozenForTest(tab: TabSession, frozen: boolean): Promise<b
  * real page error immediately instead of hanging to timeout.
  */
 async function unfreezeTabSession(tab: TabSession): Promise<boolean> {
-	// A crashed page is reattached before the run instead (`reattachCrashedTab`).
-	if (!tab.frozen || (tab.backend === "worker" && tab.crashed)) return true;
+	if (!tab.frozen) return true;
 	if (tab.backend === "worker") {
 		const target = await findTargetForTab(tab).catch(() => undefined);
 		// Page target gone: let the run proceed and surface the real page
 		// error immediately instead of hanging to timeout.
 		if (!target) return true;
+		// A crashed renderer answers no lifecycle call. The run goes ahead: its worker refuses it as crashed, and
+		// the recycle that follows brings the page back on a new renderer, which is not frozen.
+		if (await rendererCrashed(target)) {
+			tab.frozen = false;
+			return true;
+		}
 	}
 	if (await setTabFrozen(tab, false).catch(() => false)) return true;
 	await Bun.sleep(100);
 	return await setTabFrozen(tab, false).catch(() => false);
+}
+
+/** Whether the target's renderer is dead: Chromium answers `Inspector.enable` itself and reports a crash first. */
+async function rendererCrashed(target: Target): Promise<boolean> {
+	const session = await target.createCDPSession().catch(() => null);
+	if (!session) return false;
+	let crashed = false;
+	session.once("Inspector.targetCrashed", () => {
+		crashed = true;
+	});
+	try {
+		await session.send("Inspector.enable");
+		return crashed;
+	} catch {
+		return false;
+	} finally {
+		await session.detach().catch(() => undefined);
+	}
 }
 
 /** Test hook for the pre-run resume without a tabs-map entry. */
@@ -1646,18 +1628,6 @@ function handleTabMessage(tab: WorkerTabSession, msg: WorkerOutbound): void {
 		void dispatchToolCall(tab, msg);
 		return;
 	}
-	if (msg.type === "crashed") {
-		// The renderer answers nothing again, so the run in flight fails now instead of at its
-		// timeout (the worker cancels its side). Reattaching brings the page back; the next call
-		// does it, so a page that crashes on every load costs one fast failure per call, not a reload loop.
-		tab.crashed = true;
-		const error = new ToolError(RENDERER_CRASHED_MESSAGE);
-		for (const pending of tab.pending.values()) {
-			for (const ctrl of pending.toolCalls.values()) ctrl.abort(error);
-			pending.reject(error);
-		}
-		return;
-	}
 	if (msg.type === "log") logWorkerMessage(msg);
 }
 
@@ -1751,7 +1721,7 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 		return await publish(worker, await initializeTabWorker(worker, payload, timeoutMs, startedAt));
 	} catch (error) {
 		await worker.terminate().catch(() => undefined);
-		// A page that crashes as it loads crashes an inline worker's attach the same way.
+		// The page crashed again as this attach brought it back; a second attach would only revive it once more.
 		if (error instanceof RendererCrashedError) throw error;
 		// The recycle's budget is exhausted: the run caller already timed out, so a
 		// retried init can't beat its deadline — fail fast and let the caller
@@ -1948,15 +1918,17 @@ async function targetIdForTarget(target: Target): Promise<string> {
 }
 
 function errorFromPayload(payload: RunErrorPayload): Error {
-	const error = payload.recoverTab
-		? new RecoverableWorkerError(payload.message)
-		: payload.isAbort
-			? new ToolAbortError()
-			: payload.navigationTimeout
-				? new NavigationTimeoutError(payload.message)
-				: payload.isToolError
-					? new ToolError(payload.message)
-					: new Error(payload.message);
+	const error = payload.rendererCrashed
+		? new RendererCrashedError(payload.message)
+		: payload.recoverTab
+			? new RecoverableWorkerError(payload.message)
+			: payload.isAbort
+				? new ToolAbortError()
+				: payload.navigationTimeout
+					? new NavigationTimeoutError(payload.message)
+					: payload.isToolError
+						? new ToolError(payload.message)
+						: new Error(payload.message);
 	error.name = payload.name;
 	if (payload.stack) error.stack = payload.stack;
 	return error;
@@ -2126,12 +2098,6 @@ async function initializeTabWorker(
 			setup.resolve();
 		} else if (msg.type === "ready") ready.resolve(msg.info);
 		else if (msg.type === "init-failed") failStartup(markReportedInitFailure(errorFromPayload(msg.error)));
-		else if (msg.type === "crashed")
-			failStartup(
-				markReportedInitFailure(
-					new RendererCrashedError("Browser tab's renderer crashed while the tab was starting"),
-				),
-			);
 		else if (msg.type === "log") logWorkerMessage(msg);
 	});
 	const unlistenError = worker.onError(error => {
