@@ -1599,6 +1599,12 @@ describe("omp usage reset", () => {
 			"Reset for De* (ac*)",
 		],
 		["non-ASCII letters", { email: "dev@example.test", orgName: "İstanbul" }, "Reset for İstanbul", "Reset for İs*"],
+		[
+			"the lowercase form of non-ASCII letters",
+			{ email: "dev@example.test", orgName: "İstanbul" },
+			"Reset for i\u0307stanbul",
+			"Reset for İs*",
+		],
 	])("masks an identity written in %s inside provider text under --redact", async (_case, identity, label, title) => {
 		claudeGrantLabel = label;
 		await authStorage.credentials.set("anthropic", oauth("claude-case", { ...identity, orgId: "org-case" }));

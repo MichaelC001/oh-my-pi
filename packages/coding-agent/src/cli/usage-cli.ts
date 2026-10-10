@@ -1183,15 +1183,15 @@ function failUsageReset(message: string): void {
 }
 
 /**
- * Mask each identity wherever it appears inside free text (`--redact`), in any
- * letter case, in one pass so a mask is never matched again; the longest
- * identity wins an overlap.
+ * Mask each identity wherever it appears inside free text (`--redact`):
+ * its stored spelling or its lowercase form, case-insensitively, in one pass so
+ * a mask is never matched again; the longest identity wins an overlap.
  */
 function identityTextMasker(redaction: Map<string, string>): (text: string) => string {
 	if (redaction.size === 0) return text => text;
 	const byLowerCase = new Map([...redaction].map(([value, mask]) => [value.toLowerCase(), mask]));
 	const pattern = new RegExp(
-		[...redaction.keys()]
+		[...new Set([...redaction.keys(), ...byLowerCase.keys()])]
 			.sort((a, b) => b.length - a.length)
 			.map(value => RegExp.escape(value))
 			.join("|"),
