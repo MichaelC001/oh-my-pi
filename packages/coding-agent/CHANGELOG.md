@@ -26,6 +26,10 @@
 
 - Fixed table charts failing on a table cell such as `3 constructor` or `2 valueOf calls`
 
+### Fixed
+
+- Fixed ACP and browser diagnostics and SSH host listings pointing to the default location instead of the configured log or SSH config paths ([#14558](https://github.com/can1357/oh-my-pi/pull/14558) by [@Dante-dan](https://github.com/Dante-dan)).
+
 ## [18.8.8] - 2026-10-10
 
 ### Added
