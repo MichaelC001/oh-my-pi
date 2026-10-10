@@ -94,6 +94,11 @@ export function wrapLeakedThinkingStream(inner: AssistantMessageEventStream): As
 						);
 						break;
 					}
+					case "text_end": {
+						const block = event.partial.content[event.contentIndex];
+						projector?.textEnd(event.contentIndex, block?.type === "text" ? block.textSignature : undefined);
+						break;
+					}
 					case "thinking_delta": {
 						projector ??= new LeakedThinkingProjector(out, event.partial);
 						const block = event.partial.content[event.contentIndex];
@@ -142,9 +147,9 @@ export function wrapLeakedThinkingStream(inner: AssistantMessageEventStream): As
 						out.push({ type: "error", reason: event.reason, error: { ...event.error, content } });
 						return;
 					}
-					// text_start/text_end/thinking_start are ignored: the projector owns
-					// block boundaries (matches wrapInbandToolStream). thinking_end is
-					// handled to capture the signature Anthropic delivers at block close.
+					// text_start/thinking_start are ignored: the projector owns block
+					// boundaries (matches wrapInbandToolStream). text_end and thinking_end
+					// are handled to capture signatures delivered at block close.
 				}
 			}
 			// Inner ended via end(result) without a terminal event.
@@ -285,6 +290,19 @@ class LeakedThinkingProjector {
 		});
 	}
 
+	/**
+	 * Stamp a source text block's completed signature onto every block projected
+	 * from it. Gemini signs a reply with an empty part after its last text chunk,
+	 * so the signature is absent while the reply's deltas stream.
+	 */
+	textEnd(srcIndex: number, signature: string | undefined): void {
+		if (signature === undefined) return;
+		if (this.#activeTextSourceIndex === srcIndex) this.#lastTextSignature = signature;
+		for (const block of this.#partial.content) {
+			if (block.type === "text" && this.#sourceAnchors.get(block) === srcIndex) block.textSignature = signature;
+		}
+	}
+
 	/** Forward a native tool call's start, releasing any held-back text first. */
 	toolStart(srcIndex: number, source: StreamingToolCall | undefined): void {
 		if (!source) return;
@@ -357,6 +375,7 @@ class LeakedThinkingProjector {
 		for (let srcIndex = 0; srcIndex < message.content.length; srcIndex++) {
 			const block = message.content[srcIndex];
 			if (block?.type !== "text") continue;
+			this.textEnd(srcIndex, block.textSignature);
 			const fedLength = this.#fedTextLengths.get(srcIndex) ?? 0;
 			if (block.text.length <= fedLength) continue;
 			if (this.#activeTextSourceIndex !== undefined && this.#activeTextSourceIndex !== srcIndex) {

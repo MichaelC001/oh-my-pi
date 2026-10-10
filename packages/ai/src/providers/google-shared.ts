@@ -234,11 +234,14 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 					if (!block.thinking || block.thinking.trim() === "") continue;
 					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.thinkingSignature);
 					if (dropsUnsignedThinking && !thoughtSignature) continue;
-					if (thoughtSignature) {
+					if (isSameProviderAndModel) {
+						// The model's own thinking replays in the thought slot even unsigned: Gemini
+						// signs the part after a thought summary, not the summary, and replayed as
+						// visible text the summary's fence leaks into later answers.
 						parts.push({
 							thought: true,
 							text: block.thinking.toWellFormed(),
-							thoughtSignature,
+							...(thoughtSignature && { thoughtSignature }),
 						});
 					} else {
 						parts.push({
@@ -553,6 +556,89 @@ export function pushToolCallEvents(
 }
 
 /**
+ * Folds streamed generateContent text and thought parts into text and thinking
+ * blocks, opening a new block whenever the part kind changes. A part's
+ * `thoughtSignature` stays on the block it belongs to; the empty text part
+ * Gemini sends after a reply's last chunk signs the open block.
+ */
+export class GoogleTextBlocks {
+	readonly #output: AssistantMessage;
+	readonly #stream: AssistantMessageEventStream;
+	#block: TextContent | ThinkingContent | null = null;
+	#contentIndex = -1;
+	// Heals a leaked reasoning-fence opener (```thinking / ``````thinking) that some
+	// Gemini thought summaries emit as a between-summary delimiter (#8719). One
+	// stripper per thinking block; created lazily on first thinking delta.
+	#thinkingStripper: ThinkingFenceStripper | null = null;
+
+	constructor(output: AssistantMessage, stream: AssistantMessageEventStream) {
+		this.#output = output;
+		this.#stream = stream;
+	}
+
+	/** Folds one response part; parts without text are ignored. */
+	push(part: Part): void {
+		const { text, thoughtSignature } = part;
+		if (text === undefined) return;
+		if (text === "") {
+			if (this.#block && !part.functionCall) this.#sign(this.#block, thoughtSignature);
+			return;
+		}
+		const isThinking = isThinkingPart(part);
+		if (!this.#block || (this.#block.type === "thinking") !== isThinking) {
+			this.close();
+			this.#block = startTextOrThinkingBlock(isThinking, this.#output, this.#stream);
+			this.#contentIndex = this.#output.content.length - 1;
+		}
+		const block = this.#block;
+		this.#sign(block, thoughtSignature);
+		if (block.type === "thinking") {
+			this.#thinkingStripper ??= new ThinkingFenceStripper();
+			const delta = this.#thinkingStripper.push(text);
+			if (!delta) return;
+			block.thinking += delta;
+			this.#stream.push({ type: "thinking_delta", contentIndex: this.#contentIndex, delta, partial: this.#output });
+		} else {
+			block.text += text;
+			this.#stream.push({
+				type: "text_delta",
+				contentIndex: this.#contentIndex,
+				delta: text,
+				partial: this.#output,
+			});
+		}
+	}
+
+	/** Ends the open block, releasing thinking text the fence stripper held back. */
+	close(): void {
+		const block = this.#block;
+		if (!block) return;
+		if (block.type === "thinking" && this.#thinkingStripper) {
+			const tail = this.#thinkingStripper.flush();
+			if (tail) {
+				block.thinking += tail;
+				this.#stream.push({
+					type: "thinking_delta",
+					contentIndex: this.#contentIndex,
+					delta: tail,
+					partial: this.#output,
+				});
+			}
+		}
+		this.#thinkingStripper = null;
+		this.#block = null;
+		pushBlockEndEvent(block, this.#contentIndex, this.#output, this.#stream);
+	}
+
+	/** Keeps the newest non-empty signature a block's parts carried. */
+	#sign(block: TextContent | ThinkingContent, signature: string | undefined): void {
+		if (!signature) return;
+		if (block.type === "thinking") block.thinkingSignature = signature;
+		else block.textSignature = signature;
+	}
+}
+
+/**
  * Append a new text- or thinking-block to `output.content` and push the matching
  * `text_start` / `thinking_start` event. `onBeforeStartEvent` lets the SSE consumer
  * inject its `ensureStarted()` first-token side effect into the canonical event order.
@@ -605,7 +691,7 @@ export function startTextOrThinkingBlock(
  * pushing `start`/`done`/`error` events, and the surrounding try/catch that translates
  * thrown errors into `output.stopReason`/`errorMessage`.
  *
- * This helper handles: the chunk loop, currentBlock flush transitions, usage metadata
+ * This helper handles: the chunk loop, text/thinking blocks ({@link GoogleTextBlocks}), usage metadata
  * decoding (`calculateCost` included), tool-call id collision avoidance, finish-reason
  * mapping, and the abort/stop-reason post-checks that re-throw to bubble into the
  * caller's catch.
@@ -616,33 +702,14 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 	stream: AssistantMessageEventStream;
 	model: Model<T>;
 	options: { signal?: AbortSignal } | undefined;
-	/** Vertex preserves `textSignature` on streamed text deltas; google-generative-ai does not. */
-	retainTextSignature?: boolean;
 	onFirstToken?: () => void;
 }): Promise<void> {
-	const { googleStream, output, stream, model, options, retainTextSignature, onFirstToken } = args;
+	const { googleStream, output, stream, model, options, onFirstToken } = args;
 	const blocks = output.content;
 	const blockIndex = () => blocks.length - 1;
-	let currentBlock: TextContent | ThinkingContent | null = null;
-	// Heals a leaked reasoning-fence opener (```thinking / ``````thinking) that some
-	// Gemini thought summaries emit as a between-summary delimiter (#8719). One
-	// stripper per thinking block; created lazily on first thinking delta.
-	let thinkingStripper: ThinkingFenceStripper | null = null;
+	const textBlocks = new GoogleTextBlocks(output, stream);
 	let firstTokenSeen = false;
 	let sawFinishReason = false;
-
-	const flushCurrent = () => {
-		if (!currentBlock) return;
-		if (currentBlock.type === "thinking" && thinkingStripper) {
-			const tail = thinkingStripper.flush();
-			if (tail) {
-				currentBlock.thinking += tail;
-				stream.push({ type: "thinking_delta", contentIndex: blockIndex(), delta: tail, partial: output });
-			}
-		}
-		thinkingStripper = null;
-		pushBlockEndEvent(currentBlock, blockIndex(), output, stream);
-	};
 
 	for await (const chunk of googleStream) {
 		if (chunk.error) {
@@ -668,70 +735,14 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 		const candidate = chunk.candidates?.[0];
 		if (candidate?.content?.parts) {
 			for (const part of candidate.content.parts) {
-				if (part.text !== undefined && part.text !== "") {
-					if (!firstTokenSeen) {
-						firstTokenSeen = true;
-						onFirstToken?.();
-					}
-					const isThinking = isThinkingPart(part);
-					if (
-						!currentBlock ||
-						(isThinking && currentBlock.type !== "thinking") ||
-						(!isThinking && currentBlock.type !== "text")
-					) {
-						flushCurrent();
-						currentBlock = startTextOrThinkingBlock(isThinking, output, stream);
-					}
-					if (currentBlock.type === "thinking") {
-						thinkingStripper ??= new ThinkingFenceStripper();
-						const cleaned = thinkingStripper.push(part.text);
-						currentBlock.thinking += cleaned;
-						currentBlock.thinkingSignature = retainThoughtSignature(
-							currentBlock.thinkingSignature,
-							part.thoughtSignature,
-						);
-						if (cleaned) {
-							stream.push({
-								type: "thinking_delta",
-								contentIndex: blockIndex(),
-								delta: cleaned,
-								partial: output,
-							});
-						}
-					} else {
-						currentBlock.text += part.text;
-						if (retainTextSignature) {
-							currentBlock.textSignature = retainThoughtSignature(
-								currentBlock.textSignature,
-								part.thoughtSignature,
-							);
-						}
-						stream.push({
-							type: "text_delta",
-							contentIndex: blockIndex(),
-							delta: part.text,
-							partial: output,
-						});
-					}
-				} else if (part.text === "" && part.thoughtSignature && currentBlock && !part.functionCall) {
-					if (currentBlock.type === "thinking") {
-						currentBlock.thinkingSignature = retainThoughtSignature(
-							currentBlock.thinkingSignature,
-							part.thoughtSignature,
-						);
-					} else if (retainTextSignature) {
-						currentBlock.textSignature = retainThoughtSignature(
-							currentBlock.textSignature,
-							part.thoughtSignature,
-						);
-					}
+				if (part.text && !firstTokenSeen) {
+					firstTokenSeen = true;
+					onFirstToken?.();
 				}
+				textBlocks.push(part);
 
 				if (part.functionCall) {
-					if (currentBlock) {
-						flushCurrent();
-						currentBlock = null;
-					}
+					textBlocks.close();
 
 					// Generate unique ID if not provided or if it's a duplicate
 					const providedId = part.functionCall.id;
@@ -773,7 +784,7 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 		}
 	}
 
-	flushCurrent();
+	textBlocks.close();
 
 	if (options?.signal?.aborted) {
 		throw new AIError.AbortError();
@@ -931,10 +942,9 @@ export function streamGoogleGenAI<T extends "google-generative-ai" | "google-ver
 	model: Model<T>;
 	options: GoogleSharedStreamOptions | undefined;
 	api: T;
-	retainTextSignature?: boolean;
 	prepare: () => GoogleGenAIRequestPlan | Promise<GoogleGenAIRequestPlan>;
 }): AssistantMessageEventStream {
-	const { model, options, api, retainTextSignature, prepare } = args;
+	const { model, options, api, prepare } = args;
 	const stream = new AssistantMessageEventStream();
 
 	(async () => {
@@ -1037,7 +1047,6 @@ export function streamGoogleGenAI<T extends "google-generative-ai" | "google-ver
 					stream,
 					model,
 					options,
-					retainTextSignature,
 					onFirstToken: () => {
 						firstTokenTime = performance.now();
 					},

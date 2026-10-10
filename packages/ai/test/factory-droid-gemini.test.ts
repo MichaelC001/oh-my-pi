@@ -87,8 +87,7 @@ describe("Factory Droid gemini wire — history replay", () => {
 							{ type: "thinking", thinking: "unsigned reasoning" },
 							{ type: "thinking", thinking: "signed reasoning", thinkingSignature: "sig-think" },
 							{ type: "toolCall", id: "signed-call", name: "Read", arguments: {}, thoughtSignature: "sig-call" },
-							// A signature captured on a TEXT block is never replayed —
-							// the CLI never signs text, and it is not funneled into thinking.
+							// The reply's signature replays on the text it signed.
 							{ type: "text", text: "answer", textSignature: "text-sig" },
 							{ type: "thinking", thinking: "second unsigned" },
 						],
@@ -103,13 +102,35 @@ describe("Factory Droid gemini wire — history replay", () => {
 			expect(modelTurn?.parts).toEqual([
 				{ text: "signed reasoning", thoughtSignature: "sig-think" },
 				{ functionCall: { name: "Read", args: {} }, thoughtSignature: "sig-call" },
-				{ text: "answer" },
+				{ text: "answer", thoughtSignature: "text-sig" },
 			]);
 			expect(JSON.stringify(modelTurn)).not.toContain('thought":true');
-			expect(JSON.stringify(modelTurn)).not.toContain("text-sig");
 			expect(captured[0].body.systemInstruction).toEqual({ parts: [{ text: "first block\nsecond block" }] });
 		},
 	);
+
+	it("replays a text signature only to the model that signed it", async () => {
+		const { contents } = await run({
+			messages: [
+				{ role: "user", content: "hi", timestamp: 1 },
+				assistantMessage([{ type: "text", text: "other Gemini", textSignature: "other-model-sig" }], {
+					provider: "google-antigravity",
+					api: "google-gemini-cli",
+					model: "gemini-3.8-flash",
+				}),
+				{ role: "user", content: "next", timestamp: 2 },
+				assistantMessage(
+					[{ type: "text", text: "Responses reply", textSignature: JSON.stringify({ v: 1, id: "msg_1" }) }],
+					{ provider: "openai-codex", api: "openai-codex-responses", model: "gpt-5.5" },
+				),
+				{ role: "user", content: "again", timestamp: 3 },
+			],
+		});
+		expect(contents.filter(entry => entry.role === "model").map(entry => entry.parts)).toEqual([
+			[{ text: "other Gemini" }],
+			[{ text: "Responses reply" }],
+		]);
+	});
 
 	it("drops foreign wire signatures while retaining tool calls across two turns", async () => {
 		const captured: CapturedRequest[] = [];
@@ -210,24 +231,34 @@ describe("Factory Droid gemini wire — history replay", () => {
 		expect(contents.find(entry => entry.role === "model")).toBeUndefined();
 	});
 
-	it("keeps the first signature captured per thinking block", async () => {
-		const { result } = await run("hi", [
+	it("keeps the signature Gemini sends after a reply's last text chunk", async () => {
+		const { result } = await run("is 7917 prime?", [
+			JSON.stringify({
+				candidates: [{ content: { role: "model", parts: [{ text: "**Testing primality**", thought: true }] } }],
+			}),
+			JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "No, 7917 is" }] } }] }),
+			JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: " not prime." }] } }] }),
 			JSON.stringify({
 				candidates: [
 					{
-						content: {
-							role: "model",
-							parts: [
-								{ thought: true, text: "first", thoughtSignature: "sig-1" },
-								{ thought: true, text: " second", thoughtSignature: "sig-2" },
-							],
-						},
+						content: { role: "model", parts: [{ text: "", thoughtSignature: "reply-sig" }] },
+						finishReason: "STOP",
 					},
 				],
 			}),
-			finishChunk("STOP"),
 		]);
-		expect(result.content).toEqual([{ type: "thinking", thinking: "first second", thinkingSignature: "sig-1" }]);
+		expect(result.content[1]).toEqual({ type: "text", text: "No, 7917 is not prime.", textSignature: "reply-sig" });
+
+		const { contents } = await run({
+			messages: [
+				{ role: "user", content: "is 7917 prime?", timestamp: 1 },
+				result,
+				{ role: "user", content: "and 7921?", timestamp: 2 },
+			],
+		});
+		expect(contents.find(entry => entry.role === "model")?.parts).toEqual([
+			{ text: "No, 7917 is not prime.", thoughtSignature: "reply-sig" },
+		]);
 	});
 
 	it("captures thoughtSignature on tool calls and replays the droid continuation shape", async () => {

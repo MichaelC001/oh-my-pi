@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the `retainTextSignature` option from `consumeGoogleStream` and `streamGoogleGenAI`; every Google route now keeps text reply signatures.
+
+### Fixed
+
+- Fixed Gemini answers echoing fenced `thinking` blocks on Google, Vertex, Antigravity and Gemini CLI: a model's own earlier thinking (Gemini, and gpt-oss on Antigravity) went back as visible text instead of as thoughts.
+- Fixed Gemini text replies losing their signature on Google, Vertex, Antigravity, Gemini CLI and Factory Droid, so the next request sends it back as Google's own clients do.
+
 ## [18.8.7] - 2026-10-09
 
 ### Added
