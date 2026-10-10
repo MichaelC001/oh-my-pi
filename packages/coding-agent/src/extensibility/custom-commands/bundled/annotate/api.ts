@@ -150,7 +150,7 @@ function deliver(
 		sendUserMessage(text);
 		return "send";
 	}
-	if (!ctx.hasUI || ctx.mode !== "tui") {
+	if (!ctx.hasUI || ctx.ui.supportsEditor !== true) {
 		throw new Error(
 			`Cannot paste annotation feedback without an editor (mode "${ctx.mode}"); deliver with "send" or "none".`,
 		);

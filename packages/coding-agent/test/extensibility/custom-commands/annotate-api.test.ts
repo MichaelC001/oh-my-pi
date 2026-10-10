@@ -39,7 +39,13 @@ function assistantEntry(id: string, text: string): SessionMessageEntry {
 }
 
 function createContext(
-	options: { mode?: AnnotationContext["mode"]; hasUI?: boolean; branch?: SessionMessageEntry[]; cwd?: string } = {},
+	options: {
+		mode?: AnnotationContext["mode"];
+		hasUI?: boolean;
+		supportsEditor?: boolean;
+		branch?: SessionMessageEntry[];
+		cwd?: string;
+	} = {},
 ) {
 	const pasteToEditor = vi.fn((_text: string) => undefined);
 	const sendUserMessage = vi.fn((_text: string) => undefined);
@@ -49,7 +55,7 @@ function createContext(
 		hasUI: options.hasUI ?? true,
 		cwd,
 		sessionManager: { getBranch: () => options.branch ?? [], getCwd: () => cwd, getSessionId: () => "session-1" },
-		ui: { pasteToEditor, notify: vi.fn() },
+		ui: { supportsEditor: options.supportsEditor ?? true, pasteToEditor, notify: vi.fn() },
 	} as unknown as AnnotationContext;
 	return { api: createAnnotationsAPI(() => ctx, sendUserMessage), pasteToEditor, sendUserMessage };
 }
@@ -353,13 +359,33 @@ new file mode 100644
 	});
 
 	it("rejects paste in a non-editor host even when its notification UI is available", async () => {
-		const { api, pasteToEditor, sendUserMessage } = createContext({ mode: "json", hasUI: true });
+		const { api, pasteToEditor, sendUserMessage } = createContext({
+			mode: "rpc",
+			hasUI: true,
+			supportsEditor: false,
+		});
 		const request = { source: { kind: "text" as const, text: "line" }, notes: [{ note: "feedback" }] };
 		await expect(api.submit(request)).rejects.toThrow("Cannot paste annotation feedback");
 		await expect(api.submit({ ...request, deliver: "paste" })).rejects.toThrow("Cannot paste annotation feedback");
 		expect(pasteToEditor).not.toHaveBeenCalled();
 		const result = await api.submit({ ...request, deliver: "send" });
 		expect(sendUserMessage).toHaveBeenCalledWith(result.text);
+	});
+
+	it("allows a remote editor in RPC mode for automatic and explicit paste delivery", async () => {
+		const { api, pasteToEditor, sendUserMessage } = createContext({
+			mode: "rpc",
+			hasUI: true,
+			supportsEditor: true,
+		});
+		const request = { source: { kind: "text" as const, text: "line" }, notes: [{ note: "remote feedback" }] };
+		const automatic = await api.submit(request);
+		const explicit = await api.submit({ ...request, deliver: "paste" });
+		expect(automatic.delivered).toBe("paste");
+		expect(explicit.delivered).toBe("paste");
+		expect(pasteToEditor.mock.calls.map(([text]) => text)).toEqual([automatic.text, explicit.text]);
+		expect(automatic.text).toContain("remote feedback");
+		expect(sendUserMessage).not.toHaveBeenCalled();
 	});
 
 	it("mounts the overlay through a handler-scoped ui, not the runner's raw ui", async () => {

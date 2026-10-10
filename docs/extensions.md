@@ -310,7 +310,7 @@ Handlers and tool `execute` receive `ctx` with:
 - `runEphemeralTurn(...)` (optional; see below)
 - `memory` (optional structured memory runtime — status/search/save across the configured backend)
 - `annotations`: `/annotate` as an API, for boards and remote clients. `submit({ source, notes, deliver?, review?, focus? })` builds the feedback `/annotate` would and delivers it without any UI; `open({ source, deliver?, focus? })` mounts the annotation overlay on the source and resolves with the operator's notes (`undefined` when dismissed; `mode === "tui"` only). Text sources are `{ kind: "text", text, label? }`, `{ kind: "file", path }` (resolved against the live session cwd), or `{ kind: "last" }`; diff sources are `{ kind: "diff", diff, label? }`, `{ kind: "uncommitted" }`, or `{ kind: "pr", ref }`. Text notes are `{ note, line? }` (1-based; whole-source when omitted, and the quoted line is filled in); diff notes are `{ path, note, line?, side?, occurrence? }` (`side` defaults to `"new"`). Notes that do not match their source reject rather than being dropped. `deliver` defaults to `"auto"`: notes are pasted into the composer, and an LLM review request (`review: true` on a diff) is sent via `pi.sendUserMessage`; `"paste"`/`"send"` force a channel and `"none"` only returns `text`. Paste needs an editor, so headless modes must use `"send"` or `"none"`. The result carries the rendered `text`, the `delivered` channel, whether it is a `review` request, and the normalized `annotations`
-  Paste delivery requires the interactive TUI, including when another host exposes notifications or dialogs. Supplied diffs used for LLM review reject above 50,000 characters or 20 reviewable files before delivery; split larger patches into smaller requests. Notes-only submissions do not have this review-prompt bound.
+  Paste delivery requires `ctx.ui.supportsEditor === true`: the TUI and non-headless RPC expose composers; ACP and no-op UI contexts do not. Supplied diffs used for LLM review reject above 50,000 characters or 20 reviewable files before delivery; split larger patches into smaller requests. Notes-only submissions do not have this review-prompt bound.
 - `setInterval(fn, ms, ...args)` / `setTimeout(fn, ms, ...args)` / `clearTimer(timer)` — managed timers (see below)
 
 ### Ephemeral side turns (`ctx.runEphemeralTurn`)
@@ -812,7 +812,7 @@ before and performs no extra syscalls.
 Supported:
 
 - dialogs: `select`, `confirm`, `input`, `editor`, optional `askDialog`
-- input editing: `setEditorText`, `getEditorText`, `pasteToEditor`, `editor`
+- input editing: `setEditorText`, `getEditorText`, `pasteToEditor`, `editor`; `supportsEditor` indicates whether paste updates a local or remote composer (absent means unsupported)
 - autocomplete stacking: `addAutocompleteProvider(factory)` wraps the built-in editor provider (factories apply in registration order and re-apply on every slash-command refresh)
 - terminal title and working message (`setTitle`, `setWorkingMessage`)
 - notifications/status/editor text/terminal input/custom overlays
