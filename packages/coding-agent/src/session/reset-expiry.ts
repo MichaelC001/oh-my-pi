@@ -3,9 +3,15 @@
  * will spend them first. Shared by `omp usage` and the TUI status line so both
  * warn about the accounts the salvage planners would act on.
  */
-import type { UsageLimit, UsageReport, UsageResetCredit, UsageResetCreditDetail } from "@oh-my-pi/pi-ai";
+import type {
+	UsageLimit,
+	UsageReport,
+	UsageResetCredit,
+	UsageResetCreditDetail,
+	UsageResetCredits,
+} from "@oh-my-pi/pi-ai";
 import { bankedResetCreditExpiryMs } from "@oh-my-pi/pi-tui/overlays/usage-display";
-import { formatDuration } from "@oh-my-pi/pi-utils";
+import { formatDuration, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import { formatActiveAccountLabel, usageReportIdentity } from "../slash-commands/helpers/active-oauth-account";
 import { formatResetProviderName } from "../slash-commands/helpers/reset-usage";
@@ -37,6 +43,7 @@ import {
 
 const SOON_MS = 7 * 24 * 3_600_000;
 const IMMINENT_MS = 24 * 3_600_000;
+const NOTICE_LABEL_MAX = 80;
 
 /** Saved resets close to expiry on an account whose fullest chat window is worth restoring. */
 export interface ResetExpiryWarning {
@@ -69,28 +76,62 @@ export function classifyResetExpiry(report: UsageReport, nowMs: number): ResetEx
 		if (expiresAtMs !== undefined && expiresAtMs > nowMs) credits.push({ credit, expiresAtMs });
 	}
 	if (credits.length === 0) return undefined;
-	const soonest = credits.reduce((best, entry) => (entry.expiresAtMs < best.expiresAtMs ? entry : best));
-	const remainingMs = soonest.expiresAtMs - nowMs;
-	if (remainingMs > SOON_MS) return undefined;
+	credits.sort((a, b) => a.expiresAtMs - b.expiresAtMs);
 
+	// Codex measures one account-wide chat window; each Claude grant clears its own windows,
+	// so the warning is about the soonest grant whose covered windows are worth restoring.
+	let warned: { credit: UsageResetCreditDetail; expiresAtMs: number } | undefined;
 	let fullest: { limit: UsageLimit; usedFraction: number } | undefined;
 	if (provider === "openai-codex") {
 		const window = fullestCodexChatWindow(report);
 		if (window?.usedFraction !== undefined) fullest = { limit: window.limit, usedFraction: window.usedFraction };
+		warned = credits[0];
 	} else {
-		const covered = fullestClaudeLimit(claudeCoveredLimits(report.limits, soonest.credit), soonest.credit);
-		if (covered) fullest = { limit: covered.limit, usedFraction: covered.used };
+		for (const entry of credits) {
+			if (entry.expiresAtMs - nowMs > SOON_MS) break;
+			const covered = fullestClaudeLimit(claudeCoveredLimits(report.limits, entry.credit), entry.credit);
+			if (covered && covered.used >= SALVAGE_MIN_USED_FRACTION) {
+				warned = entry;
+				fullest = { limit: covered.limit, usedFraction: covered.used };
+				break;
+			}
+		}
 	}
-	if (!fullest || fullest.usedFraction < SALVAGE_MIN_USED_FRACTION) return undefined;
+	if (!warned || !fullest || fullest.usedFraction < SALVAGE_MIN_USED_FRACTION) return undefined;
+	const remainingMs = warned.expiresAtMs - nowMs;
+	if (remainingMs > SOON_MS) return undefined;
 
 	const tier = remainingMs <= IMMINENT_MS ? "imminent" : "soon";
 	const horizonMs = tier === "imminent" ? IMMINENT_MS : SOON_MS;
 	let count = 0;
 	for (const { credit, expiresAtMs } of credits) {
-		if (expiresAtMs - nowMs <= horizonMs) count += credit.remainingCount ?? 1;
+		// Earlier grants that cleared only quiet windows are not worth warning about.
+		if (expiresAtMs >= warned.expiresAtMs && expiresAtMs - nowMs <= horizonMs) count += credit.remainingCount ?? 1;
 	}
-	const usableNow = (soonest.credit.status ?? "available") === "available" && soonest.credit.usable !== false;
-	return { provider, tier, count, expiresAtMs: soonest.expiresAtMs, usableNow, ...fullest };
+	return {
+		provider,
+		tier,
+		count,
+		expiresAtMs: warned.expiresAtMs,
+		usableNow: spendableNow(provider, report.resetCredits, warned.credit),
+		...fullest,
+	};
+}
+
+/**
+ * Whether `/usage reset` would spend this grant now: the account must be eligible with a
+ * redeemable count, the grant itself available, and for Claude the provider must have
+ * selected this very grant (the reset command only spends the server-selected one).
+ */
+function spendableNow(
+	provider: ResetExpiryWarning["provider"],
+	inventory: UsageResetCredits | undefined,
+	credit: UsageResetCreditDetail,
+): boolean {
+	if (!inventory || inventory.eligible === false) return false;
+	if ((inventory.redeemableCount ?? inventory.availableCount) <= 0) return false;
+	if ((credit.status ?? "available") !== "available" || credit.usable === false) return false;
+	return provider !== "anthropic" || (inventory.nextCreditId !== undefined && inventory.nextCreditId === credit.id);
 }
 
 /**
@@ -204,8 +245,13 @@ export function formatResetExpiryNotice(reports: readonly UsageReport[], nowMs: 
 	if (!soonest) return undefined;
 	const { report, warning } = soonest;
 	const provider = formatResetProviderName(warning.provider);
-	const label = formatActiveAccountLabel(usageReportIdentity(report));
-	const account = label ? ` on ${label}` : "";
+	// Email and organization come from the provider; keep escapes and layout characters out of the TUI.
+	const label = sanitizeText(formatActiveAccountLabel(usageReportIdentity(report)) ?? "")
+		.replace(/\s+/g, " ")
+		.trim();
+	const account = label
+		? ` on ${label.length > NOTICE_LABEL_MAX ? `${label.slice(0, NOTICE_LABEL_MAX - 1)}…` : label}`
+		: "";
 	const due = formatDuration(warning.expiresAtMs - nowMs);
 	const resets =
 		warning.count === 1
