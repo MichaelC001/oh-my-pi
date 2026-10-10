@@ -1,8 +1,8 @@
 /**
  * Cross-process fence around spending one upstream account's saved reset.
- * Every spender on a machine (a session's automatic executor, `omp usage
- * reset`) takes the same lock file and leaves a marker in it, so a second
- * process neither spends while an attempt is in flight nor right after one.
+ * A session's automatic executor and `omp usage reset` take the same lock file
+ * beside the agent database and leave a marker in it, so another process on
+ * that database neither spends while an attempt is in flight nor right after one.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
