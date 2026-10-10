@@ -654,6 +654,12 @@ export interface Terminal {
 	 */
 	onPrivateModeReport?(callback: PrivateModeReportHandler): void;
 	/**
+	 * Report whether DA1 advertises SIXEL (attribute 4), replaying the latest
+	 * advertisement to late subscribers. A missing attribute does not rule out
+	 * support discovered through another graphics query.
+	 */
+	onSixelSupport?(callback: (supported: boolean) => void): void;
+	/**
 	 * Register a callback fired once the startup Glyph Protocol handshake
 	 * resolves (see {@link GlyphProtocolReportHandler}). A subscriber that
 	 * arrives after the handshake already resolved is called immediately with
@@ -863,6 +869,8 @@ export class ProcessTerminal implements Terminal {
 	#glyphProtocolReplyBuffer = "";
 	#glyphProtocolResult: boolean | undefined;
 	#glyphProtocolCallbacks: GlyphProtocolReportHandler[] = [];
+	#sixelSupport: boolean | undefined;
+	#sixelSupportCallbacks: Array<(supported: boolean) => void> = [];
 	#tspPending = false;
 	#tspResult: TspHello | null | undefined;
 	#tspCallbacks: TspHelloHandler[] = [];
@@ -976,6 +984,11 @@ export class ProcessTerminal implements Terminal {
 		// The handshake runs from enableInput(), which can precede the host's
 		// subscription during startup; replay so the outcome is never missed.
 		if (this.#glyphProtocolResult !== undefined) callback(this.#glyphProtocolResult);
+	}
+
+	onSixelSupport(callback: (supported: boolean) => void): void {
+		this.#sixelSupportCallbacks.push(callback);
+		if (this.#sixelSupport !== undefined) callback(this.#sixelSupport);
 	}
 
 	onTspHello(callback: TspHelloHandler): void {
@@ -1405,6 +1418,19 @@ export class ProcessTerminal implements Terminal {
 			// outstanding sentinel — a reply that arrives after the FIFO drains (slow
 			// SSH/PTY links) must never reach the composer as literal text (#8542).
 			if (da1ResponsePattern.test(sequence)) {
+				// Publish graphics support without forwarding DA1 bytes to application
+				// input or changing ownership of the existing probe sentinel.
+				const supportsSixel = /;4(?:;|c$)/u.test(sequence);
+				if (supportsSixel !== this.#sixelSupport) {
+					this.#sixelSupport = supportsSixel;
+					for (const callback of this.#sixelSupportCallbacks) {
+						try {
+							callback(supportsSixel);
+						} catch {
+							// Capability subscribers must not interrupt sentinel handling.
+						}
+					}
+				}
 				const owner = this.#da1SentinelOwners.shift();
 				if (!owner) {
 					// Late/unowned reply: nothing to resolve, just drop the bytes.
@@ -2217,6 +2243,8 @@ export class ProcessTerminal implements Terminal {
 		this.#glyphProtocolResult = undefined;
 		this.#glyphProtocolReplyBuffer = "";
 		this.#glyphProtocolCallbacks = [];
+		this.#sixelSupport = undefined;
+		this.#sixelSupportCallbacks = [];
 		setTerminalGlyphProtocol(false);
 		this.#tspPending = false;
 		this.#tspResult = undefined;

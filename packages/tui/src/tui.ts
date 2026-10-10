@@ -1484,6 +1484,11 @@ export class TUI extends Container {
 			this.invalidate();
 			this.requestRender(true);
 		});
+		this.terminal.onSixelSupport?.(supported => {
+			if (!supported || this.#stopped || this.#nativeLive || this.terminal.tspExpected) return;
+			if (isImageProtocolForced()) return;
+			this.#finishSixelProbe(true);
+		});
 		this.terminal.onTspHello?.(hello => this.#onTspHello(hello));
 		this.terminal.start(
 			data => this.#handleInput(data),
@@ -2353,11 +2358,9 @@ export class TUI extends Container {
 		this.#clearSixelProbeState();
 		this.#sixelProbePendingGraphics = true;
 		this.#sixelProbeUnsubscribe = this.addInputListener(data => this.#handleSixelProbeInput(data));
-		// XTSMGRAPHICS item 2 reports the terminal's maximum SIXEL geometry. DA1
-		// attribute 4 advertises SIXEL as well, but ProcessTerminal swallows every
-		// `CSI ? … c` reply for the whole session so a late one cannot leak into the
-		// composer (#8542): those bytes never reach an input listener, so this probe
-		// cannot read them.
+		// XTSMGRAPHICS item 2 reports the maximum SIXEL geometry. DA1 attribute 4
+		// arrives through onSixelSupport instead: ProcessTerminal consumes the
+		// reply bytes so they cannot leak into application input.
 		this.terminal.write("\x1b[?2;1;0S");
 		this.#sixelProbeTimeout = setTimeout(() => {
 			this.#finishSixelProbe(false);
