@@ -9,6 +9,7 @@
 ### Fixed
 
 - Native settings editors now display submission and validation errors instead of silently keeping the editor open ([#15252](https://github.com/can1357/oh-my-pi/pull/15252) by [@Shadorain](https://github.com/Shadorain)).
+- JSON array settings marked as credentials now stay masked in rows and editors ([#15252](https://github.com/can1357/oh-my-pi/pull/15252) by [@Shadorain](https://github.com/Shadorain)).
 
 ## [18.8.8] - 2026-10-10
 

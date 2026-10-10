@@ -280,7 +280,7 @@ function entryToSettingDef(entry: SettingsDisplayEntry): SettingDef | null {
 	}
 
 	if (schemaType === "array") {
-		if (ui.editor === "json") return { ...base, type: "text", secret: false };
+		if (ui.editor === "json") return { ...base, type: "text", secret: entry.credential === true };
 		if (!options) return null;
 		if (options === "runtime") return null;
 		return { ...base, type: "multiselect", options, ordered: ui.ordered === true };
