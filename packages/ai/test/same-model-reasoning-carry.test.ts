@@ -18,6 +18,7 @@ import { streamOpenAIResponses } from "@oh-my-pi/pi-ai/providers/openai-response
 import type { ResponseStreamEvent } from "@oh-my-pi/pi-ai/providers/openai-responses-wire";
 import { processResponsesStream } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import type { Api, AssistantMessage, Message, Model, ModelSpec } from "@oh-my-pi/pi-ai/types";
+import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { GetChatMessageRequestSchema, GetUserJwtResponseSchema } from "@oh-my-pi/pi-catalog/discovery/devin-proto";
 import { create, fromBinary, toBinary } from "@oh-my-pi/pi-catalog/discovery/protobuf";
@@ -315,8 +316,12 @@ describe("Responses reasoning summaries are marked at parse time", () => {
 		async function* stream(): AsyncIterable<ResponseStreamEvent> {
 			for (const event of all) yield event as unknown as ResponseStreamEvent;
 		}
-		const sink = { push: () => {}, end: () => {} } as never;
-		await processResponsesStream(stream(), output, sink, openRouterK3() as unknown as Model<"openai-responses">);
+		await processResponsesStream(
+			stream(),
+			output,
+			new AssistantMessageEventStream(),
+			openRouterK3() as unknown as Model<"openai-responses">,
+		);
 		return output.content[0];
 	}
 	const done = (item: Record<string, unknown>) => ({
