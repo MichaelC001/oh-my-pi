@@ -897,6 +897,7 @@ class TreeList implements Component {
 		// Branch points that can draw a gutter, indexed by rendered level: the
 		// ancestor list is as deep as the conversation, so it is scanned once
 		// per row rather than once per prefix cell.
+		// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
 		const gutterByLevel: (TreeAncestor<string> | undefined)[] = new Array(renderedIndent);
 		for (const ancestor of row.ancestors) {
 			if (ancestor.siblingCount <= 1) continue;

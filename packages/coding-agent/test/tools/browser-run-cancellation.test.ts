@@ -239,6 +239,7 @@ describe("browser run cancellation", () => {
 		const controller = new AbortController();
 		const deferred = Promise.withResolvers<string>();
 		const handle = {
+			// oxlint-disable-next-line unicorn/no-thenable -- fixture models an awaitable element handle.
 			then: (onFulfilled?: (value: string) => unknown, onRejected?: (reason: unknown) => unknown) =>
 				deferred.promise.then(onFulfilled, onRejected),
 			click: async () => "clicked",
@@ -314,6 +315,7 @@ describe("browser run cancellation", () => {
 			const userFailure = new Error(`${name} continuation failure`);
 			const reported = Promise.withResolvers<unknown>();
 			const handle = {
+				// oxlint-disable-next-line unicorn/no-thenable -- fixture models an awaitable element handle.
 				then: (onFulfilled?: (value: string) => unknown, onRejected?: (reason: unknown) => unknown) =>
 					Promise.resolve("element").then(onFulfilled, onRejected),
 				click: async () => "clicked",

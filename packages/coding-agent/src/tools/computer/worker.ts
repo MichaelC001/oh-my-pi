@@ -413,6 +413,7 @@ class ElRef implements PromiseLike<El> {
 		return this.#element;
 	}
 
+	// oxlint-disable-next-line unicorn/no-thenable -- the handle is awaitable by design: `await ref("e5")` resolves the element.
 	then<A = El, B = never>(
 		onFulfilled?: ((element: El) => A | PromiseLike<A>) | null,
 		onRejected?: ((reason: unknown) => B | PromiseLike<B>) | null,
