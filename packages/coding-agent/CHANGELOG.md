@@ -75,6 +75,7 @@
 - Fixed the startup default ignoring the model a provider's discovery names as the account's default: with no model chosen, Devin Pro now starts on SWE-2 at High instead of SWE-1.6 ([#15115](https://github.com/can1357/oh-my-pi/pull/15115) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed collapsed todo lists spending a whole row on `… 1 more todo`; the hidden todo is now shown in that row instead ([#15189](https://github.com/can1357/oh-my-pi/pull/15189) by [@ravshansbox](https://github.com/ravshansbox))
 - Fixed a session staying busy for good, with every later message queued and never answered, when the session file could not be written as an automatic retry ended (a full disk or an unwritable transcript) ([#15177](https://github.com/can1357/oh-my-pi/pull/15177) by [@sjawhar](https://github.com/sjawhar))
+- Fixed browser calls on a tab whose renderer crashed waiting out their timeout: the call now fails at once with the page reloaded, or the tab closed when the page cannot come back (headless, connected Chrome, relay) ([#15142](https://github.com/can1357/oh-my-pi/pull/15142) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.7] - 2026-10-09
 
