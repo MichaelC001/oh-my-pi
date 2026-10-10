@@ -89,7 +89,7 @@ impl NodeRead {
 }
 
 thread_local! {
-	/// Each [`NodeRead`]'s attribute names as the CFArray it sends, indexed by
+	/// Each [`NodeRead`]'s attribute names as the `CFArray` it sends, indexed by
 	/// the read and built once per session thread.
 	static NODE_REQUESTS: [CFRetained<CFArray<CFString>>; 3] = NodeRead::ALL.map(|read| {
 		let names: Vec<_> = NODE_ATTRIBUTES[read.attributes()]

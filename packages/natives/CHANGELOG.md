@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Sped up macOS accessibility reads (`ax()`, `find()` and single-element reads) by fetching each element's attributes in one round trip to the app; output is unchanged
+- Sped up macOS accessibility reads (`ax()`, `find()` and single-element reads) by fetching each element's attributes in one round trip to the app ([#15275](https://github.com/can1357/oh-my-pi/pull/15275) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.8] - 2026-10-10
 
