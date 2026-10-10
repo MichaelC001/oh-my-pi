@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Sped up macOS accessibility reads (`ax()`, `find()` and single-element reads) by fetching each element's attributes in one round trip to the app; output is unchanged
+
 ## [18.8.8] - 2026-10-10
 
 ### Changed
