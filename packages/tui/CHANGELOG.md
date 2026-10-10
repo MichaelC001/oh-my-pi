@@ -4,7 +4,7 @@
 
 ### Changed
 
-- `OutputSink` summaries report the first and last line the column cap cut (`columnTruncatedRange`), and the column-cut notice names the `:raw` range of the artifact or file that returns them whole
+- `OutputSink` summaries report the first and last line the column cap cut (`columnTruncatedRange`), and the column-cut notice names the `:raw` range of the artifact or file that returns them whole ([#15279](https://github.com/can1357/oh-my-pi/pull/15279) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.9] - 2026-10-10
 

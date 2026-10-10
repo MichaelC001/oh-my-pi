@@ -4,8 +4,8 @@
 
 ### Fixed
 
-- Fixed Eval `read("artifact://N")` in JavaScript and Python returning the read tool's line-capped view instead of the artifact's text; `offset`/`limit` now select its lines as for a file
-- Fixed `read`, `eval` and `bash` notices for lines cut at the column cap pointing back at the same capped view; they now name the `:raw:<first>-<last>` read that returns those lines whole
+- Fixed Eval `read("artifact://N")` in JavaScript and Python returning the read tool's line-capped view instead of the artifact's text; `offset`/`limit` now select its lines as for a file ([#15279](https://github.com/can1357/oh-my-pi/pull/15279) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed `read`, `eval` and `bash` notices for lines cut at the column cap pointing back at the same capped view; they now name the `:raw:<first>-<last>` read that returns those lines whole ([#15279](https://github.com/can1357/oh-my-pi/pull/15279) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.9] - 2026-10-10
 
