@@ -38,6 +38,11 @@ export declare class DesktopSession {
    * behind it.
    */
   get capabilities(): DesktopCapabilities
+  /**
+   * Lock and display-sleep state read on the calling thread, never queued
+   * behind the worker, so it answers at once even while a request is stuck.
+   */
+  get screenState(): DesktopScreenState
   listDisplays(): Promise<Array<DesktopDisplay>>
   listWindows(): Promise<Array<DesktopWindow>>
   listApplications(options?: ApplicationQuery | undefined | null): Promise<Array<Application>>
@@ -1321,6 +1326,15 @@ export interface DesktopObservation {
 export interface DesktopPoint {
   x: number
   y: number
+}
+
+/**
+ * Lock and display-sleep state of the user session, read live per call.
+ * Only macOS detects either; other platforms report both as `false`.
+ */
+export interface DesktopScreenState {
+  screenLocked: boolean
+  displayAsleep: boolean
 }
 
 export interface DesktopSessionOptions {

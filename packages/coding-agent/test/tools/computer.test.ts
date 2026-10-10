@@ -29,6 +29,7 @@ import type {
 	DesktopCapture,
 	DesktopDisplay,
 	DesktopPoint,
+	DesktopScreenState,
 	DesktopWindow,
 	PointerOptions,
 } from "@oh-my-pi/pi-natives";
@@ -106,10 +107,14 @@ const axNode: AxNode = {
 };
 
 class FakeNativeSession implements NativeDesktopSession {
-	/** Lock state reported by both captures and capabilities, as the native session reads it live. */
+	/** Lock and sleep state reported by captures, capabilities and screenState, as the native session reads it live. */
 	screenLocked = false;
+	displayAsleep = false;
 	get capabilities(): DesktopCapabilities {
-		return { ...capabilities, screenLocked: this.screenLocked };
+		return { ...capabilities, screenLocked: this.screenLocked, displayAsleep: this.displayAsleep };
+	}
+	get screenState(): DesktopScreenState {
+		return { screenLocked: this.screenLocked, displayAsleep: this.displayAsleep };
 	}
 	clickCount = 0;
 	closeCount = 0;
@@ -1144,6 +1149,39 @@ describe("computer worker round trips", () => {
 			if (locked) expect(rest.join("\n")).toMatch(/^Note: when this run ended the screen is locked\. /);
 			else expect(rest).toEqual([]);
 		}
+	});
+
+	it("adds the lock state to a run timed out by a hung native call without reading capabilities", async () => {
+		const started = Promise.withResolvers<void>();
+		const hung = Promise.withResolvers<DesktopCapture>();
+		class HungSession extends FakeNativeSession {
+			/** Native capabilities reads queue behind the hung call when no snapshot exists. */
+			blockingReads = 0;
+			override get capabilities(): DesktopCapabilities {
+				this.blockingReads += 1;
+				return super.capabilities;
+			}
+			override async capture(): Promise<DesktopCapture> {
+				started.resolve();
+				// Stuck in the OS: cancellation does not settle it.
+				return hung.promise;
+			}
+		}
+		const native = new HungSession();
+		native.screenLocked = true;
+		const transport = new MemoryTransport();
+		new ComputerWorkerCore(transport, () => native);
+		const pending = runWorker(transport, "hung", "await desktop.screenshot({ silent: true })", false, 50);
+		await started.promise;
+		const result = await pending;
+		// Let the script's runtime finish so later tests can start theirs.
+		hung.reject(new Error("released"));
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		const [first, ...rest] = result.error.message.split("\n");
+		expect(first).toBe("Computer code execution timed out after 50ms");
+		expect(rest.join("\n")).toMatch(/^Note: when this run ended the screen is locked\. /);
+		expect(native.blockingReads).toBe(0);
 	});
 
 	it("blocks read-only click after capture before invoking native input", async () => {

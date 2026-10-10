@@ -1074,6 +1074,15 @@ fn create_backend(_: DisplaySelector) -> CoreResult<Box<dyn Backend>> {
 	Err(DesktopError::capture_failed("desktop backend unavailable on this platform"))
 }
 
+/// Lock and display-sleep state of `selector`'s displays, read on the calling
+/// thread rather than through the session worker.
+#[cfg(target_os = "macos")]
+use macos::screen_state as read_screen_state;
+#[cfg(not(target_os = "macos"))]
+const fn read_screen_state(_: &DisplaySelector) -> ScreenState {
+	ScreenState { locked: false, display_asleep: false }
+}
+
 struct Lifecycle {
 	tx:     Option<flume::Sender<QueuedRequest>>,
 	done:   Option<flume::Receiver<()>>,
@@ -1250,6 +1259,13 @@ impl DesktopSession {
 				.clone()
 				.unwrap_or_else(DesktopCapabilities::unavailable),
 		}
+	}
+
+	/// Lock and display-sleep state read on the calling thread, never queued
+	/// behind the worker, so it answers at once even while a request is stuck.
+	#[napi(getter)]
+	pub fn screen_state(&self) -> ScreenState {
+		read_screen_state(&self.core.selector)
 	}
 
 	#[napi]
@@ -2358,6 +2374,19 @@ mod capture_tests {
 			session.core.lifecycle.lock().tx.is_none(),
 			"a busy getter must return the snapshot without starting or querying a worker"
 		);
+	}
+
+	#[test]
+	fn screen_state_never_queues_behind_a_stuck_request() {
+		let core = SessionCore::new(DisplaySelector::Active);
+		// A worker that never serves its queue, with a request outstanding and
+		// no capabilities snapshot: a queued read would wait out its timeout.
+		let (tx, stuck) = flume::unbounded();
+		core.lifecycle.lock().tx = Some(tx);
+		core.in_flight.store(1, Ordering::Release);
+		let session = DesktopSession { core };
+		let _ = session.screen_state();
+		assert!(stuck.is_empty(), "the screen-state read must not enter the worker queue");
 	}
 
 	#[test]

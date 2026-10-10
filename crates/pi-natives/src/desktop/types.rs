@@ -126,8 +126,11 @@ impl DesktopCapabilities {
 }
 
 /// Lock and display-sleep state of the user session, read live per call.
+/// Only macOS detects either; other platforms report both as `false`.
+#[napi(object, js_name = "DesktopScreenState")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct ScreenState {
+pub struct ScreenState {
+	#[napi(js_name = "screenLocked")]
 	pub locked:         bool,
 	pub display_asleep: bool,
 }

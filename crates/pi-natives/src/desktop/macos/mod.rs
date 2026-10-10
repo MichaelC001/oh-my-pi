@@ -10,6 +10,7 @@ mod spaces;
 pub(super) use ax::menus;
 use image::RgbaImage;
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+pub(super) use session::screen_state;
 
 use self::{ax::MacAx, capture::MacCapture, input::MacInput, session::DisplayAwake};
 use super::{

@@ -18,6 +18,7 @@ import type {
 	DesktopCapture,
 	DesktopDisplay,
 	DesktopPoint,
+	DesktopScreenState,
 	DesktopSessionOptions,
 	DesktopWindow,
 	PointerOptions,
@@ -49,6 +50,8 @@ import {
 /** Native desktop operations consumed by the script runtime. */
 export interface NativeDesktopSession {
 	readonly capabilities: DesktopCapabilities;
+	/** Lock and display-sleep state, read without waiting behind queued native work. */
+	readonly screenState: DesktopScreenState;
 	listDisplays(): Promise<DesktopDisplay[]>;
 	listWindows(): Promise<DesktopWindow[]>;
 	capture(target: string, caps?: { maxWidth?: number; maxHeight?: number } | null): Promise<DesktopCapture>;
@@ -806,16 +809,12 @@ export class ComputerWorkerCore {
 	/**
 	 * A run that fails while the macOS screen is locked or the display asleep
 	 * says so after its own message, which stays first and intact. Aborts and
-	 * sessions that never started are returned unchanged.
+	 * sessions that never started are returned unchanged. The state is read
+	 * without queuing, since the failure may be a native request that hangs.
 	 */
 	#withScreenState(payload: RunErrorPayload): RunErrorPayload {
 		if (payload.isAbort || !this.#session) return payload;
-		let notice: string | undefined;
-		try {
-			notice = screenStateNotice(this.#session.capabilities);
-		} catch {
-			return payload;
-		}
+		const notice = screenStateNotice(this.#session.screenState);
 		if (!notice) return payload;
 		const message = payload.message ? `${payload.message}\n${notice}` : notice;
 		const stack =

@@ -19,7 +19,7 @@ const MAX_ONLINE_DISPLAYS: u32 = 32;
 /// `display_asleep` covers the session's displays: the selected one for a
 /// display id, otherwise every online display, since `active` and `all` can
 /// capture any of them.
-pub(super) fn screen_state(selector: &DisplaySelector) -> ScreenState {
+pub(in super::super) fn screen_state(selector: &DisplaySelector) -> ScreenState {
 	ScreenState {
 		locked:         screen_locked(),
 		display_asleep: displays_asleep(selector, &online_displays(), |id| CGDisplayIsAsleep(id)),

@@ -1,5 +1,5 @@
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
-import type { CaptureRegion, DesktopCapabilities } from "@oh-my-pi/pi-natives";
+import type { CaptureRegion, DesktopCapabilities, DesktopScreenState } from "@oh-my-pi/pi-natives";
 
 export { COMPUTER_WORKER_ARG } from "../../cli/worker-selectors";
 
@@ -43,9 +43,9 @@ export const SCREEN_LOCKED_CAPTURE_NOTE =
  * asleep, so lock-screen pixels and failed captures are not taken for the
  * app's state. Input is never refused because of it.
  */
-export function screenStateNotice(capabilities: DesktopCapabilities | undefined): string | undefined {
-	if (!capabilities?.screenLocked && !capabilities?.displayAsleep) return undefined;
-	const { screenLocked, displayAsleep } = capabilities;
+export function screenStateNotice(state: DesktopScreenState | undefined): string | undefined {
+	if (!state?.screenLocked && !state?.displayAsleep) return undefined;
+	const { screenLocked, displayAsleep } = state;
 	const state =
 		screenLocked && displayAsleep
 			? "the screen is locked and the display is asleep"
