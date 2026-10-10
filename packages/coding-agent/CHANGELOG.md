@@ -74,6 +74,7 @@
 - Fixed resumed xAI, Factory Droid and OpenAI sessions forgetting earlier reasoning on their first request, while a retry after a stale Responses item error still rebuilds history ([#15148](https://github.com/can1357/oh-my-pi/pull/15148) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed the startup default ignoring the model a provider's discovery names as the account's default: with no model chosen, Devin Pro now starts on SWE-2 at High instead of SWE-1.6 ([#15115](https://github.com/can1357/oh-my-pi/pull/15115) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed collapsed todo lists spending a whole row on `… 1 more todo`; the hidden todo is now shown in that row instead ([#15189](https://github.com/can1357/oh-my-pi/pull/15189) by [@ravshansbox](https://github.com/ravshansbox))
+- Fixed a session staying busy for good, with every later message queued and never answered, when the session file could not be written as an automatic retry ended (a full disk or an unwritable transcript) ([#15177](https://github.com/can1357/oh-my-pi/pull/15177) by [@sjawhar](https://github.com/sjawhar))
 
 ## [18.8.7] - 2026-10-09
 
