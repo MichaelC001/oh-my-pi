@@ -205,6 +205,7 @@
 ### Fixed
 
 - Fixed `omp auth-broker serve` logging every client as `unknown` (or as whatever a caller put in `X-Forwarded-For`); it now logs the socket address, with `--trust-proxy-headers` for brokers behind a reverse proxy ([#14762](https://github.com/can1357/oh-my-pi/pull/14762) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed missing `withFileMutationQueue` export from the tools barrel and legacy Pi compatibility shim, unblocking plugins like `pi-wayfinder-guard` ([#14892](https://github.com/can1357/oh-my-pi/pull/14892) by [@twotnguyen](https://github.com/twotnguyen))
 - Fixed relative file links in Tern assistant replies opening against the folder omp was started in after `/wt` or `/move`; they now open the file in the session's working directory ([#14879](https://github.com/can1357/oh-my-pi/pull/14879) by [@H4vC](https://github.com/H4vC))
 - Fixed legacy pi extensions importing `getCurrentSystemMessage` (`@earendil-works/pi-ai` root), `compositeTuiLine` (`pi-tui` root), and `parseSkillBlock` (`pi-coding-agent` root) failing plugin validation under omp; extensions such as `pi-optchat` install again ([#14909](https://github.com/can1357/oh-my-pi/pull/14909) by [@Frenchy2k1](https://github.com/Frenchy2k1))
 - Fixed the BTW history, git shortcuts, and autoresearch sheets in Tern having no Close button, and the plan review sheet having no Cancel button ([#14894](https://github.com/can1357/oh-my-pi/pull/14894) by [@H4vC](https://github.com/H4vC))
