@@ -5,6 +5,11 @@
 ### Fixed
 
 - Fixed JS eval cells with a syntax error (such as a raw backtick inside a template literal) failing with the engine's position-less message; the error now names the cell line and column and shows a short code frame ([#14275](https://github.com/can1357/oh-my-pi/issues/14275), [#14376](https://github.com/can1357/oh-my-pi/pull/14376) by [@tahakotil](https://github.com/tahakotil)).
+- `omp plugin install` now passes raw non-GitHub git URLs (`https://git.example.com/group/repo`, `ssh://…`) to bun as `git+…` so they are cloned via git instead of being misread as an npm tarball (ZlibError: error decompressing). Inline userinfo credentials are stripped from the spec — `bun install` persists it into `plugins/package.json` and `bun.lock`, and a long-lived repository token must not land in those files; private repositories authenticate via SSH, a git credential helper, or `.netrc`.
+- MCP HTTP reconnects now release obsolete tool generations instead of growing session memory on every reconnect ([#11784](https://github.com/can1357/oh-my-pi/issues/11784)).
+- `/debug` memory reports now keep large heap snapshots out of JavaScript strings and reject empty snapshots instead of saving zero-byte files ([#11785](https://github.com/can1357/oh-my-pi/issues/11785)).
+
+## [18.1.18] - 2026-09-11
 
 ### Added
 
