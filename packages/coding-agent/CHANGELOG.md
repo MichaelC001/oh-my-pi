@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added **Extra Context Files** to `/settings` → **Context** so custom instruction filenames can be configured without editing YAML.
+
 ## [18.8.8] - 2026-10-10
 
 ### Added

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added opt-in JSON editing for free-form array settings.
+
 ## [18.8.8] - 2026-10-10
 
 ### Breaking Changes
