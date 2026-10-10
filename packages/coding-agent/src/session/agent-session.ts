@@ -141,7 +141,6 @@ import { WorkPoolRegistry } from "../task/workpool";
 import { type BashPtyOptions, type BashResult, releaseShellSessions } from "../exec/bash-executor";
 import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
-import { createAnnotationsAPI } from "../extensibility/custom-commands/bundled/annotate/api";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import type {
 	ExtensionCommandContext,
@@ -155,7 +154,7 @@ import type {
 	ToolInfo,
 	TreePreparation,
 } from "../extensibility/extensions";
-import { emitSessionShutdownEvent, TOP_LEVEL_AGENT } from "../extensibility/extensions";
+import { emitSessionShutdownEvent, TOP_LEVEL_AGENT, UNAVAILABLE_ANNOTATIONS } from "../extensibility/extensions";
 import { extensionEventFromSessionEvent } from "../extensibility/extensions/lifecycle-mirror";
 import { ManagedTimers } from "../extensibility/extensions/managed-timers";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
@@ -8034,7 +8033,7 @@ export class AgentSession implements SettingsScope {
 			return this.#extensionRunner.createCommandContext();
 		}
 
-		const context: ExtensionCommandContext = {
+		return {
 			ui: noOpUIContext,
 			mode: "print",
 			hasUI: false,
@@ -8096,19 +8095,13 @@ export class AgentSession implements SettingsScope {
 			},
 			getSystemPrompt: () => this.systemPrompt,
 			runEphemeralTurn: args => this.runEphemeralTurn(args),
-			annotations: createAnnotationsAPI(
-				() => context,
-				text => {
-					this.sendUserMessage(text).catch(error => {
-						logger.warn("Annotation feedback was not delivered", { error: String(error) });
-					});
-				},
-			),
+			// The SDK always builds a runner (which receives the annotations factory); this runner-less
+			// context only exists for directly constructed sessions, which have no `/annotate` wiring.
+			annotations: UNAVAILABLE_ANNOTATIONS,
 			setInterval: (callback, ms, ...args) => this.#fallbackTimers().setInterval(callback, ms, ...args),
 			setTimeout: (callback, ms, ...args) => this.#fallbackTimers().setTimeout(callback, ms, ...args),
 			clearTimer: timer => this.#fallbackTimers().clear(timer),
 		};
-		return context;
 	}
 
 	/** Lazily create the runner-less command-context timer registry (#5664). */
