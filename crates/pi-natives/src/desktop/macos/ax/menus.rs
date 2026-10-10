@@ -2,9 +2,9 @@ use objc2_application_services::{AXError, AXUIElement};
 use objc2_core_foundation::{CFArray, CFNumber, CFRetained, CFString, CFType};
 
 use super::{
-	MacAx, ax_error, copy_attribute, copy_attribute_result, copy_bool, copy_element,
-	copy_required_string, copy_string, copy_strings_from_action_names, create_application,
-	element_pid, focused_window_id, mac_handle, perform_action, set_timeout, skylight, window_id,
+	MacAx, copy_attribute, copy_attribute_result, copy_bool, copy_element, copy_required_string,
+	copy_string, copy_strings_from_action_names, create_application, element_pid, focused_window_id,
+	mac_handle, perform_action, set_timeout, skylight, window_id,
 };
 use crate::desktop::{
 	backend::AxBackend,
@@ -239,7 +239,7 @@ fn title(value: Result<Option<CFRetained<CFType>>, AXError>) -> CoreResult<Strin
 			.map(|value| value.to_string())
 			.map_err(|_| DesktopError::ax_failed("AXTitle was not a string")),
 		Ok(None) | Err(AXError::NoValue | AXError::AttributeUnsupported) => Ok(String::new()),
-		Err(error) => Err(ax_error(error, "copying AXTitle failed")),
+		Err(error) => Err(super::ax_error(error, "copying AXTitle failed")),
 	}
 }
 
