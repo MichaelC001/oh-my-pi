@@ -233,11 +233,10 @@ export async function extractArchive(
 				// A dangling target cannot be copied without the symlink
 				// privilege; skip the entry so the rest still extracts.
 				const extracted = await archive.readFile(link.path).catch(() => undefined);
-				if (extracted) {
-					await Bun.write(outputPath, extracted.bytes);
-					const permissions = (extracted.mode ?? 0) & 0o777;
-					if (permissions) await fs.chmod(outputPath, permissions);
-				}
+				if (!extracted) continue;
+				await Bun.write(outputPath, extracted.bytes);
+				const permissions = (extracted.mode ?? 0) & 0o777;
+				if (permissions) await fs.chmod(outputPath, permissions);
 			}
 		}
 		count++;

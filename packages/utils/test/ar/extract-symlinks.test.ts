@@ -119,29 +119,28 @@ describe("extractArchive symlink handling", () => {
 		expect(fsSync.readFileSync(path.join(dest, "link.txt"), "utf8")).toBe("hello through a link\n");
 	});
 
-	test.skipIf(process.platform !== "win32")(
-		"extracts directory aliases and skips dangling links on Windows EPERM",
-		async () => {
-			if (!platformDescriptor) throw new Error("process.platform descriptor is unavailable");
-			Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
-			const realSymlink = fsPromises.symlink;
-			vi.spyOn(fsPromises, "symlink").mockImplementation(async (target, outputPath, type) => {
-				if (type === "junction") return realSymlink(target, outputPath, "junction");
-				const error = new Error("operation not permitted") as NodeJS.ErrnoException;
-				error.code = "EPERM";
-				throw error;
-			});
+	test("extracts directory aliases and skips dangling links on Windows EPERM", async () => {
+		if (!platformDescriptor) throw new Error("process.platform descriptor is unavailable");
+		Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
+		const realSymlink = fsPromises.symlink;
+		vi.spyOn(fsPromises, "symlink").mockImplementation(async (target, outputPath, type) => {
+			if (type === "junction") return realSymlink(target, outputPath, "junction");
+			const error = new Error("operation not permitted") as NodeJS.ErrnoException;
+			error.code = "EPERM";
+			throw error;
+		});
 
-			const dest = fsSync.mkdtempSync(path.join(os.tmpdir(), "omp-ar-dangling-"));
-			await extractArchive({ bytes: await arFixture("tar-links.tar"), format: "tar" }, dest);
+		const dest = fsSync.mkdtempSync(path.join(os.tmpdir(), "omp-ar-dangling-"));
+		const count = await extractArchive({ bytes: await arFixture("tar-links.tar"), format: "tar" }, dest);
 
-			// Real members still land; the directory alias survives as a junction
-			// and the dangling file link is skipped instead of aborting the run.
-			expect(fsSync.readFileSync(path.join(dest, "pkg/hard.txt"), "utf8")).toBe("shared content\n");
-			expect(fsSync.statSync(path.join(dest, "pkg/current")).isDirectory()).toBe(true);
-			expect(fsSync.existsSync(path.join(dest, "pkg/dangling"))).toBe(false);
-		},
-	);
+		// Real members still land; the directory alias survives as a junction
+		// and the dangling file link is skipped instead of aborting the run.
+		// 3 directories + 4 files + the junction; the skipped link is not counted.
+		expect(count).toBe(8);
+		expect(fsSync.readFileSync(path.join(dest, "pkg/hard.txt"), "utf8")).toBe("shared content\n");
+		expect(fsSync.statSync(path.join(dest, "pkg/current")).isDirectory()).toBe(true);
+		expect(fsSync.existsSync(path.join(dest, "pkg/dangling"))).toBe(false);
+	});
 
 	test.skipIf(process.platform === "win32")("materializes tar directory aliases as real symlinks", async () => {
 		// The link-before-isDirectory reorder: entries that are BOTH directory
