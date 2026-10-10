@@ -4,7 +4,7 @@
 
 ### Changed
 
-- `grep()` and `search()` cut a matching line wider than `maxColumns` around its first match, marking each cut side with `...`, and report that match's character column in `column`
+- `grep()` and `search()` cut a matching line wider than `maxColumns` around its first match, marking each cut side with `...`, and report that match's character column in `column` ([#15278](https://github.com/can1357/oh-my-pi/pull/15278) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.8] - 2026-10-10
 
