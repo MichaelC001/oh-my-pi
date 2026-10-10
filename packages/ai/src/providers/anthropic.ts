@@ -2350,8 +2350,9 @@ const streamAnthropicOnce = (
 				if (nextParams.compaction) stripCompactionIncompatibleParams(nextParams);
 				// After `onPayload`, so a hook cannot restore a field Bedrock rejects.
 				if (model.compat.bedrockMessagesApi) fitBedrockAnthropicPayload(nextParams);
-				// Vertex rawPredict carries betas in the body: follow the final
-				// `block_binding`, including one an `onPayload` hook set.
+				// Vertex rawPredict carries betas in the body. The binding token omp
+				// adds is decided here, from the final params after any hook; a token
+				// the hook itself put in `anthropic_beta` is left as it is.
 				const bodyBetas = (nextParams as { anthropic_beta?: string[] }).anthropic_beta;
 				if (
 					isVertexRawPredictUrl(
@@ -5026,7 +5027,7 @@ function buildParams(
 		effectiveBaseUrl ??
 		model.baseUrl;
 	const vertexControlBetas = isVertexRawPredictUrl(vertexRequestUrl)
-		? resolveAnthropicControlBetas(model, carriesThinkingBinding(thinking) ? prefixMismatchBehavior : undefined)
+		? resolveAnthropicControlBetas(model, undefined)
 		: [];
 	// Vertex rawPredict routes on-demand and legacy replay betas in the body.
 	if (isVertexRawPredictUrl(vertexRequestUrl)) {

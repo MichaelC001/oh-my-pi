@@ -259,4 +259,68 @@ describe("Anthropic thinking-binding beta follows block_binding", () => {
 		).result();
 		expect(beta.includes("thinking-binding-controls-2026-08-01")).toBe(expected);
 	});
+
+	const VERTEX_RAW_PREDICT =
+		"https://us-east5-aiplatform.googleapis.com/v1/projects/test/locations/us-east5/publishers/anthropic/models/claude-fable-5-1:streamRawPredict";
+	const vertexFable = buildModel({
+		id: "claude-fable-5-1",
+		name: "claude-fable-5-1",
+		api: "anthropic-messages",
+		provider: "google-vertex",
+		baseUrl: VERTEX_RAW_PREDICT,
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 1_000_000,
+		maxTokens: 128_000,
+	});
+	it.each([
+		[
+			"a hook removes block_binding",
+			(payload: unknown) => {
+				const p = payload as Record<string, unknown>;
+				const { block_binding: _dropped, ...thinking } = p.thinking as Record<string, unknown>;
+				return { ...p, thinking };
+			},
+			false,
+		],
+		[
+			"a hook switches thinking to disabled",
+			(payload: unknown) => ({ ...(payload as Record<string, unknown>), thinking: { type: "disabled" } }),
+			false,
+		],
+		["no hook runs on a bound request", undefined, true],
+		[
+			"a hook supplies the token without a binding",
+			(payload: unknown) => ({
+				...(payload as Record<string, unknown>),
+				thinking: { type: "disabled" },
+				anthropic_beta: ["thinking-binding-controls-2026-08-01"],
+			}),
+			true,
+		],
+	] as const)(
+		"Vertex rawPredict carries the binding token in anthropic_beta when %s: %p",
+		async (_label, onPayload, expected) => {
+			let body: { anthropic_beta?: string[] } = {};
+			await streamAnthropic(
+				vertexFable,
+				{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+				{
+					apiKey: "sk-ant-api-test",
+					thinkingEnabled: true,
+					reasoning: Effort.High,
+					...(onPayload ? { onPayload } : {}),
+					fetch: async (_url, init) => {
+						body = JSON.parse(String(init?.body));
+						return Response.json(
+							{ error: { type: "invalid_request_error", message: "captured" } },
+							{ status: 400 },
+						);
+					},
+				},
+			).result();
+			expect(body.anthropic_beta?.includes("thinking-binding-controls-2026-08-01") ?? false).toBe(expected);
+		},
+	);
 });
