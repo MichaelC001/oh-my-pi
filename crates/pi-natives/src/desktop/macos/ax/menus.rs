@@ -231,14 +231,19 @@ fn describe(
 }
 
 /// A menu item's `AXTitle`, empty when the item has none: AX reports a missing
-/// title as no value or an unsupported attribute rather than an empty string.
+/// title as no value or an unsupported attribute rather than an empty string,
+/// and a few items fail the read outright (a row of Preview's Tools menu
+/// answers kAXErrorFailure). Such an item cannot be matched by title, so it is
+/// skipped rather than failing the whole menu.
 fn title(value: Result<Option<CFRetained<CFType>>, AXError>) -> CoreResult<String> {
 	match value {
 		Ok(Some(value)) => value
 			.downcast::<CFString>()
 			.map(|value| value.to_string())
 			.map_err(|_| DesktopError::ax_failed("AXTitle was not a string")),
-		Ok(None) | Err(AXError::NoValue | AXError::AttributeUnsupported) => Ok(String::new()),
+		Ok(None) | Err(AXError::NoValue | AXError::AttributeUnsupported | AXError::Failure) => {
+			Ok(String::new())
+		},
 		Err(error) => Err(super::ax_error(error, "copying AXTitle failed")),
 	}
 }
@@ -278,6 +283,8 @@ mod tests {
 		// Finder's File > Tags row answers AXTitle with kAXErrorNoValue (-25212).
 		assert_eq!(title(Err(AXError::NoValue)).unwrap(), "");
 		assert_eq!(title(Err(AXError::AttributeUnsupported)).unwrap(), "");
+		// One row of Preview's Tools menu answers kAXErrorFailure (-25200).
+		assert_eq!(title(Err(AXError::Failure)).unwrap(), "");
 		assert_eq!(title(Ok(None)).unwrap(), "");
 	}
 
