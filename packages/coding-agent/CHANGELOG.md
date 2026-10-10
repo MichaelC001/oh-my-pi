@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed computer-use `await win.observe()` as a cell's last expression printing the accessibility tree twice, once as text and again inside the displayed value
+- Fixed computer-use `await win.observe()` as a cell's last expression printing the accessibility tree twice, once as text and again inside the displayed value ([#15270](https://github.com/can1357/oh-my-pi/pull/15270) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.9] - 2026-10-10
 
