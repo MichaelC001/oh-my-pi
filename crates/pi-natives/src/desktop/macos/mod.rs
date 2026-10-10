@@ -64,7 +64,7 @@ impl Backend for MacosBackend {
 		} else {
 			0
 		};
-		let screen = session::screen_state();
+		let screen = session::screen_state(self.capture.selector());
 		DesktopCapabilities {
 			backend: "quartz".to_string(),
 			display_server: Some("Quartz WindowServer".to_string()),
@@ -96,7 +96,7 @@ impl Backend for MacosBackend {
 	}
 
 	fn screen_state(&mut self) -> ScreenState {
-		session::screen_state()
+		session::screen_state(self.capture.selector())
 	}
 
 	fn keep_display_awake(&mut self, awake: bool) {

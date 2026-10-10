@@ -2,9 +2,11 @@
 //! keeps the display awake while the agent acts.
 
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFRetained, CFString, CFType};
-use objc2_core_graphics::{CGDisplayIsAsleep, CGMainDisplayID, CGSessionCopyCurrentDictionary};
+use objc2_core_graphics::{
+	CGDirectDisplayID, CGDisplayIsAsleep, CGGetOnlineDisplayList, CGSessionCopyCurrentDictionary,
+};
 
-use super::super::types::ScreenState;
+use super::super::types::{DisplaySelector, ScreenState};
 use crate::power::platform::{AssertionInner, AssertionKind};
 
 /// Session dictionary key `WindowServer` sets to true while the lock screen is
@@ -12,12 +14,43 @@ use crate::power::platform::{AssertionInner, AssertionKind};
 const SCREEN_LOCKED_KEY: &str = "CGSSessionScreenIsLocked";
 /// Shown by `pmset -g assertions` next to the holding process.
 const DISPLAY_AWAKE_REASON: &str = "oh-my-pi computer tool is operating the desktop";
+const MAX_ONLINE_DISPLAYS: u32 = 32;
 
-pub(super) fn screen_state() -> ScreenState {
+/// `display_asleep` covers the session's displays: the selected one for a
+/// display id, otherwise every online display, since `active` and `all` can
+/// capture any of them.
+pub(super) fn screen_state(selector: &DisplaySelector) -> ScreenState {
 	ScreenState {
 		locked:         screen_locked(),
-		display_asleep: CGDisplayIsAsleep(CGMainDisplayID()),
+		display_asleep: displays_asleep(selector, &online_displays(), |id| CGDisplayIsAsleep(id)),
 	}
+}
+
+fn displays_asleep(
+	selector: &DisplaySelector,
+	online: &[CGDirectDisplayID],
+	asleep: impl Fn(CGDirectDisplayID) -> bool,
+) -> bool {
+	if let DisplaySelector::Id(id) = selector
+		&& let Ok(id) = id.trim().parse::<CGDirectDisplayID>()
+		&& online.contains(&id)
+	{
+		return asleep(id);
+	}
+	!online.is_empty() && online.iter().all(|&id| asleep(id))
+}
+
+fn online_displays() -> Vec<CGDirectDisplayID> {
+	let mut ids = [0; MAX_ONLINE_DISPLAYS as usize];
+	let mut count = 0;
+	// SAFETY: `ids` holds `MAX_ONLINE_DISPLAYS` writable entries and `count` is
+	// a valid out-pointer for the synchronous call.
+	let error =
+		unsafe { CGGetOnlineDisplayList(MAX_ONLINE_DISPLAYS, ids.as_mut_ptr(), &raw mut count) };
+	if error.0 != 0 {
+		return Vec::new();
+	}
+	ids[..(count as usize).min(ids.len())].to_vec()
 }
 
 fn screen_locked() -> bool {
@@ -51,5 +84,27 @@ impl DisplayAwake {
 			(false, true) => self.0 = None,
 			_ => {},
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{DisplaySelector, displays_asleep};
+
+	#[test]
+	fn display_sleep_follows_the_sessions_displays_not_the_main_one() {
+		// Display 1 is main and awake; secondary 2 sleeps.
+		let asleep = |id| id == 2;
+		let online = [1, 2];
+		assert!(displays_asleep(&DisplaySelector::Id("2".into()), &online, asleep));
+		assert!(!displays_asleep(&DisplaySelector::Id("1".into()), &online, asleep));
+		assert!(!displays_asleep(&DisplaySelector::Active, &online, asleep));
+		assert!(!displays_asleep(&DisplaySelector::All, &online, asleep));
+		// Main asleep, secondary usable: not "nothing can be captured".
+		assert!(!displays_asleep(&DisplaySelector::All, &online, |id| id == 1));
+		assert!(displays_asleep(&DisplaySelector::All, &online, |_| true));
+		// An id that is not online falls back to every display.
+		assert!(!displays_asleep(&DisplaySelector::Id("9".into()), &online, asleep));
+		assert!(!displays_asleep(&DisplaySelector::Active, &[], |_| true));
 	}
 }

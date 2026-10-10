@@ -280,8 +280,8 @@ async function emitScreenshot(
 		coordinateWidth: frame.coordinateWidth,
 		coordinateHeight: frame.coordinateHeight,
 		...(frame.region ? { region: frame.region } : {}),
-		...(frame.screenLocked ? { screenLocked: true as const } : {}),
 	};
+	if (frame.screenLocked) result.screenLocked = true;
 	const scaled = frame.width !== frame.sourceWidth || frame.height !== frame.sourceHeight;
 	context.screenshots.push({
 		...result,

@@ -173,7 +173,7 @@ interface ComputerCapabilities {
 	spaces: boolean;
 	/** macOS lock screen is up: captures show it, and keystrokes, takeover and AX actions fail until someone unlocks. */
 	screenLocked: boolean;
-	/** macOS display is asleep: nothing can be captured or clicked until it wakes. */
+	/** macOS session display is asleep (the display id the session was opened on, else every display): nothing can be captured or clicked there until it wakes. */
 	displayAsleep: boolean;
 }
 
