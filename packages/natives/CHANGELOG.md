@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed macOS `menu.items()` and `menu.select()` failing with `AxFailed` on menus that hold an item without a title, such as the Tags row in Finder's File menu; such items are now skipped like separators
+
 ## [18.8.8] - 2026-10-10
 
 ### Changed
