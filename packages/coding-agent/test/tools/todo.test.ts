@@ -802,10 +802,14 @@ describe("selectCollapsedTodos walking viewport (#5873)", () => {
 		const pending = selectCollapsedTodos(mk(6, [1]), never, 5);
 		expect(contents(pending)).toEqual(["Task 1", "Task 2", "Task 3", "Task 4", "Task 5", "Task 6"]);
 		expect(pending.summary).toBe("");
+	});
 
-		const actives = selectCollapsedTodos(mk(8, []), (t: TodoItem) => Number(t.content.slice(5)) <= 6, 5);
-		expect(contents(actives)).toEqual(["Task 1", "Task 2", "Task 3", "Task 4", "Task 5", "Task 6"]);
-		expect(actives.summary).toBe("");
+	it("keeps an overflow summary when one active task overflows the cap and pending remains", () => {
+		// 6 matched actives + 2 pending, cap 5: showing all 6 actives would hide the
+		// pending work with no summary row at all.
+		const sel = selectCollapsedTodos(mk(8, []), (t: TodoItem) => Number(t.content.slice(5)) <= 6, 5);
+		expect(contents(sel)).toEqual(["Task 1", "Task 2", "Task 3", "Task 4", "Task 5"]);
+		expect(sel.summary).toBe("… 1 more active todo");
 	});
 
 	it("returns the whole open set with no summary when it fits", () => {

@@ -177,7 +177,6 @@ function selectWithinCap<T extends { status: TodoStatus }>(
 	// count hidden *actives*. At exactly `cap` actives, fall through so the normal
 	// branch still surfaces any following pending work in the summary.
 	if (active.length > cap) {
-		if (active.length === cap + 1) return { items: active, summary: "" };
 		const hiddenActive = active.length - cap;
 		return {
 			items: active.slice(0, cap),
