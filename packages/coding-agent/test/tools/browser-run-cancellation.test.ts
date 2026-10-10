@@ -306,6 +306,32 @@ describe("browser run cancellation", () => {
 		}
 	});
 
+	it("reports a user rethrow from a combinator over a thenable handle", async () => {
+		// The report is queued with setTimeout(0); fake timers would never deliver it.
+		vi.useRealTimers();
+		for (const name of ["all", "race"] as const) {
+			const owner = {};
+			const userFailure = new Error(`${name} continuation failure`);
+			const reported = Promise.withResolvers<unknown>();
+			const handle = {
+				then: (onFulfilled?: (value: string) => unknown, onRejected?: (reason: unknown) => unknown) =>
+					Promise.resolve("element").then(onFulfilled, onRejected),
+				click: async () => "clicked",
+			};
+			const facade = bindRunFacade({ ref: () => handle }, new AbortController().signal, owner, reported.resolve);
+
+			await withBrowserPromiseCombinatorTracking(owner, reported.resolve, async () => {
+				// oxlint-disable-next-line unicorn/no-single-promise-in-promise-methods -- the combinators themselves are under test
+				const combined = name === "all" ? Promise.all([facade.ref()]) : Promise.race([facade.ref()]);
+				void combined.then(() => {
+					throw userFailure;
+				});
+				// The tracked combinator reports the dropped rethrow instead of leaving it unhandled.
+				expect(await reported.promise).toBe(userFailure);
+			});
+		}
+	});
+
 	it("preserves native await through a tracked browser-promise combinator", async () => {
 		vi.useRealTimers();
 		const owner = {};
