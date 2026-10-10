@@ -1189,15 +1189,15 @@ function failUsageReset(message: string): void {
  */
 function identityTextMasker(redaction: Map<string, string>): (text: string) => string {
 	if (redaction.size === 0) return text => text;
-	const masks = new Map([...redaction].map(([value, mask]) => [value.toLowerCase(), mask]));
+	const byLowerCase = new Map([...redaction].map(([value, mask]) => [value.toLowerCase(), mask]));
 	const pattern = new RegExp(
-		[...masks.keys()]
+		[...redaction.keys()]
 			.sort((a, b) => b.length - a.length)
 			.map(value => RegExp.escape(value))
 			.join("|"),
 		"gi",
 	);
-	return text => text.replace(pattern, value => masks.get(value.toLowerCase()) ?? value);
+	return text => text.replace(pattern, value => redaction.get(value) ?? byLowerCase.get(value.toLowerCase()) ?? value);
 }
 
 /**
@@ -1236,8 +1236,18 @@ async function runUsageResetCommand(
 	}
 	const modelRegistry = await loadUsageSources(cmd, settings, authStorage);
 	const baseUrlResolver = (provider: string) => modelRegistry.getProviderBaseUrl(provider);
+	// Codex's listing requests carry no timeout of their own (Claude's discovery
+	// bounds each request), so a stalled endpoint cannot hang a script.
 	const statuses = (
-		await Promise.all(providers.map(provider => authStorage.resets.list({ provider, baseUrlResolver })))
+		await Promise.all(
+			providers.map(provider =>
+				authStorage.resets.list({
+					provider,
+					baseUrlResolver,
+					signal: provider === "openai-codex" ? AbortSignal.timeout(10_000) : undefined,
+				}),
+			),
+		)
 	).flat();
 	const redaction = cmd.redact
 		? buildRedactionMap(

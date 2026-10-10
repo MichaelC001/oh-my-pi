@@ -1348,8 +1348,10 @@ describe("omp usage reset", () => {
 	let requests: ResetRequest[];
 	/** Codex consume answer; an Error stands in for a dropped connection, `stall` for one that never answers. */
 	let codexConsume: { status: number; body: unknown } | Error | "stall";
-	/** Codex listing requests with this bearer fail upstream. */
-	let failingListBearer: string | undefined;
+	/** Codex listing faults by bearer: `unavailable` fails upstream, `stall` never answers. */
+	let codexListFaults: Record<string, "unavailable" | "stall">;
+	/** Title Anthropic gives the Claude grant. */
+	let claudeGrantLabel: string;
 	let authStorage: AuthStorage;
 	let stdout: string;
 	let stderr: string;
@@ -1362,6 +1364,13 @@ describe("omp usage reset", () => {
 		PI_PROFILE: process.env.PI_PROFILE,
 	};
 
+	/** A response that never arrives; it rejects once the request's signal aborts. */
+	const stall = (init?: RequestInit): Promise<Response> => {
+		const stalled = Promise.withResolvers<Response>();
+		init?.signal?.addEventListener("abort", () => stalled.reject(init.signal?.reason));
+		return stalled.promise;
+	};
+
 	/** Codex and Claude reset endpoints: `codex-team` banks two credits, `codex-spare` none, Claude one grant. */
 	const handleReset = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
 		const url = new URL(String(input));
@@ -1371,16 +1380,14 @@ describe("omp usage reset", () => {
 		requests.push({ method, path: url.pathname, bearer, ...(body ? { body } : {}) });
 		if (url.pathname.endsWith("/wham/rate-limit-reset-credits/consume")) {
 			if (codexConsume instanceof Error) throw codexConsume;
-			if (codexConsume === "stall") {
-				const stalled = Promise.withResolvers<Response>();
-				init?.signal?.addEventListener("abort", () => stalled.reject(init.signal?.reason));
-				return stalled.promise;
-			}
+			if (codexConsume === "stall") return stall(init);
 			return Response.json(codexConsume.body, { status: codexConsume.status });
 		}
 		if (url.pathname.endsWith("/wham/rate-limit-reset-credits")) {
 			listed.resolve();
-			if (bearer === failingListBearer) return new Response("upstream unavailable", { status: 503 });
+			const fault = bearer ? codexListFaults[bearer] : undefined;
+			if (fault === "unavailable") return new Response("upstream unavailable", { status: 503 });
+			if (fault === "stall") return stall(init);
 			const credits =
 				bearer === "Bearer codex-team" || bearer === "Bearer broker-codex"
 					? [
@@ -1410,7 +1417,7 @@ describe("omp usage reset", () => {
 					grants: [
 						{
 							id: "saved-reset",
-							label: "Reset for dev@example.test (Acme Corp)",
+							label: claudeGrantLabel,
 							resets_total: 1,
 							resets_left: 1,
 							starts_at: new Date(Date.now() - HOUR).toISOString(),
@@ -1438,7 +1445,8 @@ describe("omp usage reset", () => {
 		tempDir = TempDir.createSync("@omp-usage-reset-");
 		setAgentDir(tempDir.path());
 		codexConsume = { status: 200, body: { code: "reset" } };
-		failingListBearer = undefined;
+		codexListFaults = {};
+		claudeGrantLabel = "Reset for dev@example.test (Acme Corp)";
 		authStorage = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")), { usageFetch });
 		await authStorage.credentials.set("openai-codex", [
 			oauth("codex-team", { email: "dev@example.test", accountId: "acct-team" }),
@@ -1583,17 +1591,21 @@ describe("omp usage reset", () => {
 		expect(process.exitCode).toBe(1);
 	});
 
-	it("masks an identity in provider text whatever its letter case under --redact", async () => {
-		await authStorage.credentials.set(
-			"anthropic",
-			oauth("claude-case", { email: "Dev@Example.test", orgId: "org-case", orgName: "acme corp" }),
-		);
+	it.each([
+		[
+			"another letter case",
+			{ email: "Dev@Example.test", orgName: "acme corp" },
+			"Reset for dev@example.test (Acme Corp)",
+			"Reset for De* (ac*)",
+		],
+		["non-ASCII letters", { email: "dev@example.test", orgName: "İstanbul" }, "Reset for İstanbul", "Reset for İs*"],
+	])("masks an identity written in %s inside provider text under --redact", async (_case, identity, label, title) => {
+		claudeGrantLabel = label;
+		await authStorage.credentials.set("anthropic", oauth("claude-case", { ...identity, orgId: "org-case" }));
 		await runUsageCommand({ action: "reset", provider: "claude", json: true, redact: true, noExtensions: true });
 
 		const { accounts } = JSON.parse(stdout) as { accounts: Array<{ credits: Array<{ title?: string }> }> };
-		expect(accounts.map(account => account.credits.map(credit => credit.title))).toEqual([["Reset for De* (ac*)"]]);
-		expect(stdout.toLowerCase()).not.toContain("dev@example.test");
-		expect(stdout.toLowerCase()).not.toContain("acme corp");
+		expect(accounts.map(account => account.credits.map(credit => credit.title))).toEqual([[title]]);
 	});
 
 	/** Organizations named like the `codex` alias (inside `openai-codex`) and like the Claude grant id. */
@@ -1740,13 +1752,25 @@ describe("omp usage reset", () => {
 	});
 
 	it("names a failed listing instead of reporting no usable resets", async () => {
-		failingListBearer = "Bearer codex-spare";
+		codexListFaults = { "Bearer codex-spare": "unavailable" };
 		const { spare } = credentialIds();
 		await runUsageCommand({ action: "reset", target: `codex/${spare}`, noExtensions: true });
 
 		expect(stripVTControlCharacters(stderr)).toContain(
 			"spare@example.test [Codex]: saved resets unavailable (Failed to load saved resets)",
 		);
+		expect(consumes()).toEqual([]);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("stops waiting on a Codex listing that never answers", async () => {
+		codexListFaults = { "Bearer codex-team": "stall" };
+		const timeout = AbortSignal.timeout.bind(AbortSignal);
+		vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => timeout(Math.min(ms, 50)));
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${team}`, noExtensions: true });
+
+		expect(stripVTControlCharacters(stderr)).toContain("saved resets unavailable (Failed to load saved resets)");
 		expect(consumes()).toEqual([]);
 		expect(process.exitCode).toBe(1);
 	});
