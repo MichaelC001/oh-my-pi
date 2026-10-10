@@ -364,8 +364,9 @@ export function applyOpenAIServiceTier(
  * half price; Priority (Fast mode) is a 2x premium. Codex bills the same tiers
  * with its own table (Fast is 2.5x on every model) and applies that separately.
  * `ultrafast` has no API-generic default — only models with a published
- * ultrafast price carry a `serviceTierCost.ultrafast` entry (Astra, 6x) and
- * everything else stays at 1x rather than an invented multiplier.
+ * ultrafast price carry a `serviceTierCost.ultrafast` entry (GPT-6 Astra and
+ * GPT-6.1 Sol, 6x) and everything else stays at 1x rather than an invented
+ * multiplier.
  */
 function getOpenAIResponsesServiceTierCostMultiplier(
 	model: Pick<Model, "serviceTierCost">,
