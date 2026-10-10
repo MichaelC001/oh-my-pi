@@ -12,7 +12,6 @@ import { formatResetProviderName } from "../slash-commands/helpers/reset-usage";
 import {
 	type ClaudeResetAction,
 	type ClaudeResetSkip,
-	type ClaudeResetSkipReason,
 	claudeCoveredLimits,
 	fullestClaudeLimit,
 	planClaudeResetRedemptions,
@@ -20,12 +19,12 @@ import {
 import {
 	type CodexResetAction,
 	type CodexResetSkip,
-	type CodexResetSkipReason,
 	fullestCodexChatWindow,
 	IMMINENT_RESET_EXPIRY_MS,
 	planCodexResetRedemptions,
 	resetPlanSettings,
 	SALVAGE_MIN_USED_FRACTION,
+	shouldEvaluateCodexAutoRedeem,
 	shouldPromptCodexAutoRedeem,
 } from "./codex-auto-reset";
 import {
@@ -94,23 +93,20 @@ export function classifyResetExpiry(report: UsageReport, nowMs: number): ResetEx
 	return { provider, tier, count, expiresAtMs: soonest.expiresAtMs, usableNow, ...fullest };
 }
 
-export type ResetSkipReason = CodexResetSkipReason | ClaudeResetSkipReason;
-
 /**
- * What the salvage sweep does with an account's soonest expiring saved reset.
- * `auto` spends it and `ask` prompts first, both only in an open interactive
- * omp session; `off` is the provider setting; `skip` carries the planner's
- * reason for passing it over.
+ * What an open omp session does with an account's soonest expiring saved
+ * reset. `kind` comes from the provider's `autoRedeem` setting alone: `auto`
+ * spends it by its last five minutes if the provider still allows it then,
+ * `ask` prompts first, `off` leaves it. `eligibleNow` is the salvage planner's
+ * answer for this report today; usage can change it before the reset expires.
  */
-export type ResetSpendVerdict = {
+export interface ResetSpendVerdict {
+	kind: "auto" | "ask" | "off";
 	setting: "codexResets.autoRedeem" | "claudeResets.autoRedeem";
 	mode: ResetAutoRedeemMode;
-} & ({ kind: "auto" | "ask" | "off" } | { kind: "skip"; reason: ResetSkipReason });
+	eligibleNow: boolean;
+}
 
-/**
- * Ask the provider's salvage planner about the warning's reset at its last
- * chance, the latest moment a sweep would spend it, over this report.
- */
 export function resetSpendVerdict(
 	report: UsageReport,
 	warning: ResetExpiryWarning,
@@ -118,36 +114,39 @@ export function resetSpendVerdict(
 	nowMs: number,
 ): ResetSpendVerdict {
 	const autoRedeem = warning.provider === "anthropic" ? cfgClaudeResetsAutoRedeem : cfgCodexResetsAutoRedeem;
-	const setting = autoRedeem.id;
 	const mode = autoRedeem.get(settings);
-	const atMs = Math.max(nowMs, warning.expiresAtMs - IMMINENT_RESET_EXPIRY_MS);
-	const plan = planSalvage(report, warning.provider, settings, atMs);
-	const action = plan.actions[0];
-	if (action?.expiresInMs === warning.expiresAtMs - atMs) {
-		return { setting, mode, kind: shouldPromptCodexAutoRedeem(mode) ? "ask" : "auto" };
-	}
-	const reason = plan.skipped[0]?.reason;
-	if (reason === "disabled") return { setting, mode, kind: "off" };
-	// The planners only weigh a reset the provider lets them spend now; any skip reason is another reset's.
-	return {
-		setting,
-		mode,
-		kind: "skip",
-		reason: warning.usableNow ? (reason ?? "no-expiring-credit") : "credit-unusable",
-	};
+	const kind = !shouldEvaluateCodexAutoRedeem(mode) ? "off" : shouldPromptCodexAutoRedeem(mode) ? "ask" : "auto";
+	const plan = planAsLastChance(report, warning, settings, nowMs);
+	// A stale report says nothing about eligibility: the sweep plans only after a fresh fetch.
+	const eligibleNow =
+		plan.actions[0]?.expiresInMs === IMMINENT_RESET_EXPIRY_MS || plan.skipped[0]?.reason === "stale-report";
+	return { kind, setting: autoRedeem.id, mode, eligibleNow };
 }
 
-/** The salvage sweep's plan for one account at `nowMs`, as if its report had just been fetched. */
-function planSalvage(
+/**
+ * The salvage sweep's plan for this report now, with every credit moved by
+ * the same amount so the warning's reset is in its last five minutes and
+ * consent granted: only the provider's eligibility and the planner's
+ * coverage rules can refuse it.
+ */
+function planAsLastChance(
 	report: UsageReport,
-	provider: ResetExpiryWarning["provider"],
+	warning: ResetExpiryWarning,
 	settings: Settings,
 	nowMs: number,
 ): {
 	actions: readonly (CodexResetAction | ClaudeResetAction)[];
 	skipped: readonly (CodexResetSkip | ClaudeResetSkip)[];
 } {
-	const current = { ...report, fetchedAt: nowMs };
+	const shiftMs = warning.expiresAtMs - (nowMs + IMMINENT_RESET_EXPIRY_MS);
+	const credits = (report.resetCredits?.credits ?? []).map(credit => {
+		const expiresAtMs = credit.expiresAt ? Date.parse(credit.expiresAt) : Number.NaN;
+		return Number.isFinite(expiresAtMs)
+			? { ...credit, expiresAt: new Date(expiresAtMs - shiftMs).toISOString() }
+			: credit;
+	});
+	const inventory = { ...(report.resetCredits ?? { availableCount: 0 }), credits };
+	const lastChance: UsageReport = { ...report, resetCredits: inventory };
 	const episodes = {
 		attemptedKeys: new Set<string>(),
 		deferredUntilByKey: new Map<string, number>(),
@@ -155,38 +154,37 @@ function planSalvage(
 	};
 	// The planners key accounts by credential id, which none of their rules read.
 	const credentialId = 0;
-	if (provider === "openai-codex") {
+	if (warning.provider === "openai-codex") {
 		return planCodexResetRedemptions({
 			nowMs,
 			trigger: "sweep",
 			provider: "",
 			modelId: "",
-			settings: resetPlanSettings(cfgCodexResets.get(settings)),
+			settings: resetPlanSettings({ ...cfgCodexResets.get(settings), autoRedeem: "yes" }),
 			identity: undefined,
-			reports: [{ ...current, metadata: { ...report.metadata, resetCreditCredentialId: credentialId } }],
+			reports: [{ ...lastChance, metadata: { ...report.metadata, resetCreditCredentialId: credentialId } }],
 			...episodes,
 		});
 	}
-	const { credits = [], ...inventory } = report.resetCredits ?? { availableCount: 0 };
 	const text = (value: unknown) => (typeof value === "string" ? value : undefined);
 	return planClaudeResetRedemptions({
 		nowMs,
 		trigger: "sweep",
 		provider: "",
 		modelId: "",
-		settings: resetPlanSettings(cfgClaudeResets.get(settings)),
-		reports: [current],
+		settings: resetPlanSettings({ ...cfgClaudeResets.get(settings), autoRedeem: "yes" }),
+		reports: [lastChance],
 		statuses: [
 			{
 				...inventory,
-				provider,
+				provider: warning.provider,
 				credentialId,
 				accountId: text(report.metadata?.accountId),
 				email: text(report.metadata?.email),
 				orgId: text(report.metadata?.orgId),
 				credits: credits.filter((credit): credit is UsageResetCredit => typeof credit.id === "string"),
 				active: false,
-				report: current,
+				report: lastChance,
 			},
 		],
 		...episodes,

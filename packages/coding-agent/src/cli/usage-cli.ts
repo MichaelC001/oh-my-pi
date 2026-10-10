@@ -36,7 +36,6 @@ import { reportMatchesStatus } from "../session/claude-auto-reset";
 import {
 	classifyResetExpiry,
 	type ResetExpiryWarning,
-	type ResetSkipReason,
 	type ResetSpendVerdict,
 	resetSpendVerdict,
 } from "../session/reset-expiry";
@@ -687,33 +686,20 @@ function formatExpiringResets(warning: ResetExpiryWarning, nowMs: number): strin
 	return warning.count === 1 ? `1 expires in ${due}` : `${warning.count} expire, soonest in ${due}`;
 }
 
-const RESET_SKIP_TEXT: Partial<Record<ResetSkipReason, string>> = {
-	"incomplete-coverage": "a window it does not clear is exhausted",
-	"credit-unusable": "not usable now",
-	"no-credits": "not usable now",
-	"no-selected-credit": "not usable now",
-	ineligible: "not usable now",
-	"provider-cooldown": "not usable now",
-};
-
 function formatResetSpendVerdict(verdict: ResetSpendVerdict): string {
-	const setting = `(${verdict.setting}: ${verdict.mode})`;
-	switch (verdict.kind) {
-		case "auto":
-			return `→ spent automatically before it expires while an interactive omp session is open  ${setting}`;
-		case "ask":
-			return `→ an interactive omp session asks before spending it  ${setting}`;
-		case "off":
-			return `→ not spent automatically  ${setting}`;
-		case "skip":
-			return `→ not spent automatically: ${RESET_SKIP_TEXT[verdict.reason] ?? verdict.reason}`;
-	}
+	const outcome =
+		verdict.kind === "auto"
+			? "an open omp session spends it by its last 5 min if eligible then"
+			: verdict.kind === "ask"
+				? "an open omp session asks before spending it"
+				: "not spent automatically";
+	return `→ ${outcome}  (${verdict.setting}: ${verdict.mode})${verdict.eligibleNow ? "" : " · not eligible now"}`;
 }
 
 /**
  * Saved resets expiring within 24 hours on accounts worth restoring: what the
- * salvage sweep does with each one, and the `/usage reset` target that spends
- * it now when the provider allows that.
+ * provider's `autoRedeem` setting does with each one, whether it is eligible
+ * now, and the `/usage reset` target that spends it now when the provider allows.
  */
 function formatResetExpiryBanner(
 	expiring: readonly { report: UsageReport; warning: ResetExpiryWarning }[],
@@ -723,9 +709,8 @@ function formatResetExpiryBanner(
 	options: UsageResetExpiryOptions,
 ): string[] {
 	const verdicts = expiring.map(({ report, warning }) => resetSpendVerdict(report, warning, options.settings, nowMs));
-	const spent = verdicts.map(verdict => verdict.kind === "auto" || verdict.kind === "ask");
 	const count = expiring.reduce((sum, { warning }) => sum + warning.count, 0);
-	const lost = !spent.includes(true);
+	const lost = verdicts.every(verdict => verdict.kind === "off");
 	const lines = [
 		chalk.red.bold(
 			`▲ ${count} saved reset${count === 1 ? " expires" : "s expire"} within 24h${lost ? " and will be lost" : ""}`,
@@ -748,7 +733,9 @@ function formatResetExpiryBanner(
 			.filter(account => reportMatchesStatus(report, { ...account, provider: warning.provider }));
 		const command =
 			stored.length === 1 ? `/usage reset ${warning.provider}/${stored[0]!.credentialId}` : "/usage reset";
-		lines.push(`    ${spent[index] ? "or now" : "spend it"}:  ${chalk.cyan(command)} ${chalk.dim("in omp")}`);
+		lines.push(
+			`    ${verdicts[index]!.kind === "off" ? "spend it" : "or now"}:  ${chalk.cyan(command)} ${chalk.dim("in omp")}`,
+		);
 	});
 	return lines;
 }

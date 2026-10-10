@@ -1256,12 +1256,8 @@ describe("formatUsageBreakdown", () => {
 	});
 
 	it.each([
-		{
-			mode: "yes",
-			verdict: "→ spent automatically before it expires while an interactive omp session is open",
-			lost: false,
-		},
-		{ mode: "unset", verdict: "→ an interactive omp session asks before spending it", lost: false },
+		{ mode: "yes", verdict: "→ an open omp session spends it by its last 5 min if eligible then", lost: false },
+		{ mode: "unset", verdict: "→ an open omp session asks before spending it", lost: false },
 		{ mode: "no", verdict: "→ not spent automatically", lost: true },
 	])("says what codexResets.autoRedeem=$mode does with an expiring reset", ({ mode, verdict, lost }) => {
 		const now = Date.parse("2026-01-01T00:00:00.000Z");
@@ -1277,7 +1273,7 @@ describe("formatUsageBreakdown", () => {
 				resetExpiryOptions({ "codexResets.autoRedeem": mode }),
 			),
 		);
-		expect(text).toContain(`${verdict}  (codexResets.autoRedeem: ${mode})`);
+		expect(text).toContain(`${verdict}  (codexResets.autoRedeem: ${mode})\n`);
 		expect(text.includes("within 24h and will be lost")).toBe(lost);
 		expect(text).toContain(lost ? "spend it:  /usage reset" : "or now:  /usage reset");
 	});
@@ -1303,15 +1299,15 @@ describe("formatUsageBreakdown", () => {
 				cedarGrant(now, "behind", 6 * HOUR, { remainingCount: 2, usable: false, status: "unavailable" }),
 			],
 			header: "✦ 3 saved resets · 1 usable now · ▲ 2 expire, soonest in 6h",
-			title: "▲ 2 saved resets expire within 24h and will be lost",
-			verdict: "→ not spent automatically: not usable now",
+			title: "▲ 2 saved resets expire within 24h\n",
+			eligibleNow: false,
 		},
 		{
 			name: "a paused grant",
 			grants: (now: number) => [cedarGrant(now, "paused", 6 * HOUR, { usable: false, status: "paused" })],
 			header: "✦ 1 saved reset · 0 usable now · ▲ 1 expires in 6h",
-			title: "▲ 1 saved reset expires within 24h and will be lost",
-			verdict: "→ not spent automatically: not usable now",
+			title: "▲ 1 saved reset expires within 24h\n",
+			eligibleNow: false,
 		},
 		{
 			name: "the selected grant among several",
@@ -1322,50 +1318,66 @@ describe("formatUsageBreakdown", () => {
 			],
 			header: "✦ 3 saved resets · 1 usable now · ▲ 2 expire, soonest in 6h",
 			title: "▲ 2 saved resets expire within 24h\n",
-			verdict: "→ spent automatically before it expires while an interactive omp session is open",
+			eligibleNow: true,
 		},
-	])("counts $name among the expiring Claude resets", ({ grants, header, title, verdict }) => {
+	])("counts $name among the expiring Claude resets", ({ grants, header, title, eligibleNow }) => {
 		const now = Date.parse("2026-01-01T00:00:00.000Z");
 		const report = claudeResetReport(now, { "anthropic:5h": 0.1, "anthropic:7d": 0.5 }, grants(now));
 		const options = resetExpiryOptions({ "claudeResets.autoRedeem": "yes" });
 		const text = stripVTControlCharacters(formatUsageBreakdown([report], [], now, undefined, [], undefined, options));
 		expect(text).toContain(header);
 		expect(text).toContain(title);
-		expect(text).toContain(verdict);
+		expect(text).toContain(
+			`→ an open omp session spends it by its last 5 min if eligible then  (claudeResets.autoRedeem: yes)${eligibleNow ? "" : " · not eligible now"}\n`,
+		);
 		// Only a reset the provider lets omp spend now gets a command that spends it.
-		expect(text.includes("/usage reset")).toBe(!title.includes("will be lost"));
+		expect(text.includes("/usage reset")).toBe(eligibleNow);
 	});
 
 	it.each<{
 		name: string;
 		usage: Record<string, number>;
-		settings: Record<string, unknown>;
-		verdict: string;
-		command: string;
+		grant: Partial<UsageResetCredit>;
+		fetchedAgoMs: number;
+		eligibleNow: boolean;
 	}>([
 		{
-			name: "skips a grant while a window it does not clear is exhausted",
-			usage: { "anthropic:5h": 0.5, "anthropic:7d": 0.5, "anthropic:7d:sonnet": 1 },
-			settings: { "claudeResets.autoRedeem": "yes" },
-			verdict: "→ not spent automatically: a window it does not clear is exhausted",
-			command: "spend it:  /usage reset",
+			name: "keeps the spend conditional when the exhausted window that makes a grant usable may reset first",
+			usage: { "anthropic:5h": 1, "anthropic:7d": 0.5 },
+			grant: { requiresLimit: true },
+			fetchedAgoMs: 0,
+			eligibleNow: true,
 		},
 		{
-			name: "spends at the last chance with early salvage turned off",
-			usage: { "anthropic:5h": 0.1, "anthropic:7d": 0.5 },
-			settings: { "claudeResets.autoRedeem": "yes", "claudeResets.salvageHorizonHours": 0 },
-			verdict: "→ spent automatically before it expires while an interactive omp session is open",
-			command: "or now:  /usage reset",
+			name: "marks a grant not eligible now, not lost, while a window it does not clear is exhausted",
+			usage: { "anthropic:5h": 0.5, "anthropic:7d": 0.5, "anthropic:7d:sonnet": 1 },
+			grant: {},
+			fetchedAgoMs: 0,
+			eligibleNow: false,
 		},
-	])("$name, as the salvage planner decides", ({ usage, settings, verdict, command }) => {
+		{
+			name: "leaves eligibility unmarked on a report too old for the planner",
+			usage: { "anthropic:5h": 0.5, "anthropic:7d": 0.5, "anthropic:7d:sonnet": 1 },
+			grant: {},
+			fetchedAgoMs: 20 * 60_000,
+			eligibleNow: true,
+		},
+	])("$name", ({ usage, grant, fetchedAgoMs, eligibleNow }) => {
 		const now = Date.parse("2026-01-01T00:00:00.000Z");
-		const report = claudeResetReport(now, usage, [cedarGrant(now, "cedar", 6 * HOUR)]);
-		const text = stripVTControlCharacters(
-			formatUsageBreakdown([report], [], now, undefined, [], undefined, resetExpiryOptions(settings)),
-		);
-		expect(text).toContain(verdict);
-		expect(text).toContain(command);
-		expect(text.includes("within 24h and will be lost")).toBe(command.startsWith("spend it"));
+		const report = {
+			...claudeResetReport(now, usage, [cedarGrant(now, "cedar", 6 * HOUR, grant)]),
+			fetchedAt: now - fetchedAgoMs,
+		};
+		const options = resetExpiryOptions({
+			"claudeResets.autoRedeem": "yes",
+			"claudeResets.salvageHorizonHours": 0,
+		});
+		const text = stripVTControlCharacters(formatUsageBreakdown([report], [], now, undefined, [], undefined, options));
+		const verdict =
+			"→ an open omp session spends it by its last 5 min if eligible then  (claudeResets.autoRedeem: yes)";
+		expect(text).toContain(eligibleNow ? `${verdict}\n` : `${verdict} · not eligible now\n`);
+		expect(text).not.toContain("will be lost");
+		expect(text).toContain("or now:  /usage reset");
 	});
 
 	it("deduplicates identical per-limit notes across accounts sharing a window", () => {
