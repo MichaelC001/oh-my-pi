@@ -396,6 +396,7 @@ type CursorWireMode = "normalized" | "discovered";
 interface CursorRetryContext {
 	attempt: number;
 	originalRequestId: string;
+	requestIds: string[];
 	checkpoint?: ConversationStateStructure;
 	checkpointHash?: string;
 	noProgressResumes: number;
@@ -405,8 +406,22 @@ interface CursorRetryContext {
 	baseConversationId: string;
 	conversationId: string;
 	blobStore: Map<string, Uint8Array>;
-	pairedToolResults: Map<string, ToolResultMessage>;
+	turnRecords: CursorTurnRecordState;
 	firstTokenTime?: number;
+}
+
+/** What one turn's server records stand for, as the turn sent it, across its retries. */
+interface CursorTurnRecordState {
+	/** Hash of the opening user message when the turn started. */
+	userHash: number | bigint;
+	/** The wire route of the turn's first request. */
+	wireRoute: string | undefined;
+	/** A retry went out on another route; its checkpoint mixes records from both. */
+	mixedRoutes: boolean;
+	/** Results the host stored for this turn's calls, by call id. */
+	stored: Map<string, ToolResultMessage>;
+	/** Hash of each result as the server saw it, taken before the host ran. */
+	given: Map<string, number | bigint>;
 }
 
 interface CursorStreamTiming {
@@ -432,6 +447,8 @@ interface CursorGrpcRequest {
 interface CursorTransportRequest extends CursorGrpcRequest {
 	/** Exact discovery id eligible for a retry because the normalized effort payload was serialized unchanged. */
 	fallbackWireModelId?: string;
+	/** The wire route this request selected; server records replay only on it. */
+	wireRoute: string;
 }
 
 interface CursorLogEntry {
@@ -1156,6 +1173,9 @@ function streamCursorWithWireMode(
 		let serializedFallbackWireModelId: string | undefined;
 		let activeBlobStore: Map<string, Uint8Array> | undefined;
 		let originalRequestId: string | undefined;
+		// Every request id this turn has sent: the server stamps its user record
+		// with whichever request opened the run a checkpoint continues.
+		let turnRequestIds = retryContext?.requestIds ?? [];
 		// Removed in `finally`: the request signal outlives this stream, and a
 		// listener left on it would retain this request's scope (request bytes,
 		// output, blob store) until the caller's whole prompt ends.
@@ -1164,17 +1184,26 @@ function streamCursorWithWireMode(
 		// no later request can address; its cache entries are released at the end.
 		const ephemeralConversation =
 			!retryContext && options?.conversationId === undefined && options?.sessionId === undefined;
-		// Results the host persisted for this turn's calls, in the form it stored them:
-		// the turn's server records replay later only while these are unchanged.
-		// Server-owned tools report results without awaiting them, so each one is
-		// tracked with the dispatches and drained before the turn is captured.
-		const pairedToolResults = retryContext?.pairedToolResults ?? new Map<string, ToolResultMessage>();
+		// The turn's server records stand for the opening user message and tool
+		// results as the server saw them; they are captured only while what the
+		// host keeps still matches. Hashed now, before anything awaits, since a
+		// host may edit either in place while the turn runs. Server-owned tools
+		// report results without awaiting them, so each one is tracked with the
+		// dispatches and drained before the turn is captured.
+		const turnRecords: CursorTurnRecordState = retryContext?.turnRecords ?? {
+			userHash: hashCursorUserMessage(context.messages[findLastUserMessageIndex(context.messages)]),
+			wireRoute: undefined,
+			mixedRoutes: false,
+			stored: new Map(),
+			given: new Map(),
+		};
 		const hostOnToolResult = options?.onToolResult;
 		const onToolResult: CursorToolResultHandler | undefined = hostOnToolResult
 			? result => {
+					turnRecords.given.set(result.toolCallId, hashCursorToolResult(result));
 					const persisted = (async () => {
 						const stored = (await hostOnToolResult(result)) ?? result;
-						pairedToolResults.set(stored.toolCallId, stored);
+						turnRecords.stored.set(stored.toolCallId, stored);
 						return stored;
 					})();
 					const settled = persisted.then(
@@ -1222,6 +1251,10 @@ function streamCursorWithWireMode(
 			);
 			const { requestBytes, conversationState } = builtRequest;
 			serializedFallbackWireModelId = builtRequest.fallbackWireModelId;
+			// A retry resumes the checkpoint its earlier requests wrote, so every
+			// request of the turn must share the first one's route.
+			turnRecords.wireRoute ??= builtRequest.wireRoute;
+			if (builtRequest.wireRoute !== turnRecords.wireRoute) turnRecords.mixedRoutes = true;
 			conversationEntry.state = conversationState;
 			const requestContextTools = buildMcpToolDefinitions(
 				context.tools,
@@ -1233,6 +1266,7 @@ function streamCursorWithWireMode(
 			const requestPath = transportMode === "http2" ? CURSOR_RUN_PATH : CURSOR_RUN_SSE_PATH;
 			const requestId = crypto.randomUUID();
 			originalRequestId = retryContext?.originalRequestId ?? requestId;
+			turnRequestIds = [...turnRequestIds, requestId];
 			const callerHeaders = sanitizeCursorCallerHeaders(options?.headers);
 			const sharedRequestHeaders = {
 				...callerHeaders,
@@ -1545,15 +1579,22 @@ function streamCursorWithWireMode(
 			// Results that flush and server-owned tools reported are still settling
 			// through the host; the digest must see them as the host stored them.
 			await drainInFlightDispatches();
+			// The records hold the user message and results as the server saw them,
+			// written on one route; a host edit to either, in place or not, must not
+			// be undone by sending them back, nor may a retry's route change relabel them.
+			const userMessage = context.messages[findLastUserMessageIndex(context.messages)];
+			let keptAsSent = hashCursorUserMessage(userMessage) === turnRecords.userHash && !turnRecords.mixedRoutes;
+			for (const [callId, stored] of turnRecords.stored) {
+				if (hashCursorToolResult(stored) !== turnRecords.given.get(callId)) keptAsSent = false;
+			}
 			output.providerPayload =
-				checkpointCoversTurn && latestCheckpoint
-					? captureCursorHistoryPayload(
-							latestCheckpoint,
-							blobStore,
-							[requestId, originalRequestId],
-							output.content,
-							pairedToolResults,
-						)
+				checkpointCoversTurn && latestCheckpoint && keptAsSent
+					? captureCursorHistoryPayload(latestCheckpoint, blobStore, turnRequestIds, {
+							wireRoute: builtRequest.wireRoute,
+							userMessage,
+							content: output.content,
+							toolResults: turnRecords.stored,
+						})
 					: undefined;
 
 			calculateCost(model, output.usage, output.timestamp);
@@ -1594,6 +1635,7 @@ function streamCursorWithWireMode(
 					retry: {
 						attempt: retryContext?.attempt ?? 0,
 						originalRequestId,
+						requestIds: turnRequestIds,
 						checkpoint: retryContext?.checkpoint,
 						checkpointHash: retryContext?.checkpointHash,
 						noProgressResumes: retryContext?.noProgressResumes ?? 0,
@@ -1603,7 +1645,7 @@ function streamCursorWithWireMode(
 						baseConversationId,
 						conversationId,
 						blobStore: activeBlobStore,
-						pairedToolResults,
+						turnRecords,
 						firstTokenTime,
 					},
 				});
@@ -1734,6 +1776,7 @@ function streamCursorWithWireMode(
 						retry: {
 							attempt: retryAttempt + 1,
 							originalRequestId: retryOriginalRequestId,
+							requestIds: turnRequestIds,
 							checkpoint: retryCheckpoint,
 							checkpointHash,
 							noProgressResumes,
@@ -1743,7 +1786,7 @@ function streamCursorWithWireMode(
 							baseConversationId: retryBaseConversationId,
 							conversationId: retryConversationId,
 							blobStore: retryBlobStore,
-							pairedToolResults,
+							turnRecords,
 							firstTokenTime,
 						},
 					});
@@ -5548,38 +5591,79 @@ function readCursorBlob(blobStore: Map<string, Uint8Array>, blobId: Uint8Array):
 const CURSOR_USER_RECORD_PREFIX = '{"role":"user"';
 const cursorRecordDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
 
-/**
- * Digest of an assistant turn as its server records stand for it: the content
- * and the result persisted for each call. Pruning, snapcompact, secret
- * redaction or an edit changes it, and the turn then rebuilds from content.
- * Each field seeds the next one's hash, so no copy of the turn is built.
- */
-function cursorTurnDigest(
-	content: AssistantMessage["content"],
-	resultFor: (toolCallId: string) => ToolResultMessage | undefined,
+/** What a turn's server records stand for; replay requires all of it unchanged. */
+interface CursorTurnBinding {
+	/** The wire route (requested model, details id, max mode, parameters) the records were written under. */
+	wireRoute: string;
+	/** The user message that opened the turn. */
+	userMessage: Message | undefined;
+	content: AssistantMessage["content"];
+	toolResults: ReadonlyMap<string, ToolResultMessage>;
+}
+
+/** Chains `Bun.hash` over message parts from `seed`, without copying them. */
+function hashCursorParts(
+	parts: string | readonly (TextContent | ImageContent)[],
+	seed: number | bigint,
+): number | bigint {
+	if (typeof parts === "string") return Bun.hash(parts, seed);
+	let hash = seed;
+	for (const item of parts) {
+		hash = Bun.hash(item.type, hash);
+		if (item.type === "text") hash = Bun.hash(item.text, hash);
+		else hash = Bun.hash(item.data, Bun.hash(item.mimeType, hash));
+	}
+	return hash;
+}
+
+/** Hash of a tool result's error state and content, chained from `seed`. */
+function hashCursorToolResult(result: ToolResultMessage, seed: number | bigint = 0): number | bigint {
+	return hashCursorParts(result.content, Bun.hash(result.isError ? "error" : "ok", seed));
+}
+
+/** Hash of the user or developer message that opened a turn, chained from `seed`. */
+function hashCursorUserMessage(message: Message | undefined, seed: number | bigint = 0): number | bigint {
+	return message?.role === "user" || message?.role === "developer" ? hashCursorParts(message.content, seed) : seed;
+}
+
+/** The wire route a Run request selects: requested model, its details id, max mode and parameters. */
+function cursorWireRoute(
+	requested: { modelId: string; maxMode?: boolean; parameters: readonly { id: string; value: string }[] } | undefined,
+	details: { modelId: string; maxMode?: boolean } | undefined,
 ): string {
-	let digest: number | bigint = 0;
-	const mix = (value: string): void => {
-		digest = Bun.hash(value, digest);
-	};
+	return JSON.stringify([
+		requested?.modelId,
+		details?.modelId,
+		requested?.maxMode === true,
+		details?.maxMode === true,
+		requested?.parameters.map(parameter => [parameter.id, parameter.value]) ?? [],
+	]);
+}
+
+/** Hash of a blob-id list's bytes in order; taken before `onPayload`, it survives the hook mutating the ids. */
+function hashCursorBlobIds(ids: readonly Uint8Array[]): number | bigint {
+	let hash: number | bigint = ids.length;
+	for (const id of ids) hash = Bun.hash(id, hash);
+	return hash;
+}
+
+/**
+ * Digest of an assistant turn as its server records stand for it: the user
+ * message that opened it, its content, and the result persisted for each call.
+ * Pruning, snapcompact, secret redaction or an edit changes it, and the turn
+ * then rebuilds from content. Each field seeds the next one's hash, so no copy
+ * of the turn is built.
+ */
+function cursorTurnDigest({ userMessage, content, toolResults }: Omit<CursorTurnBinding, "wireRoute">): string {
+	let digest = hashCursorUserMessage(userMessage);
 	for (const block of content) {
-		mix(block.type);
-		if (block.type === "text") mix(block.text);
-		else if (block.type === "thinking") mix(block.thinking);
+		digest = Bun.hash(block.type, digest);
+		if (block.type === "text") digest = Bun.hash(block.text, digest);
+		else if (block.type === "thinking") digest = Bun.hash(block.thinking, digest);
 		else if (block.type === "toolCall") {
-			mix(block.id);
-			mix(block.name);
-			mix(JSON.stringify(block.arguments));
-			const result = resultFor(block.id);
-			mix(result === undefined ? "unpaired" : result.isError ? "error" : "ok");
-			for (const item of result?.content ?? []) {
-				mix(item.type);
-				if (item.type === "text") mix(item.text);
-				else {
-					mix(item.mimeType);
-					mix(item.data);
-				}
-			}
+			digest = Bun.hash(JSON.stringify(block.arguments), Bun.hash(block.name, Bun.hash(block.id, digest)));
+			const result = toolResults.get(block.id);
+			digest = result === undefined ? Bun.hash("unpaired", digest) : hashCursorToolResult(result, digest);
 		}
 	}
 	return digest.toString(36);
@@ -5587,18 +5671,17 @@ function cursorTurnDigest(
 
 /**
  * The records Cursor wrote for this turn: the checkpoint's `rootPromptMessagesJson`
- * entries after the user message the server recorded for this run. Undefined
- * when that message is not found, a record's bytes are missing, or a record does
- * not round-trip through UTF-8 text unchanged.
+ * entries after the user message the server recorded for one of this turn's
+ * requests. Undefined when that message is not found, a record's bytes are
+ * missing, or a record does not round-trip through UTF-8 text unchanged.
  */
 function captureCursorHistoryPayload(
 	checkpoint: ConversationStateStructure,
 	blobStore: Map<string, Uint8Array>,
-	requestIds: readonly (string | undefined)[],
-	content: AssistantMessage["content"],
-	pairedToolResults: ReadonlyMap<string, ToolResultMessage>,
+	requestIds: readonly string[],
+	binding: CursorTurnBinding,
 ): CursorHistoryPayload | undefined {
-	const stamps = requestIds.flatMap(id => (id ? [`"requestId":"${id}"`] : []));
+	const stamps = requestIds.map(id => `"requestId":"${id}"`);
 	const records: string[] = [];
 	for (let index = checkpoint.rootPromptMessagesJson.length - 1; index >= 0; index--) {
 		const bytes = blobStore.get(Buffer.from(checkpoint.rootPromptMessagesJson[index]).toString("hex"));
@@ -5609,7 +5692,8 @@ function captureCursorHistoryPayload(
 			log("info", "capturedServerRecords", { count: records.length });
 			return {
 				type: "cursorHistory",
-				digest: cursorTurnDigest(content, id => pairedToolResults.get(id)),
+				wireRoute: binding.wireRoute,
+				digest: cursorTurnDigest(binding),
 				records: records.reverse(),
 			};
 		}
@@ -5627,23 +5711,29 @@ interface CursorRecordReplay {
 
 /**
  * Assistant turns that go back as their server records, by message index: turns
- * the target model produced whose content and paired results still match the
- * digest taken when they were recorded.
+ * the target model produced on the same wire route whose opening user message,
+ * content and paired results still match the digest taken when they were recorded.
  */
 function resolveCursorRecordReplays(
 	messages: Message[],
 	activeUserMessageIndex: number,
 	provider: string,
 	modelId: string | undefined,
+	wireRoute: string,
 	{ toolResults }: CursorToolHistory,
 ): Map<number, CursorRecordReplay> {
 	const historyEnd = activeUserMessageIndex >= 0 ? activeUserMessageIndex : messages.length;
 	const replays = new Map<number, CursorRecordReplay>();
+	let userMessage: Message | undefined;
 	for (let index = 0; index < historyEnd; index++) {
 		const msg = messages[index];
+		if (msg.role === "user" || msg.role === "developer") userMessage = msg;
 		if (msg.role !== "assistant" || msg.providerPayload?.type !== "cursorHistory") continue;
 		if (msg.api !== "cursor-agent" || msg.provider !== provider || msg.model !== modelId) continue;
-		if (cursorTurnDigest(msg.content, id => toolResults.get(id)) !== msg.providerPayload.digest) continue;
+		if (msg.providerPayload.wireRoute !== wireRoute) continue;
+		if (cursorTurnDigest({ userMessage, content: msg.content, toolResults }) !== msg.providerPayload.digest) {
+			continue;
+		}
 		replays.set(index, {
 			records: msg.providerPayload.records.map(record => new TextEncoder().encode(record)),
 			toolCallIds: msg.content.flatMap(block =>
@@ -6282,7 +6372,8 @@ export function buildCursorHistoryForTest(
 } {
 	const blobStore = new Map<string, Uint8Array>();
 	const toolHistory = collectCursorToolHistory(messages, activeUserMessageIndex);
-	const replays = resolveCursorRecordReplays(messages, activeUserMessageIndex, "cursor", targetModelId, toolHistory);
+	// Server records replay only on a resolved wire route, which this helper does not build: every turn rebuilds.
+	const replays = new Map<number, CursorRecordReplay>();
 	const rootPromptMessagesJson = buildRootPromptMessagesJson(
 		messages,
 		[],
@@ -6534,14 +6625,6 @@ async function buildGrpcRequestForWireMode(
 					},
 	});
 
-	const conversationState =
-		state.resume && state.conversationState
-			? // A checkpoint resume sends the checkpoint verbatim (native CLI parity):
-				// its turns hold the partial turn the server resumes from, which
-				// `context.messages` cannot rebuild.
-				state.conversationState
-			: buildCursorConversationState(model, context, state, blobStore, systemPromptIds, historyEndIndex);
-
 	const {
 		modelId: wireModelId,
 		modelDetailsId: wireModelDetailsId,
@@ -6560,6 +6643,19 @@ async function buildGrpcRequestForWireMode(
 		maxMode: cursorMaxMode,
 		parameters: wireParameters,
 	});
+	const builtRoute = cursorWireRoute(requestedModel, modelDetails);
+
+	const built =
+		state.resume && state.conversationState
+			? // A checkpoint resume sends the checkpoint verbatim (native CLI parity):
+				// its turns hold the partial turn the server resumes from, which
+				// `context.messages` cannot rebuild.
+				{ conversationState: state.conversationState, replayed: false }
+			: buildCursorConversationState(model, context, state, blobStore, systemPromptIds, historyEndIndex, builtRoute);
+	const { conversationState } = built;
+	// Fingerprints of the history as built, to tell which field the hook below edited.
+	const builtRootHash = built.replayed ? hashCursorBlobIds(conversationState.rootPromptMessagesJson) : undefined;
+	const builtTurnsHash = built.replayed ? hashCursorBlobIds(conversationState.turns) : undefined;
 
 	let runRequest = create(AgentRunRequestSchema, {
 		conversationState,
@@ -6580,6 +6676,29 @@ async function buildGrpcRequestForWireMode(
 	// Tools are sent later via requestContext (exec handshake)
 	const replacementRequest = await options?.onPayload?.(runRequest, model);
 	if (replacementRequest !== undefined) runRequest = replacementRequest as typeof runRequest;
+
+	// Server records replay only on the route that wrote them, and the hook may
+	// have changed it. A history field the hook left as built then goes out
+	// rebuilt for the sent route; a field it edited is its own.
+	const wireRoute = cursorWireRoute(runRequest.requestedModel, runRequest.modelDetails);
+	const sentState = runRequest.conversationState;
+	if (built.replayed && wireRoute !== builtRoute && sentState !== undefined) {
+		const rootAsBuilt = hashCursorBlobIds(sentState.rootPromptMessagesJson) === builtRootHash;
+		const turnsAsBuilt = hashCursorBlobIds(sentState.turns) === builtTurnsHash;
+		if (rootAsBuilt || turnsAsBuilt) {
+			const rebuilt = buildCursorConversationState(
+				model,
+				context,
+				state,
+				blobStore,
+				systemPromptIds,
+				historyEndIndex,
+				wireRoute,
+			).conversationState;
+			if (rootAsBuilt) sentState.rootPromptMessagesJson = rebuilt.rootPromptMessagesJson;
+			if (turnsAsBuilt) sentState.turns = rebuilt.turns;
+		}
+	}
 
 	const discoveredWireModelId = options?.wireModelId ?? model.requestModelId ?? model.id;
 	const serializedParameters = runRequest.requestedModel?.parameters;
@@ -6617,7 +6736,7 @@ async function buildGrpcRequestForWireMode(
 		detail: detail || undefined,
 	});
 
-	return { requestBytes, blobStore, conversationState, fallbackWireModelId };
+	return { requestBytes, blobStore, conversationState, fallbackWireModelId, wireRoute };
 }
 
 /**
@@ -6632,9 +6751,17 @@ function buildCursorConversationState(
 	blobStore: Map<string, Uint8Array>,
 	systemPromptIds: Uint8Array[],
 	historyEndIndex: number,
-): ConversationStateStructure {
+	wireRoute: string,
+): { conversationState: ConversationStateStructure; replayed: boolean } {
 	const toolHistory = collectCursorToolHistory(context.messages, historyEndIndex);
-	const replays = resolveCursorRecordReplays(context.messages, historyEndIndex, model.provider, model.id, toolHistory);
+	const replays = resolveCursorRecordReplays(
+		context.messages,
+		historyEndIndex,
+		model.provider,
+		model.id,
+		wireRoute,
+		toolHistory,
+	);
 	if (replays.size > 0) {
 		log("info", "replayedServerRecords", {
 			turns: replays.size,
@@ -6686,11 +6813,14 @@ function buildCursorConversationState(
 	// Always override `rootPromptMessagesJson` and `turns` with history built from
 	// `context.messages`: compaction, edits and branches rewrite it, and the cached
 	// checkpoint reflects none of them.
-	return create(ConversationStateStructureSchema, {
-		...baseState,
-		rootPromptMessagesJson,
-		turns,
-	});
+	return {
+		conversationState: create(ConversationStateStructureSchema, {
+			...baseState,
+			rootPromptMessagesJson,
+			turns,
+		}),
+		replayed: replays.size > 0,
+	};
 }
 
 /** Builds the normalized Cursor Run request used by transport callers and request inspection hooks. */

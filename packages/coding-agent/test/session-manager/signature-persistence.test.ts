@@ -452,7 +452,12 @@ describe("SessionManager signature persistence", () => {
 			content: [{ type: "tool-result", toolCallId: "call-read", toolName: "Read", result: output }],
 			id: "call-read",
 		});
-		const providerPayload: CursorHistoryPayload = { type: "cursorHistory", digest: "digest", records: [record] };
+		const providerPayload: CursorHistoryPayload = {
+			type: "cursorHistory",
+			wireRoute: '["kimi-k3","kimi-k3",false,false,[]]',
+			digest: "digest",
+			records: [record],
+		};
 		session.appendMessage({ role: "user", content: "read it", timestamp: 1 });
 		session.appendMessage({
 			role: "assistant",
