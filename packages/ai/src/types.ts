@@ -870,10 +870,12 @@ export interface ThinkingContent {
 	/**
 	 * `true`: `thinking` is a provider-written summary of the model's reasoning
 	 * (OpenAI Responses `summary_text`, Gemini thought summaries). `false`: the
-	 * stream parser confirmed it is the model's own full trace (chat-completions
-	 * reasoning fields, Responses `reasoning_text`, Devin `thinking`). Unset when
-	 * provenance is unknown, including turns recorded before parsers set it.
-	 * Only confirmed traces replay natively on another host.
+	 * wire delivered it as the reasoning itself, not marked as a summary
+	 * (chat-completions reasoning fields, Responses `reasoning_text`, Devin
+	 * `thinking`); whether that is the full trace is vouched for per family by
+	 * the catalog's `portable-reasoning`. Unset when provenance is unknown,
+	 * including turns recorded before parsers set it. Only `false` blocks
+	 * replay natively on another host.
 	 */
 	summary?: boolean;
 }

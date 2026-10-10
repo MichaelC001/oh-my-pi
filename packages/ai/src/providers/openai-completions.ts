@@ -1136,7 +1136,8 @@ const streamOpenAICompletionsOnce = (
 				// Same as appendText: leave toolCall blocks pending so index-only
 				// continuation deltas can still find them.
 				if (currentBlock?.type !== "toolCall") finishCurrentBlock(currentBlock);
-				// Chat-completions reasoning fields carry the model's own trace.
+				// The wire marks no summaries here; `portable-reasoning` vouches per
+				// family that this text is the full trace.
 				const block: ThinkingContent = {
 					type: "thinking",
 					thinking: "",
