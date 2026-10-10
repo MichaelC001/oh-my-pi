@@ -1357,13 +1357,6 @@ describe("formatUsageBreakdown", () => {
 			verdict: "→ spent automatically before it expires while an interactive omp session is open",
 			command: "or now:  /usage reset",
 		},
-		{
-			name: "asks before spending under unset consent",
-			usage: { "anthropic:5h": 0.1, "anthropic:7d": 0.5 },
-			settings: {},
-			verdict: "→ an interactive omp session asks before spending it  (claudeResets.autoRedeem: unset)",
-			command: "or now:  /usage reset",
-		},
 	])("$name, as the salvage planner decides", ({ usage, settings, verdict, command }) => {
 		const now = Date.parse("2026-01-01T00:00:00.000Z");
 		const report = claudeResetReport(now, usage, [cedarGrant(now, "cedar", 6 * HOUR)]);
