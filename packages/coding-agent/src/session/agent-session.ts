@@ -12528,7 +12528,7 @@ export class AgentSession implements SettingsScope {
 		const source = provider === "anthropic" ? "claude-auto-reset" : "codex-auto-reset";
 		const runner = this.#extensionRunner;
 		if (!runner?.hasUI() || !this.#interactivePrompts) {
-			const approved = headlessApprovedResetActions("unset", actions);
+			const approved = headlessApprovedResetActions(actions);
 			const waiting = actions.find(action => !approved.some(spend => spend.attemptKey === action.attemptKey));
 			if (waiting && !coordinator.notifiedKeys.has(waiting.attemptKey)) {
 				coordinator.notifiedKeys.add(waiting.attemptKey);
