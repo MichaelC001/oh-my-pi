@@ -316,6 +316,18 @@ describe("GrepTool internal URL resolution", () => {
 		expect(formatOutputNotice(result.details?.meta)).toContain("Some lines truncated to 512 bytes");
 	});
 
+	it("shows a match far into a long line instead of only the line's start", async () => {
+		const line = `${"a".repeat(12_000)}deadline [s120]${"b".repeat(2_400)}`;
+		registerVirtualDocs(new Map([["long.md", `${line}\n`]]));
+		const result = await new GrepTool(createSession()).execute("long-line", {
+			pattern: "deadline \\[s120\\]",
+			path: "virtual://long.md",
+		});
+		const text = getResultText(result);
+		expect(text).toMatch(/\.\.\.a+deadline \[s120\]b+\.\.\. \[col 12001\]/);
+		expect(result.details?.meta?.limits?.columnTruncated).toEqual({ maxColumn: 512, unit: "bytes" });
+	});
+
 	it("rejects a malformed selector on a selector-capable internal URL instead of widening the search", async () => {
 		const session = createSession();
 		const tool = new GrepTool(session);

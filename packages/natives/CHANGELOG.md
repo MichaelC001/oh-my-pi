@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `grep()` and `search()` cut a matching line wider than `maxColumns` around its first match, marking each cut side with `...`, and report that match's character column in `column`
+
 ## [18.8.8] - 2026-10-10
 
 ### Changed
