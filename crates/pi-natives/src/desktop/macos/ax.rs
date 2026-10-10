@@ -102,10 +102,18 @@ thread_local! {
 
 /// One element's [`NODE_ATTRIBUTES`] from a single batched read.
 struct NodeValues {
-	/// The values in request order, or the error that failed the whole read.
-	values: Result<CFRetained<CFArray<CFType>>, AXError>,
+	values: NodeBatch,
 	/// [`NODE_ATTRIBUTES`] index of the first value.
 	first:  usize,
+}
+
+enum NodeBatch {
+	/// The values in request order.
+	Read(CFRetained<CFArray<CFType>>),
+	/// One lone read per requested attribute, in request order.
+	Lone(Vec<Result<Option<CFRetained<CFType>>, AXError>>),
+	/// The element is gone, so every attribute fails with this error.
+	Gone(AXError),
 }
 
 impl NodeValues {
@@ -122,7 +130,7 @@ impl NodeValues {
 				)
 			}
 		});
-		let values = if error == AXError::Success {
+		let batch = if error == AXError::Success {
 			NonNull::new(output.cast_mut())
 				.ok_or(AXError::Failure)
 				.map(|pointer| {
@@ -135,17 +143,44 @@ impl NodeValues {
 		} else {
 			Err(error)
 		};
-		Self { values, first: read.attributes().start }
+		Self::from_batch(batch, read.attributes(), |index| {
+			copy_attribute_result(element, NODE_ATTRIBUTES[index])
+		})
+	}
+
+	/// The batch's values, or `lone` reads of each attribute when the batch
+	/// failed as a whole for a live element: a messaging timeout gives the
+	/// batch one deadline for every attribute, and one slow attribute must
+	/// not lose the element's role and children.
+	fn from_batch(
+		batch: Result<CFRetained<CFArray<CFType>>, AXError>,
+		attributes: Range<usize>,
+		lone: impl FnMut(usize) -> Result<Option<CFRetained<CFType>>, AXError>,
+	) -> Self {
+		let first = attributes.start;
+		let values = match batch {
+			Ok(values) => NodeBatch::Read(values),
+			Err(error) if error == AXError::InvalidUIElement => NodeBatch::Gone(error),
+			Err(_) => NodeBatch::Lone(attributes.map(lone).collect()),
+		};
+		Self { values, first }
 	}
 
 	/// `NODE_ATTRIBUTES[index]` as a lone `AXUIElementCopyAttributeValue`
 	/// reports it: the attribute's error, or `None` when it has no value.
-	/// A failed batch fails every attribute with its error, as separate reads
-	/// of an unreachable or destroyed element each would.
 	fn get(&self, index: usize) -> Result<Option<CFRetained<CFType>>, AXError> {
-		let values = self.values.as_ref().map_err(|error| *error)?;
-		let value = index
-			.checked_sub(self.first)
+		let offset = index.checked_sub(self.first);
+		let values = match &self.values {
+			NodeBatch::Read(values) => values,
+			NodeBatch::Lone(values) => {
+				return offset
+					.and_then(|offset| values.get(offset))
+					.cloned()
+					.unwrap_or(Err(AXError::Failure));
+			},
+			NodeBatch::Gone(error) => return Err(*error),
+		};
+		let value = offset
 			.and_then(|offset| values.get(offset))
 			.ok_or(AXError::Failure)?;
 		if value.downcast_ref::<CFNull>().is_some() {
@@ -1342,11 +1377,11 @@ mod tests {
 	use std::ptr::NonNull;
 
 	use objc2_application_services::{AXError, AXValue, AXValueType};
-	use objc2_core_foundation::{CFArray, CFNumber, CFString, CFType, kCFNull};
+	use objc2_core_foundation::{CFArray, CFNumber, CFString, CFType, Type, kCFNull};
 
 	use super::{
-		AttachedCandidate, CHILDREN, DESCRIPTION, NodeValues, ROLE, TITLE, VALUE, ax_result,
-		element_action_result, replace_utf16_selection, required_string, select_attached,
+		AttachedCandidate, CHILDREN, DESCRIPTION, ENABLED, NodeRead, NodeValues, ROLE, TITLE, VALUE,
+		ax_result, element_action_result, replace_utf16_selection, required_string, select_attached,
 		stringify_value,
 	};
 	use crate::desktop::error::ErrorCode;
@@ -1362,7 +1397,10 @@ mod tests {
 		// SAFETY: kCFNull is a process-lifetime constant.
 		let null = unsafe { kCFNull }.unwrap();
 		let entries: [&CFType; 3] = [&title, &error, null];
-		let values = NodeValues { values: Ok(CFArray::from_objects(&entries)), first: TITLE };
+		let values =
+			NodeValues::from_batch(Ok(CFArray::from_objects(&entries)), TITLE..ENABLED, |_| {
+				unreachable!("an answered batch needs no lone reads")
+			});
 		let title = values
 			.get(TITLE)
 			.unwrap()
@@ -1374,10 +1412,37 @@ mod tests {
 		assert!(values.get(DESCRIPTION).unwrap().is_none());
 		assert_eq!(values.get(CHILDREN).unwrap_err(), AXError::Failure);
 
-		let gone = NodeValues { values: Err(AXError::InvalidUIElement), first: CHILDREN };
+		let gone = NodeValues::from_batch(
+			Err(AXError::InvalidUIElement),
+			NodeRead::Walk.attributes(),
+			|_| unreachable!("a destroyed element needs no lone reads"),
+		);
 		assert_eq!(gone.get(TITLE).unwrap_err(), AXError::InvalidUIElement);
 		let role = required_string(gone.get(ROLE), "AXRole").unwrap_err();
 		assert_eq!(role.code, ErrorCode::StaleRef);
+	}
+
+	#[test]
+	fn unanswered_batch_falls_back_to_lone_reads() {
+		let role = CFString::from_static_str("AXTextArea");
+		let role: &CFType = &role;
+		let mut asked = Vec::new();
+		let values = NodeValues::from_batch(
+			Err(AXError::CannotComplete),
+			NodeRead::Walk.attributes(),
+			|index| {
+				asked.push(index);
+				match index {
+					ROLE => Ok(Some(role.retain())),
+					VALUE => Err(AXError::CannotComplete),
+					_ => Ok(None),
+				}
+			},
+		);
+		assert_eq!(asked, NodeRead::Walk.attributes().collect::<Vec<_>>());
+		assert_eq!(required_string(values.get(ROLE), "AXRole").unwrap(), "AXTextArea");
+		assert_eq!(values.get(VALUE).unwrap_err(), AXError::CannotComplete);
+		assert!(values.get(TITLE).unwrap().is_none());
 	}
 
 	#[test]
