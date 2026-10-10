@@ -161,19 +161,23 @@ const COLLAPSED_CLOSED_CONTEXT = 1;
  * 3. When active tasks alone exceed `cap`, only the first `cap` active tasks are
  *    shown and the summary counts the hidden *active* todos, never replacing
  *    them with unrelated pending rows.
+ *
+ * The summary occupies a row, so a summary that would hide exactly one task is
+ * replaced by that task: the selection spends at most `cap + 1` rows.
  */
 function selectWithinCap<T extends { status: TodoStatus }>(
 	base: T[],
 	isMatched: (task: T) => boolean,
 	cap: number,
 ): CollapsedTodoSelection<T> {
-	if (base.length <= cap) return { items: base, summary: "" };
+	if (base.length <= cap + 1) return { items: base, summary: "" };
 
 	const active = base.filter(task => isActiveTodo(task, isMatched));
 	// Only when active work strictly exceeds the cap do we drop pending rows and
 	// count hidden *actives*. At exactly `cap` actives, fall through so the normal
 	// branch still surfaces any following pending work in the summary.
 	if (active.length > cap) {
+		if (active.length === cap + 1) return { items: active, summary: "" };
 		const hiddenActive = active.length - cap;
 		return {
 			items: active.slice(0, cap),
