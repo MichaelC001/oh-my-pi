@@ -957,17 +957,9 @@ export function transformMessages<TApi extends Api>(
 					}
 					// Same model from another host: keep the full trace natively, minus
 					// the signature and item id bound to the host that minted them.
-					// Provider-written summaries are not the model's own reasoning; a
-					// Responses block carries only once its parser confirmed the trace.
-					const responsesSourced =
-						sanitized.itemId !== undefined ||
-						assistantMsg.api === "openai-responses" ||
-						assistantMsg.api === "azure-openai-responses" ||
-						assistantMsg.api === "openai-codex-responses";
-					if (
-						carriesSameModelReasoning &&
-						(responsesSourced ? sanitized.summary === false : sanitized.summary !== true)
-					) {
+					// Only blocks their parser confirmed as the model's own trace carry;
+					// summaries and blocks of unknown provenance keep the text fallback.
+					if (carriesSameModelReasoning && sanitized.summary === false) {
 						return { type: "thinking" as const, thinking: sanitized.thinking, [kCarriedReasoning]: true };
 					}
 					// Other cross-API targets (openai-responses encrypted blobs, google

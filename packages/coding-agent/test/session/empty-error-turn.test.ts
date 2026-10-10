@@ -84,12 +84,13 @@ describe("sanitizeAssistantForReparentedHistory", () => {
 		});
 	});
 
-	it("keeps a Responses block's reasoning provenance once its item id is dropped", () => {
-		const summaryItem = { id: "rs_legacy", type: "reasoning", summary: [{ type: "summary_text", text: "summary" }] };
+	it("keeps whether a thinking block is a summary or the confirmed trace", () => {
 		const message: AssistantMessage = {
 			role: "assistant",
 			content: [
-				{ type: "thinking", thinking: "summary", itemId: "rs_legacy" },
+				{ type: "thinking", thinking: "summary", itemId: "rs_1", summary: true },
+				{ type: "thinking", thinking: "trace", itemId: "rs_2", summary: false },
+				{ type: "thinking", thinking: "unknown", itemId: "rs_3" },
 				{ type: "text", text: "done" },
 			],
 			api: "openai-responses",
@@ -104,20 +105,13 @@ describe("sanitizeAssistantForReparentedHistory", () => {
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 			stopReason: "stop",
-			providerPayload: { type: "openaiResponsesHistory", items: [summaryItem] },
 			timestamp: 1,
 		};
 
-		expect(sanitizeAssistantForReparentedHistory(message).content[0]).toEqual({
-			type: "thinking",
-			thinking: "summary",
-			summary: true,
-		});
-		message.content[0] = { type: "thinking", thinking: "trace", itemId: "rs_new", summary: false };
-		expect(sanitizeAssistantForReparentedHistory(message).content[0]).toEqual({
-			type: "thinking",
-			thinking: "trace",
-			summary: false,
-		});
+		expect(sanitizeAssistantForReparentedHistory(message).content.slice(0, 3)).toEqual([
+			{ type: "thinking", thinking: "summary", summary: true },
+			{ type: "thinking", thinking: "trace", summary: false },
+			{ type: "thinking", thinking: "unknown" },
+		]);
 	});
 });

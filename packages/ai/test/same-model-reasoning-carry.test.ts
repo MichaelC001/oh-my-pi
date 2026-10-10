@@ -15,12 +15,14 @@ import { gunzipSync } from "node:zlib";
 import { streamDevin } from "@oh-my-pi/pi-ai/providers/devin";
 import { convertMessages } from "@oh-my-pi/pi-ai/providers/openai-completions";
 import { streamOpenAIResponses } from "@oh-my-pi/pi-ai/providers/openai-responses";
-import type { ResponseStreamEvent } from "@oh-my-pi/pi-ai/providers/openai-responses-wire";
-import { processResponsesStream } from "@oh-my-pi/pi-ai/providers/openai-shared";
+import { stream } from "@oh-my-pi/pi-ai/stream";
 import type { Api, AssistantMessage, Message, Model, ModelSpec } from "@oh-my-pi/pi-ai/types";
-import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { GetChatMessageRequestSchema, GetUserJwtResponseSchema } from "@oh-my-pi/pi-catalog/discovery/devin-proto";
+import {
+	GetChatMessageRequestSchema,
+	GetChatMessageResponseSchema,
+	GetUserJwtResponseSchema,
+} from "@oh-my-pi/pi-catalog/discovery/devin-proto";
 import { create, fromBinary, toBinary } from "@oh-my-pi/pi-catalog/discovery/protobuf";
 
 const TRACE = "Earlier reasoning: read foo.ts, then patch bar().";
@@ -43,7 +45,7 @@ function priorTurn(source: Source, thinking: { thinkingSignature?: string; summa
 		role: "assistant",
 		...source,
 		content: [
-			{ type: "thinking", thinking: TRACE, ...thinking },
+			{ type: "thinking", thinking: TRACE, summary: false, ...thinking },
 			{ type: "text", text: "Patched." },
 		],
 		usage: zeroUsage,
@@ -256,17 +258,18 @@ describe("same-model reasoning carry", () => {
 		expect(wire.content).toBe(DEMOTED);
 	});
 
-	describe("Responses reasoning recorded before parsers confirmed the trace stays text", () => {
-		const source: Source = { provider: "openrouter", api: "openai-responses", model: "moonshotai/kimi-k3" };
+	describe("reasoning recorded before parsers confirmed the trace stays text", () => {
+		const source: Source = { provider: "openrouter", api: "openrouter", model: "moonshotai/kimi-k3" };
 		const summaryItem = {
 			id: "rs_legacy",
 			type: "reasoning",
 			summary: [{ type: "summary_text", text: TRACE }],
 		};
+		const unconfirmed = { summary: undefined };
 
 		it("with its item in the signature", () => {
 			const prior = JSON.parse(
-				JSON.stringify(priorTurn(source, { thinkingSignature: JSON.stringify(summaryItem) })),
+				JSON.stringify(priorTurn(source, { ...unconfirmed, thinkingSignature: JSON.stringify(summaryItem) })),
 			) as AssistantMessage;
 
 			const wire = completionsAssistant(moonshotK3(), history(prior));
@@ -275,8 +278,8 @@ describe("same-model reasoning carry", () => {
 			expect(wire.content).toBe(DEMOTED);
 		});
 
-		it("keyed by item id on an OpenRouter turn", () => {
-			const prior = priorTurn({ ...source, api: "openrouter" });
+		it("keyed by item id", () => {
+			const prior = priorTurn(source);
 			prior.content[0] = { type: "thinking", thinking: TRACE, itemId: summaryItem.id };
 			prior.providerPayload = { type: "openaiResponsesHistory", items: [summaryItem] };
 
@@ -286,10 +289,16 @@ describe("same-model reasoning carry", () => {
 		});
 
 		it("with no item id, its summary only in the native-history payload", () => {
-			const prior = priorTurn(source);
+			const prior = priorTurn(source, unconfirmed);
 			prior.providerPayload = { type: "openaiResponsesHistory", items: [summaryItem] };
 
 			const wire = completionsAssistant(moonshotK3(), history(prior));
+
+			expect(wire.content).toBe(DEMOTED);
+		});
+
+		it("already reparented, with neither signature nor payload", () => {
+			const wire = completionsAssistant(moonshotK3(), history(priorTurn(source, unconfirmed)));
 
 			expect(wire.content).toBe(DEMOTED);
 		});
@@ -345,33 +354,37 @@ describe("same-model reasoning carry", () => {
 });
 
 describe("Responses reasoning provenance is recorded at parse time", () => {
+	/** A turn streamed from OpenRouter's Responses wire through the public `stream()` path. */
 	async function parseTurn(events: Record<string, unknown>[]): Promise<AssistantMessage> {
-		const output: AssistantMessage = {
-			role: "assistant",
-			content: [],
-			timestamp: 0,
-			provider: "openrouter",
-			model: "moonshotai/kimi-k3",
-			api: "openrouter",
-			usage: structuredClone(zeroUsage),
-			stopReason: "stop",
-		};
 		const all = [
+			{ type: "response.created", response: { id: "resp_1", status: "in_progress" } },
 			{ type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: "rs_1", summary: [] } },
 			...events,
+			{
+				type: "response.output_item.added",
+				output_index: 1,
+				item: { type: "message", id: "msg_1", role: "assistant", content: [] },
+			},
+			{ type: "response.output_text.delta", output_index: 1, item_id: "msg_1", content_index: 0, delta: "Patched." },
+			{
+				type: "response.output_item.done",
+				output_index: 1,
+				item: {
+					type: "message",
+					id: "msg_1",
+					role: "assistant",
+					status: "completed",
+					content: [{ type: "output_text", text: "Patched.", annotations: [] }],
+				},
+			},
 			{ type: "response.completed", response: { id: "resp_1", status: "completed" } },
 		];
-		async function* stream(): AsyncIterable<ResponseStreamEvent> {
-			for (const event of all) yield event as unknown as ResponseStreamEvent;
-		}
-		await processResponsesStream(
-			stream(),
-			output,
-			new AssistantMessageEventStream(),
-			openRouterK3() as unknown as Model<"openai-responses">,
+		const body = all.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("");
+		const fetchImpl = Object.assign(
+			async () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
+			{ preconnect: fetch.preconnect },
 		);
-		output.content.push({ type: "text", text: "Patched." });
-		return output;
+		return stream(openRouterK3(), { messages: [] }, { apiKey: "test-key", fetch: fetchImpl }).result();
 	}
 	const parseReasoning = async (events: Record<string, unknown>[]) => (await parseTurn(events)).content[0];
 	const done = (item: Record<string, unknown>) => ({
@@ -389,15 +402,30 @@ describe("Responses reasoning provenance is recorded at parse time", () => {
 	});
 
 	it("marks summary_text reasoning as a summary", async () => {
-		const block = await parseReasoning([done({ summary: [{ type: "summary_text", text: TRACE }] })]);
+		const block = await parseReasoning([
+			delta("response.reasoning_summary_text.delta", TRACE),
+			done({ summary: [{ type: "summary_text", text: TRACE }] }),
+		]);
 
 		expect(block).toMatchObject({ type: "thinking", thinking: TRACE, summary: true });
 	});
 
 	it("marks reasoning_text content as the confirmed trace", async () => {
-		const block = await parseReasoning([done({ summary: [], content: [{ type: "reasoning_text", text: TRACE }] })]);
+		const block = await parseReasoning([
+			delta("response.reasoning_text.delta", TRACE),
+			done({ summary: [], content: [{ type: "reasoning_text", text: TRACE }] }),
+		]);
 
 		expect(block).toMatchObject({ type: "thinking", thinking: TRACE, summary: false });
+	});
+
+	it("keeps a streamed summary out of the next host's reasoning field", async () => {
+		const prior = await parseTurn([delta("response.reasoning_summary_text.delta", TRACE), done({ summary: [] })]);
+
+		const wire = completionsAssistant(moonshotK3(), history(prior));
+
+		expect(wire.reasoning_content).not.toBe(TRACE);
+		expect(wire.content).toBe(DEMOTED);
 	});
 
 	it("judges a done item without text by the streamed event type", async () => {
@@ -418,5 +446,52 @@ describe("Responses reasoning provenance is recorded at parse time", () => {
 
 		expect(wire.reasoning_content).toBe(TRACE);
 		expect(wire.content).toBe("Patched.");
+	});
+});
+
+describe("chat-completions and Devin parsers confirm their reasoning as the trace", () => {
+	it("carries a Moonshot reasoning_content turn to OpenRouter", async () => {
+		const chunk = (delta: Record<string, unknown>, finish: string | null = null) =>
+			`data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 0, model: "kimi-k3", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+		const body = [
+			chunk({ role: "assistant", reasoning_content: TRACE }),
+			chunk({ content: "Patched." }),
+			chunk({}, "stop"),
+			"data: [DONE]\n\n",
+		].join("");
+		const fetchImpl = Object.assign(
+			async () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
+			{ preconnect: fetch.preconnect },
+		);
+		const prior = await stream(moonshotK3(), { messages: [] }, { apiKey: "test-key", fetch: fetchImpl }).result();
+
+		expect(prior.content[0]).toMatchObject({ type: "thinking", thinking: TRACE, summary: false });
+		const items = await responsesAssistantItems(openRouterK3(), history(prior));
+		expect(items[0]).toEqual({ type: "reasoning", summary: [], content: [{ type: "reasoning_text", text: TRACE }] });
+	});
+
+	it("carries a Devin thinking turn to Moonshot", async () => {
+		const authPayload = toBinary(GetUserJwtResponseSchema, create(GetUserJwtResponseSchema, { userJwt: "jwt" }));
+		const frame = (fields: { deltaThinking?: string; deltaText?: string }) => {
+			const payload = toBinary(
+				GetChatMessageResponseSchema,
+				create(GetChatMessageResponseSchema, { messageId: "m1", ...fields }),
+			);
+			const out = new Uint8Array(5 + payload.length);
+			new DataView(out.buffer).setUint32(1, payload.length, false);
+			out.set(payload, 5);
+			return out;
+		};
+		const body = new Uint8Array([...frame({ deltaThinking: TRACE }), ...frame({ deltaText: "Patched." })]);
+		const fetchImpl = (async (input: string | URL | Request) =>
+			new Response(String(input).includes("GetUserJwt") ? authPayload : body)) as typeof fetch;
+		const prior = await streamDevin(
+			target("devin-agent", "devin", "kimi-k3"),
+			{ messages: [{ role: "user", content: "fix the bug", timestamp: 0 }] },
+			{ apiKey: "token", fetch: fetchImpl },
+		).result();
+
+		expect(prior.content[0]).toMatchObject({ type: "thinking", thinking: TRACE, summary: false });
+		expect(completionsAssistant(moonshotK3(), history(prior)).reasoning_content).toBe(TRACE);
 	});
 });

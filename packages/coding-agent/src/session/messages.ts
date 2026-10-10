@@ -99,11 +99,12 @@ export function sanitizeAssistantForReparentedHistory(message: AssistantMessage)
 	for (const block of message.content) {
 		if (block.type === "redactedThinking" || block.type === "anthropicServerTool") continue;
 		if (block.type === "thinking") {
-			// Signatures and item ids are replay-bound and go; the summary state is
-			// provenance and stays. A Responses block its parser never confirmed as
-			// the trace keeps counting as a summary once its item id is gone.
-			const summary = block.summary ?? (block.itemId !== undefined || undefined);
-			content.push({ type: "thinking", thinking: block.thinking, ...(summary !== undefined && { summary }) });
+			// Signatures are replay-bound and go; the summary state is provenance and stays.
+			content.push({
+				type: "thinking",
+				thinking: block.thinking,
+				...(block.summary !== undefined && { summary: block.summary }),
+			});
 			continue;
 		}
 		content.push(block);
