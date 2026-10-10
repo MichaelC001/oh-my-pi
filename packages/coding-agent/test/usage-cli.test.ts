@@ -1567,6 +1567,76 @@ describe("omp usage reset", () => {
 		expect(process.exitCode).toBe(1);
 	});
 
+	/** Organizations named like the `codex` alias (inside `openai-codex`) and like the Claude grant id. */
+	async function storeIdentitiesMatchingIds(): Promise<void> {
+		await authStorage.credentials.set("openai-codex", [
+			oauth("codex-team", { email: "dev@example.test", accountId: "acct-team", orgName: "codex" }),
+		]);
+		await authStorage.credentials.set(
+			"anthropic",
+			oauth("claude-max", { email: "dev@example.test", orgId: "org-overlap", orgName: "saved-reset" }),
+		);
+	}
+
+	it("spends under --redact when an account's identity matches a provider id", async () => {
+		await storeIdentitiesMatchingIds();
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${team}`, redact: true, noExtensions: true });
+
+		expect(stripVTControlCharacters(stdout)).toContain("Reset applied for de* · co* (Codex)");
+		expect(consumes().map(request => [request.bearer, request.body?.account_id])).toEqual([
+			["Bearer codex-team", "acct-team"],
+		]);
+		expect(process.exitCode).toBe(0);
+	});
+
+	it("keeps spend targets canonical in a --redact text listing when identities match them", async () => {
+		await storeIdentitiesMatchingIds();
+		const { team, claude } = credentialIds();
+		await runUsageCommand({ action: "reset", redact: true, noExtensions: true });
+
+		const text = stripVTControlCharacters(stdout);
+		expect(text).toContain(`de* · co* [Codex · openai-codex/${team}]`);
+		expect(text).toContain(`de* · sa* [Claude · anthropic/${claude}]`);
+	});
+
+	it("keeps provider, credit and grant ids canonical in a --redact JSON listing when identities match them", async () => {
+		await storeIdentitiesMatchingIds();
+		const { team, claude } = credentialIds();
+		await runUsageCommand({ action: "reset", json: true, redact: true, noExtensions: true });
+
+		const { accounts } = JSON.parse(stdout) as {
+			accounts: Array<{
+				provider: string;
+				credentialId: number;
+				orgName?: string;
+				nextCreditId?: string;
+				credits: Array<{ id: string; expiresAt?: string }>;
+			}>;
+		};
+		expect(
+			accounts.map(account => [
+				account.provider,
+				account.credentialId,
+				account.orgName,
+				account.nextCreditId,
+				account.credits.map(credit => [credit.id, credit.expiresAt]),
+			]),
+		).toEqual([
+			[
+				"openai-codex",
+				team,
+				"co*",
+				undefined,
+				[
+					["credit-late", late],
+					["credit-soon", soon],
+				],
+			],
+			["anthropic", claude, "sa*", "saved-reset", [["saved-reset", soon]]],
+		]);
+	});
+
 	it("leaves the reset marker a session adopts after a spend", async () => {
 		const { team } = credentialIds();
 		await runUsageCommand({ action: "reset", target: `codex/${team}`, noExtensions: true });

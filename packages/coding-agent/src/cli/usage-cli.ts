@@ -13,7 +13,6 @@ import {
 	type AuthStorage,
 	type DisabledCredentialSummary,
 	type OAuthAccountIdentity,
-	type ResetCreditAccountStatus,
 	type ResetCreditRedeemOutcome,
 	isWithinUsageReserve,
 	resolveCredentialIdentityKey,
@@ -1238,47 +1237,62 @@ async function runUsageResetCommand(
 	const statuses = (
 		await Promise.all(providers.map(provider => authStorage.resets.list({ provider, baseUrlResolver })))
 	).flat();
-	const maskText = cmd.redact
-		? identityTextMasker(
-				buildRedactionMap(
-					statuses.flatMap(status =>
-						[status.email, status.accountId, status.orgId, status.orgName].filter(
-							(value): value is string => !!value,
-						),
+	const redaction = cmd.redact
+		? buildRedactionMap(
+				statuses.flatMap(status =>
+					[status.email, status.accountId, status.orgId, status.orgName].filter(
+						(value): value is string => !!value,
 					),
 				),
 			)
-		: (text: string) => text;
-	// Provider text (credit titles and descriptions, reasons, errors) can name the
-	// account too, so every string a row prints goes through the masks.
-	const shownStatuses: ResetCreditAccountStatus[] = cmd.redact
-		? statuses.map(({ report: _report, ...status }) =>
-				JSON.parse(JSON.stringify(status), (_key, value: unknown) =>
-					typeof value === "string" ? maskText(value) : value,
-				),
-			)
-		: statuses;
-	// Index for index with `statuses`, so a spend takes the stored row's unmasked target.
-	const accounts = shownStatuses.map(toResetUsageAccount);
+		: new Map<string, string>();
+	const maskText = identityTextMasker(redaction);
+	const maskOptionalText = (text: string | undefined) => (text === undefined ? undefined : maskText(text));
+	// Rows are built and judged from the stored statuses; `--redact` then masks only
+	// what is printed (identities and provider free text such as credit titles,
+	// reasons and errors), so provider, credential and credit ids stay canonical.
+	const accounts = statuses.map(status => {
+		const account = toResetUsageAccount(status);
+		return {
+			...account,
+			label: maskText(account.label),
+			error: maskOptionalText(account.error),
+			unavailableReason: maskOptionalText(account.unavailableReason),
+		};
+	});
 
 	if (!cmd.target) {
 		if (cmd.json) {
-			const rows = shownStatuses.map((status, index) => {
+			const rows = statuses.map((status, index) => {
 				const account = accounts[index];
 				return {
 					provider: status.provider,
 					credentialId: status.credentialId,
-					email: status.email,
-					accountId: status.accountId,
-					orgId: status.orgId,
-					orgName: status.orgName,
+					email: maskIdentity(redaction, status.email),
+					accountId: maskIdentity(redaction, status.accountId),
+					orgId: maskIdentity(redaction, status.orgId),
+					orgName: maskIdentity(redaction, status.orgName),
 					availableCount: account.availableCount,
 					redeemableCount: account.redeemableCount,
 					nextCreditId: status.nextCreditId,
 					soonestExpiry: account.expiresAt,
 					unavailableReason: account.unavailableReason,
 					error: account.error,
-					credits: status.credits,
+					// Typed credit fields only, so untyped provider text never reaches the output.
+					credits: status.credits.map(credit => ({
+						id: credit.id,
+						title: maskOptionalText(credit.title),
+						program: credit.program,
+						status: credit.status,
+						remainingCount: credit.remainingCount,
+						usable: credit.usable,
+						requiresLimit: credit.requiresLimit,
+						clears: credit.clears,
+						blocking: credit.blocking,
+						usedFractions: credit.usedFractions,
+						grantedAt: credit.grantedAt,
+						expiresAt: credit.expiresAt,
+					})),
 				};
 			});
 			process.stdout.write(`${JSON.stringify({ generatedAt: Date.now(), accounts: rows }, null, 2)}\n`);
@@ -1301,8 +1315,7 @@ async function runUsageResetCommand(
 		failUsageReset(resolved.error);
 		return;
 	}
-	const { label, provider, availableCount } = resolved.account;
-	const { target } = toResetUsageAccount(statuses[accounts.indexOf(resolved.account)]);
+	const { label, provider, availableCount, target } = resolved.account;
 	const redeem = async (): Promise<ResetCreditRedeemOutcome> => {
 		try {
 			return await authStorage.resets.redeem({ target, baseUrlResolver });
@@ -1342,7 +1355,7 @@ async function runUsageResetCommand(
 		);
 		return;
 	}
-	const message = maskText(oneLine(describeRedeemOutcome(result, label)));
+	const message = oneLine(describeRedeemOutcome({ ...result, reason: maskOptionalText(result.reason) }, label));
 	if (result.ok) {
 		process.stdout.write(`${message}\n`);
 	} else {
