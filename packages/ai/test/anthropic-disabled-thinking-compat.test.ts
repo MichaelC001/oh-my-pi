@@ -235,7 +235,10 @@ describe("Anthropic thinking-binding beta follows block_binding", () => {
 		},
 	);
 
-	it("sends the binding beta when an onPayload hook adds block_binding", async () => {
+	it.each([
+		["adds block_binding", { prefix_mismatch_behavior: "drop_block" }, true],
+		["leaves block_binding explicitly undefined", undefined, false],
+	] as const)("an onPayload hook that %s gets the binding beta: %p", async (_label, binding, expected) => {
 		const target = haiku("anthropic");
 		let beta = "";
 		await streamAnthropic(
@@ -246,7 +249,7 @@ describe("Anthropic thinking-binding beta follows block_binding", () => {
 				thinkingEnabled: false,
 				onPayload: payload => ({
 					...(payload as Record<string, unknown>),
-					thinking: { type: "adaptive", block_binding: { prefix_mismatch_behavior: "drop_block" } },
+					thinking: { type: "adaptive", block_binding: binding },
 				}),
 				fetch: async (_url, init) => {
 					beta = new Headers(init?.headers).get("anthropic-beta") ?? "";
@@ -254,6 +257,6 @@ describe("Anthropic thinking-binding beta follows block_binding", () => {
 				},
 			},
 		).result();
-		expect(beta).toContain("thinking-binding-controls-2026-08-01");
+		expect(beta.includes("thinking-binding-controls-2026-08-01")).toBe(expected);
 	});
 });

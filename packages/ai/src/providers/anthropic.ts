@@ -259,6 +259,11 @@ const taskBudgetBeta = "task-budgets-2026-03-13";
 const effortBeta = "effort-2025-11-24";
 const serverSideFallbackBeta = "server-side-fallback-2026-06-01";
 
+/** Whether a thinking config carries a defined `block_binding` (the binding-controls beta's field). */
+function carriesThinkingBinding(thinking: MessageCreateParamsStreaming["thinking"] | undefined): boolean {
+	return thinking !== undefined && "block_binding" in thinking && thinking.block_binding !== undefined;
+}
+
 function resolveAnthropicControlBetas(
 	model: Model<"anthropic-messages">,
 	prefixMismatchBehavior: "drop_block" | "error" | undefined,
@@ -2353,7 +2358,7 @@ const streamAnthropicOnce = (
 						options?.client !== undefined ? (injectedClientBaseUrl(options.client) ?? baseUrl) : baseUrl,
 					) &&
 					nextParams.thinking &&
-					"block_binding" in nextParams.thinking &&
+					carriesThinkingBinding(nextParams.thinking) &&
 					!bodyBetas?.includes(THINKING_BINDING_CONTROLS_BETA)
 				) {
 					(nextParams as { anthropic_beta?: string[] }).anthropic_beta = [
@@ -2574,7 +2579,7 @@ const streamAnthropicOnce = (
 							effortBeta,
 						);
 					}
-					if (params.thinking && "block_binding" in params.thinking) {
+					if (carriesThinkingBinding(params.thinking)) {
 						injectedClientBetaHeaders = mergeAnthropicBetaHeader(
 							injectedClientBetaHeaders ?? mergedCallerHeaders,
 							THINKING_BINDING_CONTROLS_BETA,
@@ -2637,8 +2642,7 @@ const streamAnthropicOnce = (
 					!usingFallbackCredit &&
 					options?.client === undefined &&
 					!isVertexRawPredictUrl(baseUrl) &&
-					params.thinking &&
-					"block_binding" in params.thinking
+					carriesThinkingBinding(params.thinking)
 				) {
 					perRequestHeaders = {
 						...perRequestHeaders,
@@ -5022,10 +5026,7 @@ function buildParams(
 		effectiveBaseUrl ??
 		model.baseUrl;
 	const vertexControlBetas = isVertexRawPredictUrl(vertexRequestUrl)
-		? resolveAnthropicControlBetas(
-				model,
-				thinking && "block_binding" in thinking ? prefixMismatchBehavior : undefined,
-			)
+		? resolveAnthropicControlBetas(model, carriesThinkingBinding(thinking) ? prefixMismatchBehavior : undefined)
 		: [];
 	// Vertex rawPredict routes on-demand and legacy replay betas in the body.
 	if (isVertexRawPredictUrl(vertexRequestUrl)) {
