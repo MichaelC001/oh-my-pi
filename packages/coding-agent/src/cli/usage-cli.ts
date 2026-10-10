@@ -13,6 +13,7 @@ import {
 	type AuthStorage,
 	type DisabledCredentialSummary,
 	type OAuthAccountIdentity,
+	type ResetCreditAccountStatus,
 	type ResetCreditRedeemOutcome,
 	isWithinUsageReserve,
 	resolveCredentialIdentityKey,
@@ -31,6 +32,8 @@ import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
 import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
 import { resolveAuthBrokerConfig } from "../session/auth-broker-config";
+import { resetAccountLockKey } from "../session/codex-auto-reset";
+import { checkCodexBalance, type ResetMarker, resetLockPath, withResetFence } from "../session/reset-fence";
 import { collapseSharedUsageReports, summarizeUsageResetCredits } from "@oh-my-pi/pi-tui/overlays/usage-display";
 import { formatCodexUsageReportLabel } from "../slash-commands/helpers/active-oauth-account";
 import { errorMessage } from "../slash-commands/helpers/parse";
@@ -1181,6 +1184,22 @@ function failUsageReset(message: string): void {
 }
 
 /**
+ * Mask each identity wherever it appears inside free text (`--redact`), in one
+ * pass so a mask is never matched again; the longest identity wins an overlap.
+ */
+function identityTextMasker(redaction: Map<string, string>): (text: string) => string {
+	if (redaction.size === 0) return text => text;
+	const pattern = new RegExp(
+		[...redaction.keys()]
+			.sort((a, b) => b.length - a.length)
+			.map(value => RegExp.escape(value))
+			.join("|"),
+		"g",
+	);
+	return text => text.replace(pattern, value => redaction.get(value) ?? value);
+}
+
+/**
  * `omp usage reset [<provider>/<credential id>]`: list every stored Codex and
  * Claude account's saved resets, or spend one on the named account. Both run in
  * this process with the store's tokens, so a broker client works like the host.
@@ -1219,23 +1238,25 @@ async function runUsageResetCommand(
 	const statuses = (
 		await Promise.all(providers.map(provider => authStorage.resets.list({ provider, baseUrlResolver })))
 	).flat();
-	const redaction = cmd.redact
-		? buildRedactionMap(
-				statuses.flatMap(status =>
-					[status.email, status.accountId, status.orgId, status.orgName].filter(
-						(value): value is string => !!value,
+	const maskText = cmd.redact
+		? identityTextMasker(
+				buildRedactionMap(
+					statuses.flatMap(status =>
+						[status.email, status.accountId, status.orgId, status.orgName].filter(
+							(value): value is string => !!value,
+						),
 					),
 				),
 			)
-		: undefined;
-	const shownStatuses = redaction
-		? statuses.map(status => ({
-				...status,
-				email: maskIdentity(redaction, status.email),
-				accountId: maskIdentity(redaction, status.accountId),
-				orgId: maskIdentity(redaction, status.orgId),
-				orgName: maskIdentity(redaction, status.orgName),
-			}))
+		: (text: string) => text;
+	// Provider text (credit titles and descriptions, reasons, errors) can name the
+	// account too, so every string a row prints goes through the masks.
+	const shownStatuses: ResetCreditAccountStatus[] = cmd.redact
+		? statuses.map(({ report: _report, ...status }) =>
+				JSON.parse(JSON.stringify(status), (_key, value: unknown) =>
+					typeof value === "string" ? maskText(value) : value,
+				),
+			)
 		: statuses;
 	// Index for index with `statuses`, so a spend takes the stored row's unmasked target.
 	const accounts = shownStatuses.map(toResetUsageAccount);
@@ -1280,17 +1301,49 @@ async function runUsageResetCommand(
 		failUsageReset(resolved.error);
 		return;
 	}
-	const { label, provider } = resolved.account;
+	const { label, provider, availableCount } = resolved.account;
 	const { target } = toResetUsageAccount(statuses[accounts.indexOf(resolved.account)]);
-	let outcome: ResetCreditRedeemOutcome;
-	try {
-		outcome = await authStorage.resets.redeem({ target, baseUrlResolver });
-	} catch (error) {
-		// A transport failure can land after the provider applied the reset.
-		outcome = { ok: false, code: "network_error", provider, reason: errorMessage(error) };
+	const redeem = async (): Promise<ResetCreditRedeemOutcome> => {
+		try {
+			return await authStorage.resets.redeem({ target, baseUrlResolver });
+		} catch (error) {
+			// A transport failure can land after the provider applied the reset.
+			return { ok: false, code: "network_error", provider, reason: errorMessage(error) };
+		}
+	};
+	const lockKey = resetAccountLockKey(target);
+	// The fence a session's automatic spend takes: neither spends while the
+	// other's attempt is in flight or within a minute of it.
+	const result = lockKey
+		? await withResetFence<ResetCreditRedeemOutcome | ResetMarker>(
+				resetLockPath(lockKey),
+				async marker => marker,
+				async markedRedeem => {
+					if (provider === "openai-codex") {
+						const live = await authStorage.resets.list({
+							provider,
+							baseUrlResolver,
+							signal: AbortSignal.timeout(10_000),
+						});
+						const balance = checkCodexBalance(live, target.credentialId, availableCount);
+						if (balance) return { ok: false, code: balance === "spent" ? "offer_changed" : balance, provider };
+					}
+					return (await markedRedeem(redeem)).outcome;
+				},
+			)
+		: await redeem();
+	if ("state" in result) {
+		const who = `${oneLine(label)} (${formatResetProviderName(provider)})`;
+		const ago = formatDuration(Date.now() - result.atMs);
+		failUsageReset(
+			result.state === "reset"
+				? `${who}: another omp process spent a saved reset on this account ${ago} ago, so this one was not spent. Check \`omp usage\` before spending another.`
+				: `${who}: another omp process started spending a saved reset on this account ${ago} ago, so nothing was spent. Try again in a minute.`,
+		);
+		return;
 	}
-	const message = oneLine(describeRedeemOutcome(outcome, label));
-	if (outcome.ok) {
+	const message = maskText(oneLine(describeRedeemOutcome(result, label)));
+	if (result.ok) {
 		process.stdout.write(`${message}\n`);
 	} else {
 		failUsageReset(message);

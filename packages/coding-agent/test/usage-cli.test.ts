@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { AuthStorage, type OAuthCredential, SqliteAuthCredentialStore, type UsageReport } from "@oh-my-pi/pi-ai";
 import { AuthBrokerClient, RemoteAuthCredentialStore, startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { getConfigRootDir, setAgentDir, TempDir, withFileLock } from "@oh-my-pi/pi-utils";
 import {
 	buildRedactionMap,
 	collectHistoryIdentityStrings,
@@ -16,6 +16,8 @@ import {
 } from "@oh-my-pi/pi-coding-agent/cli/usage-cli";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
+import { resetAccountLockKey } from "@oh-my-pi/pi-coding-agent/session/codex-auto-reset";
+import { readResetMarker, resetLockPath } from "@oh-my-pi/pi-coding-agent/session/reset-fence";
 import {
 	collectUnreportedAccounts,
 	type UsageAccountIdentity,
@@ -1349,6 +1351,10 @@ describe("omp usage reset", () => {
 	let authStorage: AuthStorage;
 	let stdout: string;
 	let stderr: string;
+	/** Settles once the command has listed the Codex accounts. */
+	let listed: PromiseWithResolvers<void>;
+	let tempDir: TempDir;
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 
 	/** Codex and Claude reset endpoints: `codex-team` banks two credits, `codex-spare` none, Claude one grant. */
 	const handleReset = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -1362,11 +1368,17 @@ describe("omp usage reset", () => {
 			return Response.json(codexConsume.body, { status: codexConsume.status });
 		}
 		if (url.pathname.endsWith("/wham/rate-limit-reset-credits")) {
+			listed.resolve();
 			const credits =
 				bearer === "Bearer codex-team" || bearer === "Bearer broker-codex"
 					? [
 							{ id: "credit-late", status: "available", expires_at: late },
-							{ id: "credit-soon", status: "available", expires_at: soon },
+							{
+								id: "credit-soon",
+								status: "available",
+								expires_at: soon,
+								description: "Banked for dev@example.test",
+							},
 						]
 					: [];
 			return Response.json({ credits, available_count: credits.length });
@@ -1386,7 +1398,7 @@ describe("omp usage reset", () => {
 					grants: [
 						{
 							id: "saved-reset",
-							label: "Saved session reset",
+							label: "Reset for dev@example.test (Acme Corp)",
 							resets_total: 1,
 							resets_left: 1,
 							starts_at: new Date(Date.now() - HOUR).toISOString(),
@@ -1410,6 +1422,9 @@ describe("omp usage reset", () => {
 
 	beforeEach(async () => {
 		requests = [];
+		listed = Promise.withResolvers<void>();
+		tempDir = TempDir.createSync("@omp-usage-reset-");
+		setAgentDir(tempDir.path());
 		codexConsume = { status: 200, body: { code: "reset" } };
 		authStorage = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")), { usageFetch });
 		await authStorage.credentials.set("openai-codex", [
@@ -1438,7 +1453,16 @@ describe("omp usage reset", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		process.exitCode = 0;
+		setAgentDir(originalAgentDir ?? path.join(getConfigRootDir(), "agent"));
+		if (!originalAgentDir) delete process.env.PI_CODING_AGENT_DIR;
+		tempDir.removeSync();
 	});
+
+	function codexTeamLockPath(): string {
+		const lockKey = resetAccountLockKey({ provider: "openai-codex", accountId: "acct-team" });
+		if (!lockKey) throw new Error("expected a reset lock key");
+		return resetLockPath(lockKey);
+	}
 
 	function credentialIds() {
 		const [team, spare] = authStorage.oauth.accounts("openai-codex").map(account => account.credentialId);
@@ -1531,6 +1555,41 @@ describe("omp usage reset", () => {
 		expect(consumes().map(request => [request.bearer, request.body?.account_id])).toEqual([
 			["Bearer codex-team", "acct-team"],
 		]);
+	});
+
+	it("masks identities inside a failed spend's reason under --redact", async () => {
+		codexConsume = new Error("socket to dev@example.test closed");
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${team}`, redact: true, noExtensions: true });
+
+		for (const identity of identities) expect(stderr).not.toContain(identity);
+		expect(stripVTControlCharacters(stderr)).toContain("couldn't confirm whether the reset applied");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("leaves the reset marker a session adopts after a spend", async () => {
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${team}`, noExtensions: true });
+
+		const marker = await readResetMarker(codexTeamLockPath());
+		expect(marker.state).toBe("reset");
+		expect(Date.now() - marker.atMs).toBeLessThan(60_000);
+	});
+
+	it("waits for a session holding the account's reset lock and spends nothing after its reset", async () => {
+		const { team } = credentialIds();
+		const lockPath = codexTeamLockPath();
+		let run: Promise<void> | undefined;
+		await withFileLock(lockPath, async () => {
+			run = runUsageCommand({ action: "reset", target: `codex/${team}`, noExtensions: true });
+			await listed.promise;
+			await Bun.write(lockPath, `reset:${Date.now()}`);
+		});
+		await run;
+
+		expect(consumes()).toEqual([]);
+		expect(stripVTControlCharacters(stderr)).toContain("another omp process spent a saved reset on this account");
+		expect(process.exitCode).toBe(1);
 	});
 
 	it("spends the named Codex account's soonest-expiring credit", async () => {
