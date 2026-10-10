@@ -1837,6 +1837,10 @@ describe("expanded computer APIs", () => {
 				"obs = await (await computer.window(42)).observe()\nprint(obs['ax'] == '- button [ref=e1]')",
 			);
 			expect(read.output.trim().split("\n").at(-1)).toBe("True");
+			const pickled = await run(
+				"import pickle\nobs = await (await computer.window(42)).observe()\ncopy = pickle.loads(pickle.dumps(obs))\nprint(type(copy) is dict and copy == dict(obs) and 'ax' in copy)",
+			);
+			expect(pickled.output.trim().split("\n").at(-1)).toBe("True");
 		} finally {
 			await prelude.invoke({ action: "close" }, { session, toolCallId: "observe-once-py" });
 		}

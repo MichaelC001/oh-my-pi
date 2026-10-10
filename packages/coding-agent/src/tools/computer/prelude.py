@@ -72,6 +72,10 @@ def _make_computer():
         def _repr_mimebundle_(self, include=None, exclude=None):
             return {"application/json": self._shown(), "text/plain": repr(self)}
 
+        def __reduce__(self):
+            # Pickle and copy as the plain dict, `ax` included: this class is local to the prelude.
+            return (dict, (dict(self),))
+
     class _Element:
         __slots__ = ("ref", "role", "nativeRole", "title", "description", "enabled", "focused", "childCount")
 
