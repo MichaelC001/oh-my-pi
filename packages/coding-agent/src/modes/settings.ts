@@ -876,6 +876,20 @@ export const cfgComposerRecallClearedDrafts = register({
 	},
 });
 
+export const cfgComposerPredictions = register({
+	id: "composer.predictions",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "interaction",
+		group: "Input",
+		label: "Composer Predictions",
+		get description() {
+			return `After a completed turn, ask the active model to predict your next message and show it as ghost text in the empty composer; ${formatKeyHint("tab")} inserts it without sending. Each prediction is an extra request that reuses the session's prompt cache`;
+		},
+	},
+});
+
 export const cfgDoubleEscapeAction = register({
 	id: "doubleEscapeAction",
 	type: "enum",
