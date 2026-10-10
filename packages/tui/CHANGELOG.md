@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `OutputSink` summaries report the first and last line the column cap cut (`columnTruncatedRange`), and the column-cut notice names the `:raw` range of the artifact or file that returns them whole
+
 ## [18.8.9] - 2026-10-10
 
 ### Breaking Changes

@@ -63,8 +63,20 @@ export interface LimitsMeta {
 	/** `suggestion` is omitted when the tool is already at its hard cap, so no larger usable limit exists to advise. */
 	resultLimit?: { reached: number; suggestion?: number };
 	headLimit?: { reached: number; suggestion: number };
-	/** `unit` may be absent in sessions persisted before it was recorded. */
-	columnTruncated?: { maxColumn: number; unit?: "bytes" | "chars"; artifactId?: string; artifactElidedBytes?: number };
+	/**
+	 * `unit` may be absent in sessions persisted before it was recorded. `lines` is
+	 * the first-to-last range of cut lines, and `selectorBase` the target a
+	 * `:raw:<first>-<last>` selector reads them whole from (an artifact's
+	 * `artifact://<id>` stands in when absent).
+	 */
+	columnTruncated?: {
+		maxColumn: number;
+		unit?: "bytes" | "chars";
+		artifactId?: string;
+		artifactElidedBytes?: number;
+		lines?: { first: number; last: number };
+		selectorBase?: string;
+	};
 }
 
 /**
@@ -329,7 +341,12 @@ export function formatOutputNotice(meta: OutputMeta | undefined): string {
 		// a resumed legacy session renders "… 768 undefined" and stripOutputNotice
 		// stops matching the persisted "… 768 chars" text.
 		let columnNotice = `Some lines truncated to ${c.maxColumn} ${c.unit ?? "chars"}`;
-		if (c.artifactId != null) {
+		// An artifact cut to a head/tail sample renumbers its lines, so only a complete one names a range.
+		const selectorBase =
+			c.selectorBase ?? (c.artifactId != null && !c.artifactElidedBytes ? `artifact://${c.artifactId}` : undefined);
+		if (c.lines && selectorBase !== undefined) {
+			columnNotice += `. Use ${selectorBase}:raw:${c.lines.first}-${c.lines.last} to read them whole`;
+		} else if (c.artifactId != null) {
 			columnNotice += `. ${formatFullOutputReference(c.artifactId, c.artifactElidedBytes)}`;
 		}
 		parts.push(columnNotice);

@@ -59,6 +59,7 @@ if "__omp_prelude_loaded__" not in globals():
         return val
 
     _OMP_INTERNAL_URL_RE = re.compile(r"^([a-z][a-z0-9+.-]*)://(.*)$", re.IGNORECASE)
+    _OMP_ARTIFACT_ID_RE = re.compile(r"^\d+$")
 
     def _omp_url_roots() -> dict:
         """On-disk roots for internal-URL schemes, keyed by scheme (PI_EVAL_LOCAL_ROOTS)."""
@@ -69,11 +70,19 @@ if "__omp_prelude_loaded__" not in globals():
         return roots if isinstance(roots, dict) else {}
 
     def _should_delegate_read(path: str | Path) -> bool:
-        """Delegate `scheme://` reads to the read tool unless the scheme has an injected root."""
+        """Delegate `scheme://` reads to the read tool unless the scheme has an injected root.
+
+        `artifact://<id>` reads its file directly; selector forms
+        (`artifact://3:raw:5-9`) stay with the read tool, which parses them."""
         if not isinstance(path, str):
             return False
         match = _OMP_INTERNAL_URL_RE.match(path)
-        return match is not None and match.group(1).lower() not in _omp_url_roots()
+        if match is None:
+            return False
+        scheme = match.group(1).lower()
+        if scheme not in _omp_url_roots():
+            return True
+        return scheme == "artifact" and not _OMP_ARTIFACT_ID_RE.match(match.group(2))
 
     def _read_line_selector(offset: int, limit: int | None) -> str | None:
         if offset <= 1 and limit is None:
@@ -89,14 +98,26 @@ if "__omp_prelude_loaded__" not in globals():
             return result["text"]
         return result
 
-    def _resolve_omp_path(path: str | Path) -> Path:
+    def _resolve_artifact_path(root: str, artifact_id: str, path: str) -> Path:
+        """The file backing `artifact://<id>` in the artifacts dir: `<id>.<tool>.log`."""
+        try:
+            names = os.listdir(root)
+        except FileNotFoundError:
+            names = []
+        for name in names:
+            if name.startswith(f"{artifact_id}."):
+                return Path(os.path.join(os.path.abspath(root), name))
+        raise FileNotFoundError(f"Artifact {artifact_id} not found: {path}")
+
+    def _resolve_omp_path(path: str | Path, op: str) -> Path:
         """Map a helper path to a real filesystem Path.
 
         A `scheme://…` whose scheme has an injected on-disk root (via
         PI_EVAL_LOCAL_ROOTS) is rewritten under that root so it lands where
         `read scheme://…` resolves — not a literal `scheme:/` directory under
-        the cwd (which `Path("scheme://x")` collapses to). Plain paths pass
-        through unchanged; any other `scheme://` is rejected."""
+        the cwd (which `Path("scheme://x")` collapses to). `artifact://<id>`
+        resolves to its file for reads only. Plain paths pass through
+        unchanged; any other `scheme://` is rejected."""
         if not isinstance(path, str):
             return Path(path)
         match = _OMP_INTERNAL_URL_RE.match(path)
@@ -104,7 +125,9 @@ if "__omp_prelude_loaded__" not in globals():
             return Path(path)
         scheme = match.group(1).lower()
         root = _omp_url_roots().get(scheme)
-        if not root:
+        if root and scheme == "artifact" and op == "read" and _OMP_ARTIFACT_ID_RE.match(match.group(2)):
+            return _resolve_artifact_path(root, match.group(2), path)
+        if not root or scheme == "artifact":
             raise ValueError(f"Protocol paths are not supported by this helper: {path}")
         relative = unquote(match.group(2).replace("\\", "/"))
         # Mirror the host `path.resolve`/`resolveLocalUrlToPath`: normalize and
@@ -129,7 +152,7 @@ if "__omp_prelude_loaded__" not in globals():
             selector = _read_line_selector(offset, limit)
             tool_path = path if selector is None else f"{path}:{selector}"
             return _read_tool_text(tool_path)
-        p = _resolve_omp_path(path)
+        p = _resolve_omp_path(path, "read")
         data = p.read_text(encoding="utf-8")
         lines = data.splitlines(keepends=True)
         if offset > 1 or limit is not None:
@@ -143,7 +166,7 @@ if "__omp_prelude_loaded__" not in globals():
 
     def write(path: str | Path, content: str) -> Path:
         """Write file contents (create parents)."""
-        p = _resolve_omp_path(path)
+        p = _resolve_omp_path(path, "write")
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         _emit_status("write", path=str(p), chars=len(content))
