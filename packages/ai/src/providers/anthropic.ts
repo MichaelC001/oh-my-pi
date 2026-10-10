@@ -2112,30 +2112,24 @@ const streamAnthropicOnce = (
 			let droppedAllThinkingForSignature = providerSessionState?.thinkingReplayDisabled ?? false;
 			let dropAllThinking = droppedAllThinkingForSignature;
 			let prefixBindingRetryAttempted = false;
-			// A live fallback-credit redemption replays its frozen body, so it is
-			// selected first: only a freshly built body decides its thinking binding.
+			// A live fallback-credit redemption replays its frozen body.
 			const frozenRedemption =
 				options?.fallbackCreditRedemption &&
 				Date.now() <= options.fallbackCreditRedemption.expiresAt &&
 				options.fallbackCreditRedemption.params
 					? options.fallbackCreditRedemption
 					: undefined;
-			// Collected at most once, on first use, by the beta decision and every
-			// params (re)build; a frozen redemption body evaluates neither.
+			// Collected at most once, on first params build; a frozen redemption
+			// body never builds params.
 			let controlRecords: AnthropicControlRecord[] | undefined;
 			const getControlRecords = () => (controlRecords ??= collectAnthropicControlRecords(context.messages));
-			// The binding-controls beta rides only with `block_binding`, which only
-			// adaptive thinking carries; see thinkingOffSendsNoAdaptive. A frozen
-			// body keeps the pre-existing rule, including when it is forfeited and
-			// rebuilt on the same client headers.
 			let prefixMismatchBehavior =
-				model.thinking?.prefixBinding &&
-				model.compat.supportsThinkingBindingControls &&
-				(frozenRedemption !== undefined ||
-					!thinkingOffSendsNoAdaptive(model, context.messages, getControlRecords, options))
+				model.thinking?.prefixBinding && model.compat.supportsThinkingBindingControls
 					? (options?.anthropicPrefixMismatchBehavior ?? "drop_block")
 					: undefined;
-			const controlBetas = resolveAnthropicControlBetas(model, prefixMismatchBehavior);
+			// The binding-controls beta follows the finalized body's
+			// `thinking.block_binding` per request (see below), not the client.
+			const controlBetas = resolveAnthropicControlBetas(model, undefined);
 			const mergedCallerHeaders = mergeHeaders(model.headers, options?.headers);
 			const umansGatewayWebSearchHeader = getUmansWebSearchHeader(model, mergedCallerHeaders);
 			// Keep fallback payloads aligned with the top-level Vertex effort gate:
@@ -2351,6 +2345,22 @@ const streamAnthropicOnce = (
 				if (nextParams.compaction) stripCompactionIncompatibleParams(nextParams);
 				// After `onPayload`, so a hook cannot restore a field Bedrock rejects.
 				if (model.compat.bedrockMessagesApi) fitBedrockAnthropicPayload(nextParams);
+				// Vertex rawPredict carries betas in the body: follow the final
+				// `block_binding`, including one an `onPayload` hook set.
+				const bodyBetas = (nextParams as { anthropic_beta?: string[] }).anthropic_beta;
+				if (
+					isVertexRawPredictUrl(
+						options?.client !== undefined ? (injectedClientBaseUrl(options.client) ?? baseUrl) : baseUrl,
+					) &&
+					nextParams.thinking &&
+					"block_binding" in nextParams.thinking &&
+					!bodyBetas?.includes(THINKING_BINDING_CONTROLS_BETA)
+				) {
+					(nextParams as { anthropic_beta?: string[] }).anthropic_beta = [
+						...(bodyBetas ?? []),
+						THINKING_BINDING_CONTROLS_BETA,
+					];
+				}
 				nextParams = toWellFormedDeep(nextParams) as typeof nextParams;
 				rawRequestDump = {
 					provider: model.provider,
@@ -2564,6 +2574,12 @@ const streamAnthropicOnce = (
 							effortBeta,
 						);
 					}
+					if (params.thinking && "block_binding" in params.thinking) {
+						injectedClientBetaHeaders = mergeAnthropicBetaHeader(
+							injectedClientBetaHeaders ?? mergedCallerHeaders,
+							THINKING_BINDING_CONTROLS_BETA,
+						);
+					}
 					if (carriesSignedCompaction(params)) {
 						injectedClientBetaHeaders = mergeAnthropicBetaHeader(
 							injectedClientBetaHeaders ?? mergedCallerHeaders,
@@ -2613,6 +2629,25 @@ const streamAnthropicOnce = (
 					perRequestHeaders = {
 						...perRequestHeaders,
 						...mergeAnthropicBetaHeader(clientDefaultHeaders ?? {}, effortBeta),
+					};
+				}
+				// The binding-controls beta rides exactly with the finalized body's
+				// `thinking.block_binding`, unioned with the betas already chosen.
+				if (
+					!usingFallbackCredit &&
+					options?.client === undefined &&
+					!isVertexRawPredictUrl(baseUrl) &&
+					params.thinking &&
+					"block_binding" in params.thinking
+				) {
+					perRequestHeaders = {
+						...perRequestHeaders,
+						...mergeAnthropicBetaHeader(
+							perRequestHeaders?.["anthropic-beta"] !== undefined
+								? perRequestHeaders
+								: (clientDefaultHeaders ?? {}),
+							THINKING_BINDING_CONTROLS_BETA,
+						),
 					};
 				}
 				const requestOptions = {
@@ -4549,49 +4584,6 @@ export function resolveAnthropicCompactionEffort(
 }
 
 /**
- * Whether a thinking-off turn resolves to a wire form without adaptive
- * thinking (`disabled`, `between_tools` or an omitted field), so it can carry
- * no `block_binding`. Mirrors buildParams, including the fallback to adaptive
- * when earlier effort controls rule out `disabled`.
- */
-function thinkingOffSendsNoAdaptive(
-	model: Model<"anthropic-messages">,
-	messages: readonly Message[],
-	records: () => readonly AnthropicControlRecord[],
-	options: AnthropicOptions | undefined,
-): boolean {
-	if (options?.thinkingEnabled !== false || !model.reasoning) return false;
-	const disabledThinking = model.compat.disabledThinking;
-	if (disabledThinking === "disabled") {
-		// Without per-message effort the effort controls never block `disabled`.
-		if (model.compat.supportsPerMessageEffort !== true) return true;
-		if (!effortControlsBlockDisabledThinking(model, messages, records())) return true;
-	} else if (disabledThinking === "between-tools") {
-		return !betweenToolsEffortInForceTooHigh(model, records);
-	} else if (disabledThinking !== undefined) {
-		return disabledThinking !== "adaptive";
-	}
-	if (model.compat.requiresThinkingEnabled) return false;
-	if (model.compat.supportsBetweenToolsThinking) return !betweenToolsEffortInForceTooHigh(model, records);
-	return !isAdaptiveOnlyThinking(model);
-}
-
-/**
- * Whether the top-level effort earlier requests left in force is `xhigh` or
- * `max`, which `between_tools` rejects, so buildParams falls back to default
- * adaptive thinking. Without per-message effort the turn's own pin (at most
- * `high`) is the top-level effort, so it never falls back.
- */
-function betweenToolsEffortInForceTooHigh(
-	model: Model<"anthropic-messages">,
-	records: () => readonly AnthropicControlRecord[],
-): boolean {
-	if (model.compat.supportsPerMessageEffort !== true) return false;
-	const latest = records().findLast(record => record.controls.effort)?.controls.effort?.topLevel;
-	return latest === "xhigh" || latest === "max";
-}
-
-/**
  * Whether effort controls earlier requests left in `messages` rule out
  * `thinking: {type: "disabled"}`: Anthropic rejects a per-message effort
  * control with thinking off, and `disabled` above `high` effort. Both stay in
@@ -5030,7 +5022,10 @@ function buildParams(
 		effectiveBaseUrl ??
 		model.baseUrl;
 	const vertexControlBetas = isVertexRawPredictUrl(vertexRequestUrl)
-		? resolveAnthropicControlBetas(model, prefixMismatchBehavior)
+		? resolveAnthropicControlBetas(
+				model,
+				thinking && "block_binding" in thinking ? prefixMismatchBehavior : undefined,
+			)
 		: [];
 	// Vertex rawPredict routes on-demand and legacy replay betas in the body.
 	if (isVertexRawPredictUrl(vertexRequestUrl)) {

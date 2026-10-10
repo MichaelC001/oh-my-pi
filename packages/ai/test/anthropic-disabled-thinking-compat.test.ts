@@ -206,7 +206,7 @@ describe("Anthropic thinking-binding beta follows block_binding", () => {
 	);
 
 	it.each(["anthropic", "cloudflare-ai-gateway"] as const)(
-		"%s Sonnet 5.5 Off sends between_tools without binding, but after xhigh falls back to default adaptive with the beta",
+		"%s Sonnet 5.5 Off sends between_tools without binding, and after xhigh falls back to default adaptive, still unbound",
 		async provider => {
 			const target = haiku(provider, "claude-sonnet-5-5");
 			const off = await haikuRequest(target, [{ role: "user", content: "q0", timestamp: 1 }], undefined);
@@ -229,9 +229,31 @@ describe("Anthropic thinking-binding beta follows block_binding", () => {
 				],
 				undefined,
 			);
-			// The API's default adaptive thinking (field omitted), with the beta, as before.
+			// The API's default adaptive thinking (field omitted) carries no binding, so no beta.
 			expect(fallback.body.thinking).toBeUndefined();
-			expect(fallback.beta).toContain("thinking-binding-controls-2026-08-01");
+			expect(fallback.beta).not.toContain("thinking-binding-controls-2026-08-01");
 		},
 	);
+
+	it("sends the binding beta when an onPayload hook adds block_binding", async () => {
+		const target = haiku("anthropic");
+		let beta = "";
+		await streamAnthropic(
+			target,
+			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+			{
+				apiKey: "sk-ant-api-test",
+				thinkingEnabled: false,
+				onPayload: payload => ({
+					...(payload as Record<string, unknown>),
+					thinking: { type: "adaptive", block_binding: { prefix_mismatch_behavior: "drop_block" } },
+				}),
+				fetch: async (_url, init) => {
+					beta = new Headers(init?.headers).get("anthropic-beta") ?? "";
+					return Response.json({ error: { type: "invalid_request_error", message: "captured" } }, { status: 400 });
+				},
+			},
+		).result();
+		expect(beta).toContain("thinking-binding-controls-2026-08-01");
+	});
 });
