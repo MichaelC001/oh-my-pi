@@ -736,6 +736,28 @@ describe("wrapLeakedThinkingStream", () => {
 		expect(result.content).toEqual([signed]);
 	});
 
+	it("signs the pieces of a healed reply the same whether its signature arrives early or at text_end", async () => {
+		const leaked = "before ```thinking\nhmm\n``` after";
+		const block = (textSignature?: string): AssistantMessage =>
+			msg({ content: [{ type: "text", text: leaked, ...(textSignature && { textSignature }) }] });
+		const project = (deltaSignature: string | undefined) =>
+			runWrapper(inner => {
+				inner.push({ type: "start", partial: msg() });
+				inner.push({ type: "text_delta", contentIndex: 0, delta: leaked, partial: block(deltaSignature) });
+				inner.push({ type: "text_end", contentIndex: 0, content: leaked, partial: block("sig") });
+				inner.push({ type: "done", reason: "stop", message: block("sig") });
+			});
+
+		const early = await project("sig");
+		const late = await project(undefined);
+		expect(late.result.content).toEqual(early.result.content);
+		expect(late.result.content.map(b => (b.type === "text" ? b.textSignature : b.type))).toEqual([
+			"sig",
+			"thinking",
+			"sig",
+		]);
+	});
+
 	it("passes clean text through unchanged and forwards native thinking", async () => {
 		const clean = "Just a normal answer.";
 		const cleanRun = await runWrapper(inner => {

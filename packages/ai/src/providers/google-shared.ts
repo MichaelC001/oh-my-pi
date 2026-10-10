@@ -580,17 +580,17 @@ export class GoogleTextBlocks {
 	push(part: Part): void {
 		const { text, thoughtSignature } = part;
 		if (text === undefined) return;
+		const isThinking = isThinkingPart(part);
 		if (text === "") {
-			if (this.#block && !part.functionCall) this.#sign(this.#block, thoughtSignature);
+			// A signature-only part: an unmarked one signs the open block (Gemini's
+			// trailing part after a reply), a thought part signs thinking of its own.
+			if (!thoughtSignature || part.functionCall) return;
+			const signed = isThinking && this.#block?.type !== "thinking" ? this.#open(true) : this.#block;
+			if (signed) this.#sign(signed, thoughtSignature);
 			return;
 		}
-		const isThinking = isThinkingPart(part);
-		if (!this.#block || (this.#block.type === "thinking") !== isThinking) {
-			this.close();
-			this.#block = startTextOrThinkingBlock(isThinking, this.#output, this.#stream);
-			this.#contentIndex = this.#output.content.length - 1;
-		}
-		const block = this.#block;
+		const block =
+			this.#block && (this.#block.type === "thinking") === isThinking ? this.#block : this.#open(isThinking);
 		this.#sign(block, thoughtSignature);
 		if (block.type === "thinking") {
 			this.#thinkingStripper ??= new ThinkingFenceStripper();
@@ -628,6 +628,14 @@ export class GoogleTextBlocks {
 		this.#thinkingStripper = null;
 		this.#block = null;
 		pushBlockEndEvent(block, this.#contentIndex, this.#output, this.#stream);
+	}
+
+	#open(isThinking: boolean): TextContent | ThinkingContent {
+		this.close();
+		const block = startTextOrThinkingBlock(isThinking, this.#output, this.#stream);
+		this.#block = block;
+		this.#contentIndex = this.#output.content.length - 1;
+		return block;
 	}
 
 	/** Keeps the newest non-empty signature a block's parts carried. */

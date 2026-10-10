@@ -219,6 +219,31 @@ describe("Factory Droid gemini wire — history replay", () => {
 		expect(thinking[1]).toMatchObject({ thinking: "second think", thinkingSignature: "sig-2" });
 	});
 
+	it("keeps an empty thought part's signature on a thinking block of its own", async () => {
+		const { result } = await run("hi", [
+			JSON.stringify({
+				candidates: [
+					{
+						content: {
+							parts: [
+								{ thought: true, text: "", thoughtSignature: "sig-opening" },
+								{ text: "visible answer" },
+								{ thought: true, text: "", thoughtSignature: "sig-after-text" },
+							],
+						},
+					},
+				],
+			}),
+			finishChunk("STOP"),
+		]);
+		expect(result.content).toMatchObject([
+			{ type: "thinking", thinking: "", thinkingSignature: "sig-opening" },
+			{ type: "text", text: "visible answer" },
+			{ type: "thinking", thinking: "", thinkingSignature: "sig-after-text" },
+		]);
+		expect(result.content[1]).not.toHaveProperty("textSignature");
+	});
+
 	it("drops sentinel-signed thinking rather than exposing it as assistant text", async () => {
 		const { contents } = await run({
 			messages: [

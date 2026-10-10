@@ -188,6 +188,8 @@ class LeakedThinkingProjector {
 	#sourceAnchors = new Map<ProjectedContent, number>();
 	/** Latest non-undefined text signature seen, stamped onto held-back text flushed later. */
 	#lastTextSignature: string | undefined;
+	/** Projected text blocks per source text block, signed together when its signature completes. */
+	#textBlocksBySource = new Map<number, TextContent[]>();
 	/** Forwarded native tool calls, keyed by the inner stream's `contentIndex`. */
 	#toolBlocks = new Map<number, { index: number; block: StreamingToolCall }>();
 	/** Projected native thinking blocks, keyed by the inner stream's `contentIndex`. */
@@ -298,9 +300,8 @@ class LeakedThinkingProjector {
 	textEnd(srcIndex: number, signature: string | undefined): void {
 		if (signature === undefined) return;
 		if (this.#activeTextSourceIndex === srcIndex) this.#lastTextSignature = signature;
-		for (const block of this.#partial.content) {
-			if (block.type === "text" && this.#sourceAnchors.get(block) === srcIndex) block.textSignature = signature;
-		}
+		const projected = this.#textBlocksBySource.get(srcIndex);
+		if (projected) for (const block of projected) block.textSignature = signature;
 	}
 
 	/** Forward a native tool call's start, releasing any held-back text first. */
@@ -432,6 +433,9 @@ class LeakedThinkingProjector {
 			this.#partial.content.push(block);
 			this.#text = { index: this.#partial.content.length - 1 };
 			this.#anchor(this.#text.index, srcIndex);
+			const projected = this.#textBlocksBySource.get(srcIndex);
+			if (projected) projected.push(block);
+			else this.#textBlocksBySource.set(srcIndex, [block]);
 			this.#out.push({ type: "text_start", contentIndex: this.#text.index, partial: this.#partial });
 		} else if (signature !== undefined) {
 			(this.#partial.content[this.#text.index] as TextContent).textSignature = signature;
