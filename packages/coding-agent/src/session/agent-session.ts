@@ -475,6 +475,7 @@ import {
 	cfgTierGoogle,
 	cfgTierOpenai,
 	cfgProvidersAnthropicSlowMode,
+	type ResetAutoRedeemMode,
 } from "./settings";
 import { type AnthropicSlowModeController, anthropicSlowModeLanes, formatUsageLimitLabel } from "./anthropic-slow-mode";
 import type { UsageLimitState } from "./usage-limit";
@@ -12589,6 +12590,19 @@ export class AgentSession implements SettingsScope {
 		return [];
 	}
 
+	/** Spend every planned action under `yes`, and only the confirmed ones under `unset`. */
+	async #redeemConsentedResets(
+		provider: "openai-codex" | "anthropic",
+		mode: ResetAutoRedeemMode,
+		actions: (CodexResetAction | ClaudeResetAction)[],
+		coordinator: CodexAutoRedeemCoordinator,
+	): Promise<number> {
+		const approved = shouldPromptCodexAutoRedeem(mode)
+			? await this.#confirmAutoRedeem(provider, actions, coordinator)
+			: actions;
+		return this.#executeResetActions(provider, approved, coordinator);
+	}
+
 	#planCodexResets(
 		trigger: CodexResetTrigger,
 		reports: UsageReport[] | null,
@@ -12909,10 +12923,9 @@ export class AgentSession implements SettingsScope {
 				}
 				return { restored: false, retryAfterMs };
 			}
-			const approved = shouldPromptCodexAutoRedeem(cfg.autoRedeem)
-				? await this.#confirmAutoRedeem(provider, plan.actions, coordinator)
-				: plan.actions;
-			return { restored: (await this.#executeResetActions(provider, approved, coordinator)) > 0 };
+			return {
+				restored: (await this.#redeemConsentedResets(provider, cfg.autoRedeem, plan.actions, coordinator)) > 0,
+			};
 		})()
 			.catch((error): ResetRecoveryResult => {
 				logger.warn("auto-reset: blocked pass failed", { provider, account: accountKey, error: String(error) });
@@ -12951,10 +12964,7 @@ export class AgentSession implements SettingsScope {
 					const effectiveReports = overlayLiveResetCredits(reports, statuses);
 					const identity = this.#modelRegistry.authStorage.oauth.identity("openai-codex", this.sessionId);
 					const plan = this.#planCodexResets("sweep", effectiveReports, identity, coordinator);
-					const approved = shouldPromptCodexAutoRedeem(codexCfg.autoRedeem)
-						? await this.#confirmAutoRedeem("openai-codex", plan.actions, coordinator)
-						: plan.actions;
-					await this.#executeResetActions("openai-codex", approved, coordinator);
+					await this.#redeemConsentedResets("openai-codex", codexCfg.autoRedeem, plan.actions, coordinator);
 				} catch (error) {
 					logger.warn("codex-auto-reset: salvage listing failed", { error: String(error) });
 				}
@@ -12963,10 +12973,7 @@ export class AgentSession implements SettingsScope {
 				try {
 					const statuses = await this.listResetCredits(AbortSignal.timeout(10_000), "anthropic");
 					const plan = this.#planClaudeResets("sweep", reports, statuses, coordinator);
-					const approved = shouldPromptCodexAutoRedeem(claudeCfg.autoRedeem)
-						? await this.#confirmAutoRedeem("anthropic", plan.actions, coordinator)
-						: plan.actions;
-					await this.#executeResetActions("anthropic", approved, coordinator);
+					await this.#redeemConsentedResets("anthropic", claudeCfg.autoRedeem, plan.actions, coordinator);
 				} catch (error) {
 					logger.warn("claude-auto-reset: salvage listing failed", { error: String(error) });
 				}
