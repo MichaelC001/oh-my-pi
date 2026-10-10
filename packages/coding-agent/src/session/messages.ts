@@ -52,6 +52,7 @@ import {
 } from "@oh-my-pi/pi-agent-core/compaction/message-cache";
 import { convertMessageToLlm } from "@oh-my-pi/pi-agent-core/compaction/messages";
 import type { AssistantMessage, ImageContent, Message, TextContent, UserMessage } from "@oh-my-pi/pi-ai";
+import { mayBeReasoningSummary } from "@oh-my-pi/pi-ai/providers/transform-messages";
 import { copyPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
 import { COLLAB_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-wire";
@@ -99,8 +100,13 @@ export function sanitizeAssistantForReparentedHistory(message: AssistantMessage)
 	for (const block of message.content) {
 		if (block.type === "redactedThinking" || block.type === "anthropicServerTool") continue;
 		if (block.type === "thinking") {
-			// Signatures are replay-bound; the summary marker is provenance and stays.
-			content.push({ type: "thinking", thinking: block.thinking, ...(block.summary && { summary: true }) });
+			// Signatures and the native payload are replay-bound and go; whether the
+			// text is a provider summary is provenance and stays.
+			content.push({
+				type: "thinking",
+				thinking: block.thinking,
+				...(mayBeReasoningSummary(block, message) && { summary: true }),
+			});
 			continue;
 		}
 		content.push(block);

@@ -256,6 +256,54 @@ describe("same-model reasoning carry", () => {
 		expect(wire.content).toBe(DEMOTED);
 	});
 
+	describe("a summary recorded before summaries were marked", () => {
+		const source: Source = { provider: "openrouter", api: "openai-responses", model: "moonshotai/kimi-k3" };
+		const summaryItem = {
+			id: "rs_legacy",
+			type: "reasoning",
+			summary: [{ type: "summary_text", text: TRACE }],
+		};
+
+		it("is recognised from its stored signature", () => {
+			const prior = JSON.parse(
+				JSON.stringify(priorTurn(source, { thinkingSignature: JSON.stringify(summaryItem) })),
+			) as AssistantMessage;
+
+			const wire = completionsAssistant(moonshotK3(), history(prior));
+
+			expect(wire.reasoning_content).not.toBe(TRACE);
+			expect(wire.content).toBe(DEMOTED);
+		});
+
+		it("is recognised from the native-history payload once the signature was deduplicated", () => {
+			const prior = priorTurn(source);
+			prior.content[0] = { type: "thinking", thinking: TRACE, itemId: summaryItem.id };
+			prior.providerPayload = { type: "openaiResponsesHistory", items: [summaryItem] };
+
+			const wire = completionsAssistant(moonshotK3(), history(prior));
+
+			expect(wire.content).toBe(DEMOTED);
+		});
+
+		it("is not carried when its Responses item is gone", () => {
+			const prior = priorTurn(source);
+			prior.content[0] = { type: "thinking", thinking: TRACE, itemId: summaryItem.id };
+
+			const wire = completionsAssistant(moonshotK3(), history(prior));
+
+			expect(wire.content).toBe(DEMOTED);
+		});
+	});
+
+	it("keeps an errored turn's reasoning as text on a Responses host", async () => {
+		const prior = priorTurn(factoryK3, fieldSignature);
+		prior.stopReason = "error";
+
+		const items = await responsesAssistantItems(openRouterK3(), history(prior));
+
+		expect(JSON.stringify(items)).toContain(`"text":${JSON.stringify(THINK)}`);
+	});
+
 	it("carries the same DeepSeek revision between hosts", () => {
 		const source: Source = { provider: "openrouter", api: "openrouter", model: "deepseek/deepseek-v4-flash" };
 

@@ -83,4 +83,35 @@ describe("sanitizeAssistantForReparentedHistory", () => {
 			providerPayload: undefined,
 		});
 	});
+
+	it("marks a Responses summary recorded before summaries were marked", () => {
+		const summaryItem = { id: "rs_legacy", type: "reasoning", summary: [{ type: "summary_text", text: "summary" }] };
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "summary", itemId: "rs_legacy" },
+				{ type: "text", text: "done" },
+			],
+			api: "openai-responses",
+			provider: "openrouter",
+			model: "moonshotai/kimi-k3",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			providerPayload: { type: "openaiResponsesHistory", items: [summaryItem] },
+			timestamp: 1,
+		};
+
+		expect(sanitizeAssistantForReparentedHistory(message).content[0]).toEqual({
+			type: "thinking",
+			thinking: "summary",
+			summary: true,
+		});
+	});
 });
