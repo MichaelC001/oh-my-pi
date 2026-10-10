@@ -2501,7 +2501,7 @@ describe("AgentSession retry fallback", () => {
 			provider: advisorPrimary.provider,
 			id: advisorPrimary.id,
 		});
-		expect(session.getAdvisorStatusOverview().advisors[0]?.yielded).toBe(true);
+		expect(session.getAdvisorStatusOverview().advisors[0]).toMatchObject({ status: "quota_exhausted", yielded: true });
 	});
 
 	it("hops an advisor to the chain owned by the fallback it landed on", async () => {
