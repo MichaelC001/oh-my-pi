@@ -193,6 +193,7 @@ import type {
 	CursorExecHandlerResult,
 	CursorExecHandlers,
 	CursorExecPairing,
+	CursorHistoryPayload,
 	CursorMcpCall,
 	CursorShellStreamCallbacks,
 	CursorTodoSnapshot,
@@ -404,6 +405,7 @@ interface CursorRetryContext {
 	baseConversationId: string;
 	conversationId: string;
 	blobStore: Map<string, Uint8Array>;
+	pairedToolResults: Map<string, ToolResultMessage>;
 	firstTokenTime?: number;
 }
 
@@ -1097,6 +1099,10 @@ function streamCursorWithWireMode(
 		let latestCheckpointProgressVersion = -1;
 		let latestCheckpoint: ConversationStateStructure | undefined;
 		let latestCheckpointTerminal = false;
+		// Whether the latest checkpoint covers everything the turn produced: only
+		// such a checkpoint's records may stand for the completed turn, since a
+		// stale one would replay a partial turn under the full turn's digest.
+		let checkpointCoversTurn = false;
 		// Blocks the discovered-id retry once the turn produced observable output or
 		// ran a side effect (streamed content/tool call, exec bridge, permission
 		// reply). Pure keepalive heartbeats never set it, so a `not_found` that
@@ -1158,6 +1164,28 @@ function streamCursorWithWireMode(
 		// no later request can address; its cache entries are released at the end.
 		const ephemeralConversation =
 			!retryContext && options?.conversationId === undefined && options?.sessionId === undefined;
+		// Results the host persisted for this turn's calls, in the form it stored them:
+		// the turn's server records replay later only while these are unchanged.
+		// Server-owned tools report results without awaiting them, so each one is
+		// tracked with the dispatches and drained before the turn is captured.
+		const pairedToolResults = retryContext?.pairedToolResults ?? new Map<string, ToolResultMessage>();
+		const hostOnToolResult = options?.onToolResult;
+		const onToolResult: CursorToolResultHandler | undefined = hostOnToolResult
+			? result => {
+					const persisted = (async () => {
+						const stored = (await hostOnToolResult(result)) ?? result;
+						pairedToolResults.set(stored.toolCallId, stored);
+						return stored;
+					})();
+					const settled = persisted.then(
+						() => {},
+						() => {},
+					);
+					inFlightDispatches.add(settled);
+					void settled.finally(() => inFlightDispatches.delete(settled));
+					return persisted;
+				}
+			: undefined;
 		try {
 			const apiKey = options?.apiKey;
 			if (!apiKey) {
@@ -1302,7 +1330,7 @@ function streamCursorWithWireMode(
 					if (!firstTokenTime) firstTokenTime = performance.now();
 				},
 				onTodoSnapshot: options?.execHandlers?.todoSync?.bind(options.execHandlers),
-				onToolResult: options?.onToolResult,
+				onToolResult,
 			};
 			openBlockState = state;
 
@@ -1321,6 +1349,7 @@ function streamCursorWithWireMode(
 			const resultWriter: CursorMessageWriter = {
 				write(frame) {
 					progressVersion++;
+					checkpointCoversTurn = false;
 					resultTransport.write(frame);
 				},
 			};
@@ -1379,8 +1408,19 @@ function streamCursorWithWireMode(
 							latestCheckpoint = serverMessage.message.value;
 							latestCheckpointProgressVersion = progressVersion;
 							latestCheckpointTerminal = sawTurnEnded;
+							checkpointCoversTurn = true;
 							conversationEntry.state = latestCheckpoint;
 							cursorConversations.set(conversationId!, conversationEntry);
+						} else if (
+							// Blob traffic, keepalives, usage and step/turn ends add nothing
+							// the turn's records hold; any other frame may.
+							serverMessage.message.case !== "kvServerMessage" &&
+							interactionCase !== "heartbeat" &&
+							interactionCase !== "tokenDelta" &&
+							interactionCase !== "stepCompleted" &&
+							interactionCase !== "turnEnded"
+						) {
+							checkpointCoversTurn = false;
 						}
 						const isTurnEnded = interactionCase === "turnEnded";
 						// Dispatch is fire-and-forget so the socket keeps draining while a
@@ -1397,7 +1437,7 @@ function streamCursorWithWireMode(
 							blobStore,
 							serverMessage.message.case === "kvServerMessage" ? runTransport! : resultWriter,
 							options?.execHandlers,
-							options?.onToolResult,
+							onToolResult,
 							usageState!,
 							requestContextTools,
 							requestContextRules,
@@ -1488,7 +1528,33 @@ function streamCursorWithWireMode(
 
 			endCurrentTextBlock(output, stream, state);
 			endCurrentThinkingBlock(output, stream, state);
+			// A call the server never completed gets its result from the flush, which
+			// no checkpoint holds. An MCP call the exec channel already answered, with
+			// its arguments complete, leaves the turn as checkpointed.
+			const flushChangesTurn = [...state.openToolCalls.values(), state.currentToolCall].some(
+				call =>
+					call !== null &&
+					!(
+						call[kStreamingBlockKind] === "mcp" &&
+						call[kCursorExecResolved] &&
+						call[kStreamingPartialJson] === undefined
+					),
+			);
+			if (flushChangesTurn) checkpointCoversTurn = false;
 			flushOpenToolCalls(output, stream, state);
+			// Results that flush and server-owned tools reported are still settling
+			// through the host; the digest must see them as the host stored them.
+			await drainInFlightDispatches();
+			output.providerPayload =
+				checkpointCoversTurn && latestCheckpoint
+					? captureCursorHistoryPayload(
+							latestCheckpoint,
+							blobStore,
+							[requestId, originalRequestId],
+							output.content,
+							pairedToolResults,
+						)
+					: undefined;
 
 			calculateCost(model, output.usage, output.timestamp);
 
@@ -1537,6 +1603,7 @@ function streamCursorWithWireMode(
 						baseConversationId,
 						conversationId,
 						blobStore: activeBlobStore,
+						pairedToolResults,
 						firstTokenTime,
 					},
 				});
@@ -1676,6 +1743,7 @@ function streamCursorWithWireMode(
 							baseConversationId: retryBaseConversationId,
 							conversationId: retryConversationId,
 							blobStore: retryBlobStore,
+							pairedToolResults,
 							firstTokenTime,
 						},
 					});
@@ -5476,6 +5544,116 @@ function readCursorBlob(blobStore: Map<string, Uint8Array>, blobId: Uint8Array):
 	return data;
 }
 
+/** How the server's record of a run's user message begins; it carries the run's request id. */
+const CURSOR_USER_RECORD_PREFIX = '{"role":"user"';
+const cursorRecordDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
+
+/**
+ * Digest of an assistant turn as its server records stand for it: the content
+ * and the result persisted for each call. Pruning, snapcompact, secret
+ * redaction or an edit changes it, and the turn then rebuilds from content.
+ * Each field seeds the next one's hash, so no copy of the turn is built.
+ */
+function cursorTurnDigest(
+	content: AssistantMessage["content"],
+	resultFor: (toolCallId: string) => ToolResultMessage | undefined,
+): string {
+	let digest: number | bigint = 0;
+	const mix = (value: string): void => {
+		digest = Bun.hash(value, digest);
+	};
+	for (const block of content) {
+		mix(block.type);
+		if (block.type === "text") mix(block.text);
+		else if (block.type === "thinking") mix(block.thinking);
+		else if (block.type === "toolCall") {
+			mix(block.id);
+			mix(block.name);
+			mix(JSON.stringify(block.arguments));
+			const result = resultFor(block.id);
+			mix(result === undefined ? "unpaired" : result.isError ? "error" : "ok");
+			for (const item of result?.content ?? []) {
+				mix(item.type);
+				if (item.type === "text") mix(item.text);
+				else {
+					mix(item.mimeType);
+					mix(item.data);
+				}
+			}
+		}
+	}
+	return digest.toString(36);
+}
+
+/**
+ * The records Cursor wrote for this turn: the checkpoint's `rootPromptMessagesJson`
+ * entries after the user message the server recorded for this run. Undefined
+ * when that message is not found, a record's bytes are missing, or a record does
+ * not round-trip through UTF-8 text unchanged.
+ */
+function captureCursorHistoryPayload(
+	checkpoint: ConversationStateStructure,
+	blobStore: Map<string, Uint8Array>,
+	requestIds: readonly (string | undefined)[],
+	content: AssistantMessage["content"],
+	pairedToolResults: ReadonlyMap<string, ToolResultMessage>,
+): CursorHistoryPayload | undefined {
+	const stamps = requestIds.flatMap(id => (id ? [`"requestId":"${id}"`] : []));
+	const records: string[] = [];
+	for (let index = checkpoint.rootPromptMessagesJson.length - 1; index >= 0; index--) {
+		const bytes = blobStore.get(Buffer.from(checkpoint.rootPromptMessagesJson[index]).toString("hex"));
+		if (!bytes) return undefined;
+		const record = cursorRecordDecoder.decode(bytes);
+		if (record.startsWith(CURSOR_USER_RECORD_PREFIX) && stamps.some(stamp => record.includes(stamp))) {
+			if (records.length === 0) return undefined;
+			log("info", "capturedServerRecords", { count: records.length });
+			return {
+				type: "cursorHistory",
+				digest: cursorTurnDigest(content, id => pairedToolResults.get(id)),
+				records: records.reverse(),
+			};
+		}
+		if (!Buffer.from(record).equals(bytes)) return undefined;
+		records.push(record);
+	}
+	return undefined;
+}
+
+interface CursorRecordReplay {
+	records: Uint8Array[];
+	/** Calls whose results the records already carry. */
+	toolCallIds: string[];
+}
+
+/**
+ * Assistant turns that go back as their server records, by message index: turns
+ * the target model produced whose content and paired results still match the
+ * digest taken when they were recorded.
+ */
+function resolveCursorRecordReplays(
+	messages: Message[],
+	activeUserMessageIndex: number,
+	provider: string,
+	modelId: string | undefined,
+	{ toolResults }: CursorToolHistory,
+): Map<number, CursorRecordReplay> {
+	const historyEnd = activeUserMessageIndex >= 0 ? activeUserMessageIndex : messages.length;
+	const replays = new Map<number, CursorRecordReplay>();
+	for (let index = 0; index < historyEnd; index++) {
+		const msg = messages[index];
+		if (msg.role !== "assistant" || msg.providerPayload?.type !== "cursorHistory") continue;
+		if (msg.api !== "cursor-agent" || msg.provider !== provider || msg.model !== modelId) continue;
+		if (cursorTurnDigest(msg.content, id => toolResults.get(id)) !== msg.providerPayload.digest) continue;
+		replays.set(index, {
+			records: msg.providerPayload.records.map(record => new TextEncoder().encode(record)),
+			toolCallIds: msg.content.flatMap(block =>
+				block.type === "toolCall" && toolResults.has(block.id) ? [block.id] : [],
+			),
+		});
+	}
+	return replays;
+}
+
 /**
  * Cursor AgentService reconstructs the model prompt from `requestContext.rules`,
  * not from the client-supplied `rootPromptMessagesJson` system blobs. Map each
@@ -5632,6 +5810,7 @@ type CursorRootPromptAssistantContentPart =
 	  }
 	| { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, unknown> };
 
+/** Kimi K3 turns without replayable server records rebuild their reasoning from content. */
 function canReplayCursorThinking(msg: AssistantMessage, targetModelId: string | undefined): boolean {
 	return (
 		targetModelId !== undefined &&
@@ -5699,6 +5878,7 @@ function assertCursorKimiK3HistoryReplayable(
 	messages: Message[],
 	activeUserMessageIndex: number,
 	targetModelId: string | undefined,
+	replays: ReadonlyMap<number, CursorRecordReplay>,
 ): void {
 	if (!targetModelId || classifyModel("cursor", targetModelId).family !== "k3") return;
 	const historyEnd = activeUserMessageIndex >= 0 ? activeUserMessageIndex : messages.length;
@@ -5718,7 +5898,7 @@ function assertCursorKimiK3HistoryReplayable(
 			);
 		}
 		const hasThinking = msg.content.some(item => item.type === "thinking" && item.thinking.length > 0);
-		if (hasThinking) continue;
+		if (hasThinking || replays.has(i)) continue;
 		const warningKey = `${msg.api}\0${msg.provider}\0${msg.model}\0${msg.timestamp}`;
 		if (warnedCursorKimiK3ReplayMessages.has(warningKey)) continue;
 		missingThinkingTurns.push(assistantTurn);
@@ -5775,7 +5955,14 @@ export function buildCursorSystemPromptJsons(systemPrompt: readonly string[] | u
 	return systemPrompts.map(content => JSON.stringify({ role: "system", content }));
 }
 
-function collectCursorToolHistory(messages: Message[], historyEnd: number) {
+/** Tool results before the history end by call id, and the ids of calls the history issued. */
+interface CursorToolHistory {
+	toolResults: Map<string, ToolResultMessage>;
+	pairedToolCallIds: Set<string>;
+}
+
+function collectCursorToolHistory(messages: Message[], activeUserMessageIndex: number): CursorToolHistory {
+	const historyEnd = activeUserMessageIndex >= 0 ? activeUserMessageIndex : messages.length;
 	const toolResults = new Map<string, ToolResultMessage>();
 	const pairedToolCallIds = new Set<string>();
 	for (let index = 0; index < historyEnd; index++) {
@@ -5800,12 +5987,13 @@ function buildRootPromptMessagesJson(
 	messages: Message[],
 	systemPromptIds: Uint8Array[],
 	blobStore: Map<string, Uint8Array>,
-	activeUserMessageIndex = findLastUserMessageIndex(messages),
-	targetModelId?: string,
+	activeUserMessageIndex: number,
+	targetModelId: string | undefined,
+	replays: ReadonlyMap<number, CursorRecordReplay>,
+	{ toolResults, pairedToolCallIds }: CursorToolHistory,
 ): Uint8Array[] {
-	assertCursorKimiK3HistoryReplayable(messages, activeUserMessageIndex, targetModelId);
+	assertCursorKimiK3HistoryReplayable(messages, activeUserMessageIndex, targetModelId, replays);
 	const historyEnd = activeUserMessageIndex >= 0 ? activeUserMessageIndex : messages.length;
-	const { toolResults, pairedToolCallIds } = collectCursorToolHistory(messages, historyEnd);
 	const entries: Uint8Array[] = [...systemPromptIds];
 	const pushJson = (obj: unknown) => {
 		const bytes = new TextEncoder().encode(JSON.stringify(obj));
@@ -5841,6 +6029,12 @@ function buildRootPromptMessagesJson(
 			if (content.length === 0) continue;
 			pushJson({ role: "user", content });
 		} else if (msg.role === "assistant") {
+			const replay = replays.get(i);
+			if (replay) {
+				for (const record of replay.records) entries.push(storeCursorBlob(blobStore, record));
+				for (const toolCallId of replay.toolCallIds) emittedResults.add(toolCallId);
+				continue;
+			}
 			const steps = buildCursorAssistantSteps(msg, targetModelId);
 			for (const [stepIndex, step] of steps.entries()) {
 				pushJson({ role: "assistant", content: step.content });
@@ -5985,12 +6179,12 @@ function createCursorToolCallStep(toolCall: ToolCall, result: ToolResultMessage 
 function buildConversationTurns(
 	messages: Message[],
 	blobStore: Map<string, Uint8Array>,
-	activeUserMessageIndex = findLastUserMessageIndex(messages),
-	targetModelId?: string,
+	activeUserMessageIndex: number,
+	targetModelId: string | undefined,
+	replays: ReadonlyMap<number, CursorRecordReplay>,
+	{ toolResults, pairedToolCallIds }: CursorToolHistory,
 ): Uint8Array[] {
 	const turns: Uint8Array[] = [];
-	const historyEnd = activeUserMessageIndex >= 0 ? activeUserMessageIndex : messages.length;
-	const { toolResults, pairedToolCallIds } = collectCursorToolHistory(messages, historyEnd);
 
 	let i = 0;
 	while (i < messages.length) {
@@ -6030,10 +6224,11 @@ function buildConversationTurns(
 							},
 						});
 					} else if (item.type === "thinking") {
-						// Same guard as root-prompt replay: only same-model Cursor K3
-						// thinking is replayed, so foreign/hidden reasoning never leaks
-						// into Cursor's turn history as native thinking.
-						if (!item.thinking || !canReplayCursorThinking(stepMsg, targetModelId)) continue;
+						// Thinking goes into Cursor's turn history only where the root
+						// prompt replays it: server records, or same-model K3 content.
+						if (!item.thinking || !(replays.has(i) || canReplayCursorThinking(stepMsg, targetModelId))) {
+							continue;
+						}
 						step = create(ConversationStepSchema, {
 							message: {
 								case: "thinkingMessage",
@@ -6086,16 +6281,27 @@ export function buildCursorHistoryForTest(
 	turnStepMessagesJson: JsonValue[][];
 } {
 	const blobStore = new Map<string, Uint8Array>();
+	const toolHistory = collectCursorToolHistory(messages, activeUserMessageIndex);
+	const replays = resolveCursorRecordReplays(messages, activeUserMessageIndex, "cursor", targetModelId, toolHistory);
 	const rootPromptMessagesJson = buildRootPromptMessagesJson(
 		messages,
 		[],
 		blobStore,
 		activeUserMessageIndex,
 		targetModelId,
+		replays,
+		toolHistory,
 	).map(blobId => JSON.parse(new TextDecoder().decode(readCursorBlob(blobStore, blobId))));
 	const turnUserMessagesJson: JsonValue[] = [];
 	const turnStepMessagesJson: JsonValue[][] = [];
-	for (const turnBlobId of buildConversationTurns(messages, blobStore, activeUserMessageIndex, targetModelId)) {
+	for (const turnBlobId of buildConversationTurns(
+		messages,
+		blobStore,
+		activeUserMessageIndex,
+		targetModelId,
+		replays,
+		toolHistory,
+	)) {
 		const turn = fromBinary(ConversationTurnStructureSchema, readCursorBlob(blobStore, turnBlobId));
 		if (turn.turn.case !== "agentConversationTurn") {
 			continue;
@@ -6416,7 +6622,8 @@ async function buildGrpcRequestForWireMode(
 
 /**
  * Rebuilds `rootPromptMessagesJson` and `turns` from `context.messages` over
- * the cached non-history side fields (todos, file states, summaries, …).
+ * the cached non-history side fields (todos, file states, summaries, …), with
+ * this model's own turns sent back as the records its server wrote for them.
  */
 function buildCursorConversationState(
 	model: Model<"cursor-agent">,
@@ -6426,9 +6633,17 @@ function buildCursorConversationState(
 	systemPromptIds: Uint8Array[],
 	historyEndIndex: number,
 ): ConversationStateStructure {
+	const toolHistory = collectCursorToolHistory(context.messages, historyEndIndex);
+	const replays = resolveCursorRecordReplays(context.messages, historyEndIndex, model.provider, model.id, toolHistory);
+	if (replays.size > 0) {
+		log("info", "replayedServerRecords", {
+			turns: replays.size,
+			records: [...replays.values()].reduce((count, replay) => count + replay.records.length, 0),
+		});
+	}
 	// Build conversation turns from prior messages, excluding only the active user message
 	// when the request is sending one. Resume actions must preserve trailing tool results.
-	const turns = buildConversationTurns(context.messages, blobStore, historyEndIndex, model.id);
+	const turns = buildConversationTurns(context.messages, blobStore, historyEndIndex, model.id, replays, toolHistory);
 
 	// Build `rootPromptMessagesJson` from prior messages. Cursor's server uses this
 	// field (not `turns[]`) to construct the actual model prompt; if we only send the
@@ -6440,6 +6655,8 @@ function buildCursorConversationState(
 		blobStore,
 		historyEndIndex,
 		model.id,
+		replays,
+		toolHistory,
 	);
 
 	// Preserve cached non-history state fields (todos, file states, summaries, etc.)
@@ -6466,9 +6683,9 @@ function buildCursorConversationState(
 					readPaths: [],
 				});
 
-	// Always override `rootPromptMessagesJson` and `turns` with content freshly built from
-	// `context.messages`. The server-echoed checkpoint replaces historical user entries
-	// with empty placeholders, so we cannot rely on the cached `rootPromptMessagesJson`.
+	// Always override `rootPromptMessagesJson` and `turns` with history built from
+	// `context.messages`: compaction, edits and branches rewrite it, and the cached
+	// checkpoint reflects none of them.
 	return create(ConversationStateStructureSchema, {
 		...baseState,
 		rootPromptMessagesJson,

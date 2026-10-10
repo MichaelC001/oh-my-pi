@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Cursor models never seeing their own earlier reasoning: a turn now keeps the records Cursor's server wrote for it, signed and redacted reasoning included, and sends them back unchanged to the same model, also after a resume
+
 ## [18.8.7] - 2026-10-09
 
 ### Added

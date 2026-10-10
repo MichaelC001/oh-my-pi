@@ -509,8 +509,9 @@ Cursor's integration in `packages/ai` operates over an HTTP/2 Connect RPC transp
 - **`rootPromptMessagesJson` & Blob Store**:
   - `buildGrpcRequest` passes conversation history as SHA-256 binary blob IDs (`blobStore`) in `rootPromptMessagesJson` and `turns`.
   - System prompts are stored as individual JSON blobs (`buildCursorSystemPromptJsons`), allowing independent server-side prefix blob caching hits when only downstream prompts change.
-- **Thinking Replay Safeguards**:
-  - Assistant thinking content is replayed in turn history (`canReplayCursorThinking`) only for same-model Kimi K3 variants (`assertCursorKimiK3HistoryReplayable`). Foreign or hidden reasoning is omitted to prevent leaking non-Cursor thinking blocks into native conversation turns.
+- **Thinking Replay**:
+  - A completed turn keeps the records Cursor's server wrote for it after the run's own user message (assistant and tool records with their reasoning, signatures and redacted reasoning) as a `cursorHistory` `providerPayload` (`captureCursorHistoryPayload`), provided the turn's last checkpoint came after all of its output and tool results; the digest is taken once the host has stored every tool result, server-owned tools included. Later requests to the same provider and model send those records back byte for byte (`resolveCursorRecordReplays`) while the turn's content and paired tool results still match that digest; another model's turns, and turns whose content or results were since rewritten (pruning, snapcompact, edits, secret redaction, a truncated result on resume), rebuild from content.
+  - Rebuilt turns carry no reasoning, except same-model Kimi K3 turns without usable records (`canReplayCursorThinking`, `assertCursorKimiK3HistoryReplayable`). Foreign or hidden reasoning is omitted to prevent leaking non-Cursor thinking blocks into native conversation turns.
 
 ### Stream behavior
 - **Length-Prefixed Connect Framing**:
