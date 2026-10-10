@@ -288,6 +288,8 @@ async function runComputer(
 		saveArtifact: full => saveComputerOutputArtifact(session, full),
 	});
 	const content: AgentToolResult<ComputerPreludeDetails>["content"] = [];
+	const notice = screenStateNotice(run.capabilities);
+	if (notice) content.push({ type: "text", text: notice });
 	if (cappedText) content.push({ type: "text", text: cappedText });
 	for (const image of run.displays) {
 		if (image.type === "image") content.push({ ...image, detail: "original" });
@@ -302,6 +304,34 @@ function stringifyReturnValue(value: unknown): string {
 	} catch {
 		return String(value);
 	}
+}
+
+/**
+ * Tells the model the run ended with the macOS screen locked or the display
+ * asleep, so lock-screen pixels, failed captures and input it cannot verify
+ * are not taken for the app's state. Input is never refused because of it.
+ */
+function screenStateNotice(capabilities: DesktopCapabilities | undefined): string | undefined {
+	if (!capabilities?.screenLocked && !capabilities?.displayAsleep) return undefined;
+	const { screenLocked, displayAsleep } = capabilities;
+	const state =
+		screenLocked && displayAsleep
+			? "the screen is locked and the display is asleep"
+			: screenLocked
+				? "the screen is locked"
+				: "the display is asleep";
+	const effects: string[] = [];
+	if (displayAsleep) effects.push("Nothing can be captured or clicked until the display wakes.");
+	else
+		effects.push(
+			"Screenshots show the lock screen, or a window's last frame behind it, so they cannot confirm what this run did. A background click still reaches the app behind the lock screen.",
+		);
+	if (screenLocked) {
+		effects.push(
+			"While locked, apps expose no accessibility windows, so keystrokes, takeover and accessibility actions fail. Nothing changes until someone unlocks the Mac.",
+		);
+	}
+	return `Note: when this run ended ${state}. ${effects.join(" ")}`;
 }
 
 function populateCapabilityDetails(

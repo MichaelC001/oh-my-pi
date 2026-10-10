@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- macOS desktop sessions keep the display awake while in use, releasing it five minutes after the last call or on close, and report `screenLocked`/`displayAsleep` in capabilities, captures and errors
+
 ## [18.8.7] - 2026-10-09
 
 ### Added

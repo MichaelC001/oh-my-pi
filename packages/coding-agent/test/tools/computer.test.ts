@@ -7,11 +7,12 @@ import { disposeAllKernelSessions, executePython } from "@oh-my-pi/pi-coding-age
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { computerApproval, createComputerPrelude } from "@oh-my-pi/pi-coding-agent/tools/computer";
 import { isReadOnlyComputerCall, renderComputerCall } from "@oh-my-pi/pi-coding-agent/tools/computer/call";
-import type {
-	ComputerSessionSnapshot,
-	ComputerWorkerInbound,
-	ComputerWorkerOutbound,
-	ComputerWorkerTransport,
+import {
+	type ComputerSessionSnapshot,
+	type ComputerWorkerInbound,
+	type ComputerWorkerOutbound,
+	type ComputerWorkerTransport,
+	SCREEN_LOCKED_CAPTURE_NOTE,
 } from "@oh-my-pi/pi-coding-agent/tools/computer/protocol";
 import {
 	type ComputerController,
@@ -59,6 +60,8 @@ const capabilities: DesktopCapabilities = {
 	menus: true,
 	heldInput: true,
 	spaces: true,
+	screenLocked: false,
+	displayAsleep: false,
 };
 
 const display: DesktopDisplay = {
@@ -103,7 +106,11 @@ const axNode: AxNode = {
 };
 
 class FakeNativeSession implements NativeDesktopSession {
-	readonly capabilities = capabilities;
+	/** Lock state reported by both captures and capabilities, as the native session reads it live. */
+	screenLocked = false;
+	get capabilities(): DesktopCapabilities {
+		return { ...capabilities, screenLocked: this.screenLocked };
+	}
 	clickCount = 0;
 	closeCount = 0;
 	cancelCount = 0;
@@ -133,6 +140,7 @@ class FakeNativeSession implements NativeDesktopSession {
 			target,
 			displays: [display],
 			backend: "fake",
+			screenLocked: this.screenLocked,
 		};
 	}
 	async captureRegion(_target: string, _region: CaptureRegion): Promise<DesktopCapture> {
@@ -1067,6 +1075,54 @@ describe("computer worker round trips", () => {
 			sourceWidth: 128,
 			sourceHeight: 64,
 		});
+	});
+
+	it("marks a screenshot taken behind the lock screen, and only then", async () => {
+		for (const locked of [true, false]) {
+			const transport = new MemoryTransport();
+			const native = new FakeNativeSession();
+			native.screenLocked = locked;
+			new ComputerWorkerCore(transport, () => native);
+
+			const result = await runWorker(transport, `locked-${locked}`, "return await desktop.screenshot()");
+			expect(result.ok).toBe(true);
+			if (!result.ok) return;
+			const [caption] = result.payload.displays.filter(block => block.type === "text");
+			const lines = caption?.type === "text" ? caption.text.split("\n") : [];
+			if (locked) {
+				expect(lines).toHaveLength(2);
+				expect(lines[1]).toBe(SCREEN_LOCKED_CAPTURE_NOTE);
+				expect(result.payload.screenshots[0]?.screenLocked).toBe(true);
+				expect(result.payload.returnValue).toMatchObject({ screenLocked: true });
+			} else {
+				expect(lines).toHaveLength(1);
+				expect(result.payload.screenshots[0]).not.toHaveProperty("screenLocked");
+				expect(result.payload.returnValue).not.toHaveProperty("screenLocked");
+			}
+		}
+	});
+
+	it("tells the model a run ended on a locked screen without refusing its input", async () => {
+		for (const locked of [true, false]) {
+			const session = toolSession();
+			const native = new FakeNativeSession();
+			native.screenLocked = locked;
+			const prelude = workerPrelude(session, native);
+			const result = await prelude.invoke(
+				{ action: "run", code: "await desktop.screenshot({ silent: true }); await desktop.click(1, 2)" },
+				{ session, toolCallId: `locked-run-${locked}`, signal: new AbortController().signal },
+			);
+			expect(native.clickCount).toBe(1);
+			const notes = result.content.filter(block => block.type === "text" && block.text.startsWith("Note: "));
+			if (locked) {
+				expect(result.content[0]).toMatchObject({
+					type: "text",
+					text: expect.stringMatching(/^Note: when this run ended the screen is locked\. /),
+				});
+			} else {
+				expect(notes).toEqual([]);
+			}
+		}
 	});
 
 	it("blocks read-only click after capture before invoking native input", async () => {

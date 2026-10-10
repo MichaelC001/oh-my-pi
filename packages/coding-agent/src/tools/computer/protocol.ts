@@ -34,6 +34,10 @@ export interface ComputerRunOk {
 	capabilities?: DesktopCapabilities;
 }
 
+/** Appended to a screenshot taken while the macOS lock screen is up. */
+export const SCREEN_LOCKED_CAPTURE_NOTE =
+	"screen locked: macOS is showing its lock screen, so a display capture shows the lock screen and a window capture shows that window's last frame behind it";
+
 /** Screenshot or zoom emitted during one computer run, with its full input coordinate frame. */
 export interface ComputerScreenshot {
 	path: string;
@@ -45,6 +49,8 @@ export interface ComputerScreenshot {
 	sourceWidth?: number;
 	sourceHeight?: number;
 	target: string;
+	/** The macOS lock screen was up: a display capture shows it, a window capture shows the window's last frame. */
+	screenLocked?: true;
 }
 
 /** Clone-safe error metadata returned across the worker boundary. */

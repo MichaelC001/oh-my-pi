@@ -1234,6 +1234,16 @@ export interface DesktopCapabilities {
   inputPermission: string
   axPermission: string
   displayCount: number
+  /**
+   * The user session is locked (lock screen up). Only macOS detects this;
+   * other backends report `false`.
+   */
+  screenLocked: boolean
+  /**
+   * The display is asleep, so nothing can be captured until it wakes. Only
+   * macOS detects this; other backends report `false`.
+   */
+  displayAsleep: boolean
 }
 
 export interface DesktopCapture {
@@ -1259,6 +1269,12 @@ export interface DesktopCapture {
   displays: Array<DesktopDisplay>
   backend: string
   displayServer?: string
+  /**
+   * The user session was locked when this frame was taken: a display
+   * capture shows the lock screen, and a window capture shows the window's
+   * last frame behind it. Only macOS detects this; others report `false`.
+   */
+  screenLocked: boolean
 }
 
 export interface DesktopControlState {

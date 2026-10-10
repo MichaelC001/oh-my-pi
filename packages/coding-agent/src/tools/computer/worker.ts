@@ -35,13 +35,14 @@ import {
 } from "../run-scope";
 import { ToolAbortError, throwIfAborted } from "../tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-import type {
-	ComputerScreenshot,
-	ComputerSessionSnapshot,
-	ComputerWorkerInbound,
-	ComputerWorkerTransport,
-	RunErrorPayload,
-	ToolReply,
+import {
+	type ComputerScreenshot,
+	type ComputerSessionSnapshot,
+	type ComputerWorkerInbound,
+	type ComputerWorkerTransport,
+	type RunErrorPayload,
+	SCREEN_LOCKED_CAPTURE_NOTE,
+	type ToolReply,
 } from "./protocol";
 
 /** Native desktop operations consumed by the script runtime. */
@@ -104,7 +105,7 @@ type InputOptions = { takeover?: boolean };
 type ScreenshotOptions = { silent?: boolean };
 type ScreenshotResult = Pick<
 	ComputerScreenshot,
-	"path" | "width" | "height" | "coordinateWidth" | "coordinateHeight" | "region"
+	"path" | "width" | "height" | "coordinateWidth" | "coordinateHeight" | "region" | "screenLocked"
 >;
 type ClickOptions = InputOptions & { button?: string; count?: number; modifiers?: string[] };
 type DragOptions = InputOptions & { modifiers?: string[]; keys?: string[] };
@@ -278,6 +279,7 @@ async function emitScreenshot(
 		coordinateWidth: frame.coordinateWidth,
 		coordinateHeight: frame.coordinateHeight,
 		...(frame.region ? { region: frame.region } : {}),
+		...(frame.screenLocked ? { screenLocked: true as const } : {}),
 	};
 	const scaled = frame.width !== frame.sourceWidth || frame.height !== frame.sourceHeight;
 	context.screenshots.push({
@@ -289,11 +291,12 @@ async function emitScreenshot(
 	if (!options?.silent) {
 		const dimensions = `${frame.width}×${frame.height}${scaled ? ` (scaled from ${frame.sourceWidth}×${frame.sourceHeight})` : ""}`;
 		const coordinates = `coordinateWidth=${frame.coordinateWidth} coordinateHeight=${frame.coordinateHeight}`;
+		const captured = frame.region
+			? `zoom ${frame.target} ${dimensions}; region=${JSON.stringify(frame.region)}; ${coordinates}; use the base full screenshot coordinates for input, not zoom pixels → ${destination}`
+			: `screenshot ${frame.target} ${dimensions}; ${coordinates} → ${destination}`;
 		context.output.push({
 			type: "text",
-			text: frame.region
-				? `zoom ${frame.target} ${dimensions}; region=${JSON.stringify(frame.region)}; ${coordinates}; use the base full screenshot coordinates for input, not zoom pixels → ${destination}`
-				: `screenshot ${frame.target} ${dimensions}; ${coordinates} → ${destination}`,
+			text: frame.screenLocked ? `${captured}\n${SCREEN_LOCKED_CAPTURE_NOTE}` : captured,
 		});
 		context.output.push({
 			type: "image",
