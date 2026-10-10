@@ -4,7 +4,7 @@
 
 ### Added
 
-- Extensions can call `/annotate` as an API through `ctx.annotations`: `submit` turns supplied notes on text, a file, the latest reply, a diff, uncommitted changes, or a PR into the same feedback `/annotate` builds, with no UI, and `open` mounts the annotation overlay on a chosen source and returns the operator's notes ([#15260](https://github.com/can1357/oh-my-pi/pull/15260) by [@Shadorain](https://github.com/Shadorain))
+- Added `ctx.annotations` so extensions can submit or collect `/annotate` feedback on text and diffs ([#15260](https://github.com/can1357/oh-my-pi/pull/15260) by [@Shadorain](https://github.com/Shadorain))
 
 ## [18.8.8] - 2026-10-10
 

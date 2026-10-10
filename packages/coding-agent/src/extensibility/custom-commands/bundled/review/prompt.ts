@@ -78,12 +78,29 @@ export function formatCodeReviewAnnotations(
 	});
 }
 
+/** Build pasteable notes or a full review request from a frozen diff. */
+export function buildCodeReviewFeedback(
+	target: ResolvedReviewTarget,
+	annotations: readonly CodeReviewAnnotation[],
+	review: boolean,
+	focus: string | undefined,
+): string | undefined {
+	const formatted = formatCodeReviewAnnotations(annotations, {
+		forReviewer: review,
+		supplementalInstructions: focus,
+	});
+	return review ? buildReviewPrompt(target, formatted) : formatted;
+}
+
 /** Renders a review request from one frozen target snapshot. */
 export function buildReviewPrompt(target: ResolvedReviewTarget, additionalInstructions?: string): string {
-	// A supplied patch has no checkout to re-run `git diff` against, so it is always embedded in full.
 	const skipDiff =
-		target.kind !== "patch" &&
-		(target.rawDiff.length > LARGE_DIFF_CHARACTER_LIMIT || target.snapshot.files.length > LARGE_DIFF_FILE_LIMIT);
+		target.rawDiff.length > LARGE_DIFF_CHARACTER_LIMIT || target.snapshot.files.length > LARGE_DIFF_FILE_LIMIT;
+	if (target.kind === "patch" && skipDiff) {
+		throw new Error(
+			`Supplied diff exceeds the review limit (${LARGE_DIFF_CHARACTER_LIMIT} characters or ${LARGE_DIFF_FILE_LIMIT} files); split it into smaller patches.`,
+		);
+	}
 	const linesPerFile = skipDiff ? Math.max(5, Math.floor(100 / target.snapshot.files.length)) : 0;
 	const files = target.snapshot.files.map(file => renderReviewPromptFile(file, linesPerFile));
 	const agentCount = getRecommendedReviewAgentCount(target.snapshot);
@@ -100,6 +117,7 @@ export function buildReviewPrompt(target: ResolvedReviewTarget, additionalInstru
 		rawDiff: target.rawDiff.trim(),
 		diffInstruction: target.diffInstruction,
 		contextInstruction: target.contextInstruction,
+		suppliedPatch: target.kind === "patch",
 		additionalInstructions: additionalInstructions?.trim(),
 	});
 }

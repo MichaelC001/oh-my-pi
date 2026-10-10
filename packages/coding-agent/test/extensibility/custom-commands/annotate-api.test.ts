@@ -5,9 +5,9 @@ import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensi
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import {
 	type AnnotationContext,
@@ -92,9 +92,9 @@ describe("annotations API: submit", () => {
 	});
 
 	it("reads a file source relative to the live session cwd and rejects a missing file", async () => {
-		const directory = await mkdtemp(join(tmpdir(), "annotate-api-"));
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "annotate-api-"));
 		try {
-			await writeFile(join(directory, "doc.txt"), "first\nsecond\n");
+			await fs.writeFile(path.join(directory, "doc.txt"), "first\nsecond\n");
 			const { api } = createContext({ cwd: directory });
 
 			const result = await api.submit({
@@ -108,7 +108,7 @@ describe("annotations API: submit", () => {
 				api.submit({ source: { kind: "file", path: "absent.txt" }, notes: [{ note: "x" }] }),
 			).rejects.toThrow('Unable to read annotation file "absent.txt"');
 		} finally {
-			await rm(directory, { recursive: true, force: true });
+			await fs.rm(directory, { recursive: true, force: true });
 		}
 	});
 
@@ -312,7 +312,7 @@ new file mode 100644
 		expect(result.annotations).toMatchObject([{ scope: "line", path: "A.ts", rawLine: "+fresh" }]);
 	});
 
-	it("embeds a large supplied patch in full instead of pointing reviewers at a git diff that lacks it", async () => {
+	it("rejects a supplied review patch over the file limit before sending it", async () => {
 		const files = Array.from(
 			{ length: 21 },
 			(_, index) => `diff --git a/f${index}.ts b/f${index}.ts
@@ -323,19 +323,43 @@ new file mode 100644
 +new${index}
 `,
 		).join("");
-		const { api } = createContext();
+		const { api, sendUserMessage, pasteToEditor } = createContext();
 
+		await expect(
+			api.submit({
+				source: { kind: "diff", diff: files },
+				notes: [{ path: "f20.ts", line: 1, note: "last file" }],
+				review: true,
+			}),
+		).rejects.toThrow("exceeds the review limit");
+		expect(sendUserMessage).not.toHaveBeenCalled();
+		expect(pasteToEditor).not.toHaveBeenCalled();
+	});
+
+	it("accepts the review character boundary and rejects one character beyond before sending", async () => {
+		const { api, sendUserMessage } = createContext();
+		const bounded = DIFF + " ".repeat(50_000 - DIFF.length);
 		const result = await api.submit({
-			source: { kind: "diff", diff: files },
-			notes: [{ path: "f20.ts", line: 1, note: "last file" }],
+			source: { kind: "diff", diff: bounded },
+			notes: [],
 			review: true,
 			deliver: "none",
 		});
+		expect(result.text).toContain(DIFF.trim());
+		await expect(
+			api.submit({ source: { kind: "diff", diff: bounded + " " }, notes: [], review: true }),
+		).rejects.toThrow("exceeds the review limit");
+		expect(sendUserMessage).not.toHaveBeenCalled();
+	});
 
-		expect(result.text).toContain("+new20");
-		expect(result.text).not.toContain("Diff Previews");
-		expect(result.text).toContain("NEVER re-run git diff");
-		expect(result.text).toContain("MUST NOT read local workspace files");
+	it("rejects paste in a non-editor host even when its notification UI is available", async () => {
+		const { api, pasteToEditor, sendUserMessage } = createContext({ mode: "json", hasUI: true });
+		const request = { source: { kind: "text" as const, text: "line" }, notes: [{ note: "feedback" }] };
+		await expect(api.submit(request)).rejects.toThrow("Cannot paste annotation feedback");
+		await expect(api.submit({ ...request, deliver: "paste" })).rejects.toThrow("Cannot paste annotation feedback");
+		expect(pasteToEditor).not.toHaveBeenCalled();
+		const result = await api.submit({ ...request, deliver: "send" });
+		expect(sendUserMessage).toHaveBeenCalledWith(result.text);
 	});
 
 	it("mounts the overlay through a handler-scoped ui, not the runner's raw ui", async () => {

@@ -3,6 +3,7 @@ import type {
 	AnnotationDiffNote,
 	AnnotationDiffSource,
 	AnnotationResult,
+	AnnotationSource,
 	AnnotationTextNote,
 	AnnotationTextSource,
 	ExtensionAnnotationsAPI,
@@ -15,7 +16,7 @@ import type {
 	TextReviewSource,
 } from "@oh-my-pi/pi-tui/overlays/annotation-types";
 import { fetchPrReviewTarget, parseReviewPrRef } from "../review";
-import { buildReviewPrompt, formatCodeReviewAnnotations } from "../review/prompt";
+import { buildCodeReviewFeedback } from "../review/prompt";
 import {
 	createResolvedReviewTarget,
 	getReviewTargetIssue,
@@ -29,23 +30,6 @@ import { latestAssistantTextReviewSource } from "./text-source";
 
 /** The slice of an extension context the annotation API reads. */
 export type AnnotationContext = Pick<ExtensionContext, "ui" | "mode" | "hasUI" | "cwd" | "sessionManager">;
-
-/**
- * Render diff annotations the way `/annotate code-review` does: pasteable notes, or the
- * full `/review` request with the notes as operator focus when `review` is set.
- */
-export function buildCodeReviewFeedback(
-	target: ResolvedReviewTarget,
-	annotations: readonly CodeReviewAnnotation[],
-	review: boolean,
-	focus: string | undefined,
-): string | undefined {
-	const formatted = formatCodeReviewAnnotations(annotations, {
-		forReviewer: review,
-		supplementalInstructions: focus,
-	});
-	return review ? buildReviewPrompt(target, formatted) : formatted;
-}
 
 async function resolveTextSource(ctx: AnnotationContext, source: AnnotationTextSource): Promise<TextReviewSource> {
 	const sessionId = ctx.sessionManager.getSessionId();
@@ -73,11 +57,6 @@ async function resolveDiffTarget(ctx: AnnotationContext, source: AnnotationDiffS
 				source.label ?? "Reviewing a supplied diff",
 				source.diff,
 				"The supplied diff is empty",
-				{
-					// The caller's patch need not match the checkout, so reviewers must not read local files for it.
-					contextInstruction:
-						"MUST NOT read local workspace files for file context; the supplied diff may not match the checkout",
-				},
 			);
 			break;
 		case "uncommitted":
@@ -171,13 +150,19 @@ function deliver(
 		sendUserMessage(text);
 		return "send";
 	}
-	if (!ctx.hasUI) {
+	if (!ctx.hasUI || ctx.mode !== "tui") {
 		throw new Error(
 			`Cannot paste annotation feedback without an editor (mode "${ctx.mode}"); deliver with "send" or "none".`,
 		);
 	}
 	ctx.ui.pasteToEditor(text);
 	return "paste";
+}
+
+function isTextRequest<T extends { source: AnnotationSource }>(
+	request: T,
+): request is Extract<T, { source: AnnotationTextSource }> {
+	return request.source.kind === "text" || request.source.kind === "file" || request.source.kind === "last";
 }
 
 /**
@@ -191,9 +176,9 @@ export function createAnnotationsAPI(
 	return {
 		async submit(request) {
 			const ctx = getContext();
-			if (request.source.kind === "text" || request.source.kind === "file" || request.source.kind === "last") {
+			if (isTextRequest(request)) {
 				const source = await resolveTextSource(ctx, request.source);
-				const annotations = matchTextNotes(source, request.notes as AnnotationTextNote[]);
+				const annotations = matchTextNotes(source, request.notes);
 				const text = buildTextReviewPrompt(source, annotations);
 				return {
 					text,
@@ -202,11 +187,10 @@ export function createAnnotationsAPI(
 					annotations,
 				};
 			}
-			const diffRequest = request as Extract<typeof request, { source: AnnotationDiffSource }>;
-			const target = await resolveDiffTarget(ctx, diffRequest.source);
-			const annotations = matchDiffNotes(target, diffRequest.notes);
-			const review = diffRequest.review === true;
-			const text = buildCodeReviewFeedback(target, annotations, review, diffRequest.focus);
+			const target = await resolveDiffTarget(ctx, request.source);
+			const annotations = matchDiffNotes(target, request.notes);
+			const review = request.review === true;
+			const text = buildCodeReviewFeedback(target, annotations, review, request.focus);
 			return {
 				text,
 				delivered: deliver(ctx, sendUserMessage, text, review, request.deliver),
@@ -219,7 +203,7 @@ export function createAnnotationsAPI(
 			if (ctx.mode !== "tui") {
 				throw new Error(`The annotation overlay needs the interactive TUI (mode "${ctx.mode}"); use submit.`);
 			}
-			if (request.source.kind === "text" || request.source.kind === "file" || request.source.kind === "last") {
+			if (isTextRequest(request)) {
 				let source = await resolveTextSource(ctx, request.source);
 				const result = await showTextReviewOverlay(ctx, source);
 				if (!result) return undefined;
@@ -233,12 +217,11 @@ export function createAnnotationsAPI(
 					...(result.editedText === undefined ? {} : { editedText: result.editedText }),
 				};
 			}
-			const diffRequest = request as Extract<typeof request, { source: AnnotationDiffSource }>;
-			const target = await resolveDiffTarget(ctx, diffRequest.source);
+			const target = await resolveDiffTarget(ctx, request.source);
 			const result = await showCodeReviewOverlay(ctx, target);
 			if (!result) return undefined;
 			const review = result.action === "review";
-			const text = buildCodeReviewFeedback(target, result.annotations, review, diffRequest.focus);
+			const text = buildCodeReviewFeedback(target, result.annotations, review, request.focus);
 			return {
 				text,
 				delivered: deliver(ctx, sendUserMessage, text, review, request.deliver),

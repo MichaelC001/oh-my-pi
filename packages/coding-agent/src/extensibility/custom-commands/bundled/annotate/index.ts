@@ -14,7 +14,7 @@ import {
 	selectReviewChoice,
 	type ReviewPrRef,
 } from "../review";
-import { buildCodeReviewFeedback } from "./api";
+import { buildCodeReviewFeedback } from "../review/prompt";
 import {
 	getReviewTargetIssue,
 	type LocalReviewKind,
