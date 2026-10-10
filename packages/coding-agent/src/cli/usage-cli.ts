@@ -13,6 +13,7 @@ import {
 	type AuthStorage,
 	type DisabledCredentialSummary,
 	type OAuthAccountIdentity,
+	type ResetCreditRedeemOutcome,
 	isWithinUsageReserve,
 	resolveCredentialIdentityKey,
 	resolveUsedFraction,
@@ -32,6 +33,17 @@ import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
 import { resolveAuthBrokerConfig } from "../session/auth-broker-config";
 import { collapseSharedUsageReports, summarizeUsageResetCredits } from "@oh-my-pi/pi-tui/overlays/usage-display";
 import { formatCodexUsageReportLabel } from "../slash-commands/helpers/active-oauth-account";
+import { errorMessage } from "../slash-commands/helpers/parse";
+import {
+	describeRedeemOutcome,
+	formatResetProviderName,
+	formatResetUsageAccountLine,
+	normalizeResetProvider,
+	oneLine,
+	parseResetUsageTarget,
+	resolveResetUsageTarget,
+	toResetUsageAccount,
+} from "../slash-commands/helpers/reset-usage";
 import {
 	accountIdentityLabel,
 	collectStoredAccounts,
@@ -48,6 +60,8 @@ export interface UsageCommandArgs {
 	action?: string;
 	json?: boolean;
 	provider?: string;
+	/** `<provider>/<credential id>` saved reset to spend (with the `reset` action). */
+	target?: string;
 	redact?: boolean;
 	/** Show recorded usage-limit history instead of a live snapshot. */
 	history?: boolean;
@@ -1159,6 +1173,130 @@ function formatOAuthIdentityKeys(rows: readonly OAuthIdentityKeyRow[]): string {
 	return lines.join("\n");
 }
 
+const RESET_COMMAND = "omp usage reset";
+
+function failUsageReset(message: string): void {
+	process.stderr.write(chalk.red(`${message}\n`));
+	process.exitCode = 1;
+}
+
+/**
+ * `omp usage reset [<provider>/<credential id>]`: list every stored Codex and
+ * Claude account's saved resets, or spend one on the named account. Both run in
+ * this process with the store's tokens, so a broker client works like the host.
+ */
+async function runUsageResetCommand(
+	cmd: UsageCommandArgs,
+	settings: Settings,
+	authStorage: AuthStorage,
+): Promise<void> {
+	let providers = ["openai-codex", "anthropic"];
+	if (cmd.target) {
+		const target = parseResetUsageTarget(cmd.target, RESET_COMMAND);
+		if ("error" in target) {
+			failUsageReset(target.error);
+			return;
+		}
+		if (target.account === "active") {
+			failUsageReset(
+				`\`${RESET_COMMAND}\` runs outside a session, so no account is active. Name one by the credential id \`${RESET_COMMAND}\` lists.`,
+			);
+			return;
+		}
+		providers = [target.provider];
+	} else if (cmd.provider) {
+		const provider = normalizeResetProvider(cmd.provider);
+		if (!provider) {
+			failUsageReset(
+				"Saved resets exist only for Codex and Claude accounts. Use --provider openai-codex or anthropic.",
+			);
+			return;
+		}
+		providers = [provider];
+	}
+	const modelRegistry = await loadUsageSources(cmd, settings, authStorage);
+	const baseUrlResolver = (provider: string) => modelRegistry.getProviderBaseUrl(provider);
+	const statuses = (
+		await Promise.all(providers.map(provider => authStorage.resets.list({ provider, baseUrlResolver })))
+	).flat();
+	const redaction = cmd.redact
+		? buildRedactionMap(
+				statuses.flatMap(status =>
+					[status.email, status.accountId, status.orgId, status.orgName].filter(
+						(value): value is string => !!value,
+					),
+				),
+			)
+		: undefined;
+	const shownStatuses = redaction
+		? statuses.map(status => ({
+				...status,
+				email: maskIdentity(redaction, status.email),
+				accountId: maskIdentity(redaction, status.accountId),
+				orgId: maskIdentity(redaction, status.orgId),
+				orgName: maskIdentity(redaction, status.orgName),
+			}))
+		: statuses;
+	// Index for index with `statuses`, so a spend takes the stored row's unmasked target.
+	const accounts = shownStatuses.map(toResetUsageAccount);
+
+	if (!cmd.target) {
+		if (cmd.json) {
+			const rows = shownStatuses.map((status, index) => {
+				const account = accounts[index];
+				return {
+					provider: status.provider,
+					credentialId: status.credentialId,
+					email: status.email,
+					accountId: status.accountId,
+					orgId: status.orgId,
+					orgName: status.orgName,
+					availableCount: account.availableCount,
+					redeemableCount: account.redeemableCount,
+					nextCreditId: status.nextCreditId,
+					soonestExpiry: account.expiresAt,
+					unavailableReason: account.unavailableReason,
+					error: account.error,
+					credits: status.credits,
+				};
+			});
+			process.stdout.write(`${JSON.stringify({ generatedAt: Date.now(), accounts: rows }, null, 2)}\n`);
+			return;
+		}
+		if (accounts.length === 0) {
+			const names = providers.map(formatResetProviderName).join(" or ");
+			process.stderr.write(chalk.yellow(`No ${names} accounts found. Run \`omp\` and use /login to add one.\n`));
+			process.exitCode = 1;
+			return;
+		}
+		const lines = ["Saved rate-limit resets:", ...accounts.map(formatResetUsageAccountLine)];
+		lines.push("", `Spend one with \`${RESET_COMMAND} <provider>/<credential id>\`.`);
+		process.stdout.write(`${lines.join("\n")}\n`);
+		return;
+	}
+
+	const resolved = resolveResetUsageTarget(accounts, cmd.target, RESET_COMMAND);
+	if ("error" in resolved) {
+		failUsageReset(resolved.error);
+		return;
+	}
+	const { label, provider } = resolved.account;
+	const { target } = toResetUsageAccount(statuses[accounts.indexOf(resolved.account)]);
+	let outcome: ResetCreditRedeemOutcome;
+	try {
+		outcome = await authStorage.resets.redeem({ target, baseUrlResolver });
+	} catch (error) {
+		// A transport failure can land after the provider applied the reset.
+		outcome = { ok: false, code: "network_error", provider, reason: errorMessage(error) };
+	}
+	const message = oneLine(describeRedeemOutcome(outcome, label));
+	if (outcome.ok) {
+		process.stdout.write(`${message}\n`);
+	} else {
+		failUsageReset(message);
+	}
+}
+
 export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 	const settings = await Settings.loadReadOnly();
 	const authStorage = await discoverAuthStorage(undefined, { settings });
@@ -1219,6 +1357,10 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 				return;
 			}
 			process.stdout.write(`${formatOAuthIdentityKeys(rows)}\n`);
+			return;
+		}
+		if (cmd.action === "reset") {
+			await runUsageResetCommand(cmd, settings, authStorage);
 			return;
 		}
 		if (cmd.action === "clients") {

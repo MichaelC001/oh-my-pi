@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import type { UsageReport } from "@oh-my-pi/pi-ai";
+import { AuthStorage, type OAuthCredential, SqliteAuthCredentialStore, type UsageReport } from "@oh-my-pi/pi-ai";
+import { AuthBrokerClient, RemoteAuthCredentialStore, startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import {
 	buildRedactionMap,
@@ -1320,6 +1322,317 @@ describe("omp usage accounts", () => {
 		} finally {
 			vi.restoreAllMocks();
 			authStorage.close();
+		}
+	});
+});
+
+describe("omp usage reset", () => {
+	interface ResetRequest {
+		method: string;
+		path: string;
+		bearer: string | null;
+		body?: Record<string, unknown>;
+	}
+	const soon = new Date(Date.now() + 2 * 24 * HOUR).toISOString();
+	const late = new Date(Date.now() + 20 * 24 * HOUR).toISOString();
+	const oauth = (access: string, identity: Partial<OAuthCredential>): OAuthCredential => ({
+		type: "oauth",
+		access,
+		refresh: `refresh-${access}`,
+		expires: Date.now() + HOUR,
+		...identity,
+	});
+
+	let requests: ResetRequest[];
+	/** Codex consume answer; an Error stands in for a dropped connection. */
+	let codexConsume: { status: number; body: unknown } | Error;
+	let authStorage: AuthStorage;
+	let stdout: string;
+	let stderr: string;
+
+	/** Codex and Claude reset endpoints: `codex-team` banks two credits, `codex-spare` none, Claude one grant. */
+	const usageFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+		const url = new URL(String(input));
+		const method = init?.method ?? "GET";
+		const bearer = new Headers(init?.headers).get("authorization");
+		const body = typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
+		requests.push({ method, path: url.pathname, bearer, ...(body ? { body } : {}) });
+		if (url.pathname.endsWith("/wham/rate-limit-reset-credits/consume")) {
+			if (codexConsume instanceof Error) throw codexConsume;
+			return Response.json(codexConsume.body, { status: codexConsume.status });
+		}
+		if (url.pathname.endsWith("/wham/rate-limit-reset-credits")) {
+			const credits =
+				bearer === "Bearer codex-team" || bearer === "Bearer broker-codex"
+					? [
+							{ id: "credit-late", status: "available", expires_at: late },
+							{ id: "credit-soon", status: "available", expires_at: soon },
+						]
+					: [];
+			return Response.json({ credits, available_count: credits.length });
+		}
+		if (url.pathname.endsWith("/reset_rate_limits")) {
+			return Response.json({ result: "reset", resets_left: 0, cleared: ["five_hour"] });
+		}
+		if (url.pathname.endsWith("/api/oauth/usage")) {
+			return Response.json({
+				five_hour: { utilization: 100, resets_at: new Date(Date.now() + 2 * HOUR).toISOString() },
+				seven_day: { utilization: 40, resets_at: new Date(Date.now() + 72 * HOUR).toISOString() },
+				cedar_ember: {
+					eligible: true,
+					at_limit: true,
+					exhausted: ["five_hour"],
+					next_grant_id: "saved-reset",
+					grants: [
+						{
+							id: "saved-reset",
+							label: "Saved session reset",
+							resets_total: 1,
+							resets_left: 1,
+							starts_at: new Date(Date.now() - HOUR).toISOString(),
+							ends_at: soon,
+							clears: ["five_hour"],
+							paused: false,
+							usable_now: true,
+							use_requires_limit: true,
+							percent_used: { five_hour: 100 },
+							blocking: [],
+						},
+					],
+				},
+			});
+		}
+		return new Response("not found", { status: 404 });
+	}) as typeof fetch;
+
+	const consumes = () => requests.filter(request => request.method === "POST");
+
+	beforeEach(async () => {
+		requests = [];
+		codexConsume = { status: 200, body: { code: "reset" } };
+		authStorage = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")), { usageFetch });
+		await authStorage.credentials.set("openai-codex", [
+			oauth("codex-team", { email: "dev@example.test", accountId: "acct-team" }),
+			oauth("codex-spare", { email: "spare@example.test", accountId: "acct-spare" }),
+		]);
+		await authStorage.credentials.set(
+			"anthropic",
+			oauth("claude-max", { email: "dev@example.test", orgId: "org-claude", orgName: "Acme Corp" }),
+		);
+		vi.spyOn(Settings, "loadReadOnly").mockResolvedValue(Settings.isolated());
+		vi.spyOn(sdkModule, "discoverAuthStorage").mockResolvedValue(authStorage);
+		stdout = "";
+		stderr = "";
+		vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
+			stdout += String(chunk);
+			return true;
+		});
+		vi.spyOn(process.stderr, "write").mockImplementation(chunk => {
+			stderr += String(chunk);
+			return true;
+		});
+		process.exitCode = 0;
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		process.exitCode = 0;
+	});
+
+	function credentialIds() {
+		const [team, spare] = authStorage.oauth.accounts("openai-codex").map(account => account.credentialId);
+		const [claude] = authStorage.oauth.accounts("anthropic").map(account => account.credentialId);
+		return { team, spare, claude };
+	}
+
+	it("lists every stored Codex and Claude account by credential id and spends nothing", async () => {
+		const { team, spare, claude } = credentialIds();
+		await runUsageCommand({ action: "reset", noExtensions: true });
+
+		const text = stripVTControlCharacters(stdout);
+		expect(text).toContain(`[Codex · openai-codex/${team}]: 2 saved, 2 usable now, expires ${soon}`);
+		expect(text).toContain(`spare@example.test [Codex · openai-codex/${spare}]: 0 saved, 0 usable now`);
+		expect(text).toContain(`dev@example.test · Acme Corp [Claude · anthropic/${claude}]: 1 saved, 1 usable now`);
+		expect(text).toContain("omp usage reset <provider>/<credential id>");
+		expect(consumes()).toEqual([]);
+		expect(process.exitCode).toBe(0);
+	});
+
+	it("prints credential ids, credit ids and expiries as JSON", async () => {
+		const { team, spare, claude } = credentialIds();
+		await runUsageCommand({ action: "reset", json: true, noExtensions: true });
+
+		const { accounts } = JSON.parse(stdout) as {
+			accounts: Array<{
+				provider: string;
+				credentialId: number;
+				redeemableCount: number;
+				nextCreditId?: string;
+				soonestExpiry?: string;
+				credits: Array<{ id: string; expiresAt?: string }>;
+			}>;
+		};
+		expect(
+			accounts.map(account => [
+				account.provider,
+				account.credentialId,
+				account.redeemableCount,
+				account.nextCreditId,
+				account.soonestExpiry,
+				account.credits.map(credit => [credit.id, credit.expiresAt]),
+			]),
+		).toEqual([
+			[
+				"openai-codex",
+				team,
+				2,
+				undefined,
+				soon,
+				[
+					["credit-late", late],
+					["credit-soon", soon],
+				],
+			],
+			["openai-codex", spare, 0, undefined, undefined, []],
+			["anthropic", claude, 1, "saved-reset", soon, [["saved-reset", soon]]],
+		]);
+		expect(consumes()).toEqual([]);
+	});
+
+	it("lists only the --provider alias's accounts", async () => {
+		const { claude } = credentialIds();
+		await runUsageCommand({ action: "reset", provider: "claude", json: true, noExtensions: true });
+
+		const { accounts } = JSON.parse(stdout) as { accounts: Array<{ provider: string; credentialId: number }> };
+		expect(accounts.map(account => [account.provider, account.credentialId])).toEqual([["anthropic", claude]]);
+		expect(requests.some(request => request.path.includes("/wham/"))).toBe(false);
+	});
+
+	const identities = ["dev@example.test", "spare@example.test", "acct-team", "org-claude", "Acme Corp"];
+
+	it.each([
+		["text", false],
+		["JSON", true],
+	])("masks account identities in the --redact %s listing and keeps credential ids", async (_format, json) => {
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", json, redact: true, noExtensions: true });
+
+		for (const identity of identities) expect(stdout).not.toContain(identity);
+		expect(stripVTControlCharacters(stdout)).toContain(json ? `"credentialId": ${team}` : `openai-codex/${team}`);
+	});
+
+	it("spends on the stored account, not the masked label, under --redact", async () => {
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${team}`, redact: true, noExtensions: true });
+
+		for (const identity of identities) expect(stdout).not.toContain(identity);
+		expect(stripVTControlCharacters(stdout)).toContain("Reset applied for de* (Codex)");
+		expect(consumes().map(request => [request.bearer, request.body?.account_id])).toEqual([
+			["Bearer codex-team", "acct-team"],
+		]);
+	});
+
+	it("spends the named Codex account's soonest-expiring credit", async () => {
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${team}`, noExtensions: true });
+
+		expect(stripVTControlCharacters(stdout)).toContain("Reset applied for dev@example.test (Codex)");
+		expect(consumes().map(request => [request.path, request.bearer, request.body?.credit_id])).toEqual([
+			["/backend-api/wham/rate-limit-reset-credits/consume", "Bearer codex-team", "credit-soon"],
+		]);
+		expect(process.exitCode).toBe(0);
+	});
+
+	it("spends the listed Claude grant through the claude alias", async () => {
+		const { claude } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `claude/${claude}`, noExtensions: true });
+
+		expect(stripVTControlCharacters(stdout)).toContain("Reset applied for dev@example.test · Acme Corp (Claude)");
+		expect(consumes().map(request => [request.path, request.bearer, request.body?.grant_id])).toEqual([
+			["/api/organizations/org-claude/reset_rate_limits", "Bearer claude-max", "saved-reset"],
+		]);
+		expect(process.exitCode).toBe(0);
+	});
+
+	it.each([
+		["codex/active", "no account is active"],
+		["gemini/1", 'Unknown reset provider "gemini"'],
+		["codex/999", 'No stored account matches "codex/999"'],
+		["codex", "Choose an account with `omp usage reset <provider>/<credential id>`"],
+	])("refuses %s without spending", async (target, message) => {
+		await runUsageCommand({ action: "reset", target, noExtensions: true });
+
+		expect(stripVTControlCharacters(stderr)).toContain(message);
+		expect(stdout).toBe("");
+		expect(consumes()).toEqual([]);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("refuses an account with no usable reset without spending", async () => {
+		const { spare } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${spare}`, noExtensions: true });
+
+		expect(stripVTControlCharacters(stderr)).toContain(
+			"spare@example.test [Codex]: no saved resets usable right now",
+		);
+		expect(consumes()).toEqual([]);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it.each([
+		["the credit was already redeemed", { status: 200, body: { code: "already_redeemed" } }, "already redeemed"],
+		["nothing is constrained", { status: 200, body: { code: "nothing_to_reset" } }, "nothing to reset right now"],
+		["the provider errors", { status: 500, body: {} }, "reset was not confirmed (http_500)"],
+		["the connection drops", new Error("socket hang up"), "couldn't confirm whether the reset applied"],
+	])("exits nonzero when %s", async (_name, answer, message) => {
+		codexConsume = answer;
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${team}`, noExtensions: true });
+
+		expect(stripVTControlCharacters(stderr)).toContain(message);
+		expect(stdout).toBe("");
+		expect(consumes()).toHaveLength(1);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("spends on an auth-broker client with the broker's token from this process", async () => {
+		const brokerStore = new SqliteAuthCredentialStore(new Database(":memory:"));
+		const brokerStorage = new AuthStorage(brokerStore);
+		await brokerStorage.credentials.set(
+			"openai-codex",
+			oauth("broker-codex", { email: "fleet@example.test", accountId: "acct-fleet" }),
+		);
+		const handle = startAuthBroker({
+			storage: brokerStorage,
+			bind: "127.0.0.1:0",
+			bearerTokens: ["reset-bearer"],
+			disableRefresher: true,
+		});
+		const client = new AuthBrokerClient({ url: handle.url, token: "reset-bearer" });
+		const initial = await client.fetchSnapshot();
+		if (initial.status !== 200) throw new Error("expected a broker snapshot");
+		const remote = new RemoteAuthCredentialStore({
+			client,
+			initialSnapshot: initial.snapshot,
+			streamSnapshots: false,
+		});
+		const clientStorage = new AuthStorage(remote, { usageFetch });
+		try {
+			await clientStorage.credentials.reload();
+			vi.spyOn(sdkModule, "discoverAuthStorage").mockResolvedValue(clientStorage);
+			const [account] = clientStorage.oauth.accounts("openai-codex");
+			await runUsageCommand({ action: "reset", target: `codex/${account?.credentialId}`, noExtensions: true });
+
+			expect(stripVTControlCharacters(stdout)).toContain("Reset applied for fleet@example.test (Codex)");
+			expect(consumes().map(request => [request.bearer, request.body?.credit_id])).toEqual([
+				["Bearer broker-codex", "credit-soon"],
+			]);
+		} finally {
+			clientStorage.close();
+			remote.close();
+			await handle.close();
+			brokerStorage.close();
+			brokerStore.close();
 		}
 	});
 });
