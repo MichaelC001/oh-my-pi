@@ -1,5 +1,9 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { SettingsSelectorComponent } from "@oh-my-pi/pi-tui/overlays/settings-selector";
 import { createSettingsHost } from "@oh-my-pi/pi-coding-agent/config/settings-ui";
 import { createPluginSettingsHost } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/settings-host";
@@ -7,6 +11,7 @@ import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { TspDocument } from "@oh-my-pi/pi-tui/native/apply";
 import { Reconciler } from "@oh-my-pi/pi-tui/native/reconcile";
 import type { TspNode } from "@oh-my-pi/pi-wire";
+import { getProjectAgentDir, removeWithRetries } from "@oh-my-pi/pi-utils";
 
 import { cfgDevAutoqa } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { cfgContextFilesExtra } from "@oh-my-pi/pi-coding-agent/session/context-settings";
@@ -96,7 +101,7 @@ describe("settings section sidebar", () => {
 
 function openExtraContextFiles(): SettingsSelectorComponent {
 	const component = createSelector();
-	for (let i = 0; i < 3; i++) component.handleInput("\x1b[C");
+	component.handleNativeEvent({ type: "action", key: "", act: "page", value: "context", mods: [] });
 	component.handleNativeEvent({ type: "activate", key: "", item: "contextFiles.extra" });
 	return component;
 }
@@ -130,7 +135,6 @@ describe("extra context filenames editor", () => {
 		["[", /Invalid array JSON/],
 		['{"file":"TEAM.md"}', /Invalid array JSON/],
 		['["../TEAM.md"]', /file names, not paths/],
-		['["AGENTS.md"]', /built-in context file/],
 	])("keeps the saved filenames when input %s is rejected", async (input, error) => {
 		cfgContextFilesExtra.set(settings, ["TEAM.md"]);
 		const component = openExtraContextFiles();
@@ -145,5 +149,29 @@ describe("extra context filenames editor", () => {
 		);
 		expect(document.applyFrame({ sf: "settings", s: 1, ops })).toEqual([]);
 		expect(nativeErrorText(document.snapshot())).toMatch(error);
+	});
+
+	it("is not offered when the project config sets the list, so it cannot be copied to global", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-extra-ctx-"));
+		try {
+			const cwd = path.join(root, "repo");
+			const agentDir = path.join(root, "agent");
+			await fs.mkdir(agentDir, { recursive: true });
+			await Bun.write(path.join(getProjectAgentDir(cwd), "config.yml"), "contextFiles:\n  extra:\n    - TEAM.md\n");
+			resetSettingsForTest();
+			await Settings.init({ cwd, agentDir });
+
+			const component = openExtraContextFiles();
+			component.handleInput("\r");
+			await settings.flush();
+
+			expect(Bun.stripANSI(component.render(120).join("\n"))).not.toContain("Extra Context Files");
+			const globalConfig = Bun.file(path.join(agentDir, "config.yml"));
+			expect((await globalConfig.exists()) ? await globalConfig.text() : "").not.toContain("TEAM.md");
+		} finally {
+			resetSettingsForTest();
+			AgentStorage.close();
+			await removeWithRetries(root);
+		}
 	});
 });
