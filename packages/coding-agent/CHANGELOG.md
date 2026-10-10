@@ -40,6 +40,10 @@
 
 - Fixed ACP and browser diagnostics and SSH host listings pointing to the default location instead of the configured log or SSH config paths ([#14558](https://github.com/can1357/oh-my-pi/pull/14558) by [@Dante-dan](https://github.com/Dante-dan)).
 
+### Fixed
+
+- Concurrent SDK sessions can run their own async jobs; subagent IRC follow-up results reach only the owning top-level session ([#15229](https://github.com/can1357/oh-my-pi/issues/15229)).
+
 ## [18.8.8] - 2026-10-10
 
 ### Added
