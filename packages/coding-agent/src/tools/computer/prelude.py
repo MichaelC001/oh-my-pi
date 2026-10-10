@@ -59,12 +59,18 @@ def _make_computer():
         return {"method": method, "args": _arguments(args, kwargs)}
 
     class _Observation(dict):
-        """A non-silent observe() result; its repr leaves out the `ax` tree observe() already printed."""
+        """A non-silent observe() result; its displays leave out the `ax` tree observe() already printed."""
 
         __slots__ = ()
 
+        def _shown(self):
+            return {key: value for key, value in self.items() if key != "ax"}
+
         def __repr__(self):
-            return repr({key: value for key, value in self.items() if key != "ax"})
+            return repr(self._shown())
+
+        def _repr_mimebundle_(self, include=None, exclude=None):
+            return {"application/json": self._shown(), "text/plain": repr(self)}
 
     class _Element:
         __slots__ = ("ref", "role", "nativeRole", "title", "description", "enabled", "focused", "childCount")
@@ -201,8 +207,11 @@ def _make_computer():
             self.menu = _Menu(self, "menu")
 
         async def observe(self, options=None, **kwargs):
+            # The worker reads only the first options object: `options`, or the
+            # keywords when it is omitted. Read `silent` from it before awaiting.
+            sent = options if options is not None else {k: v for k, v in kwargs.items() if v is not None}
+            silent = isinstance(sent, dict) and bool(sent.get("silent"))
             observation = await self._method("observe", (options,), kwargs)
-            silent = kwargs.get("silent", (options or {}).get("silent"))
             if silent or not isinstance(observation, dict):
                 return observation
             return _Observation(observation)

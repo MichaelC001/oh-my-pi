@@ -127,10 +127,11 @@
 		}
 		defineMethod(win, "find", async query => (await callValue(via(step("find", [query])))).map(makeElement));
 		// A non-silent observe() already printed its tree; `ax` stays readable but is left out
-		// of display and serialization, so a trailing `await win.observe()` shows it once.
+		// of display, spread and serialization, so a trailing `await win.observe()` shows it once.
 		defineMethod(win, "observe", async options => {
+			const silent = Boolean(options?.silent);
 			const observation = await callValue(via(step("observe", [options])));
-			if (!options?.silent && typeof observation?.ax === "string") {
+			if (!silent && typeof observation?.ax === "string") {
 				Object.defineProperty(observation, "ax", { enumerable: false });
 			}
 			return observation;

@@ -1776,10 +1776,14 @@ describe("expanded computer APIs", () => {
 		});
 		runInContext(prelude.javascript, realm);
 		try {
-			const [observation, silent] = await runInContext(
+			const [mutated, observation, silent] = await runInContext(
 				`(async () => {
 					const win = await computer.window(42);
-					return [await win.observe(), await win.observe({ silent: true })];
+					const options = { silent: true };
+					const pending = win.observe(options);
+					options.silent = false;
+					const mutated = await pending;
+					return [mutated, await win.observe(), await win.observe({ silent: true })];
 				})()`,
 				realm,
 			);
@@ -1788,7 +1792,11 @@ describe("expanded computer APIs", () => {
 			// Eval displays a trailing value as its structured clone.
 			expect(structuredClone(observation)).not.toHaveProperty("ax");
 			expect(structuredClone(observation)).toMatchObject({ nodeCount: 1, truncated: false });
+			expect({ ...observation }).not.toHaveProperty("ax");
+			expect(JSON.parse(JSON.stringify(observation))).not.toHaveProperty("ax");
 			expect(structuredClone(silent)).toMatchObject({ ax: "- button [ref=e1]", nodeCount: 1 });
+			// The call ran silent, so its value keeps the only copy of the tree.
+			expect(structuredClone(mutated)).toMatchObject({ ax: "- button [ref=e1]" });
 		} finally {
 			await prelude.invoke({ action: "close" }, context);
 		}
@@ -1807,17 +1815,28 @@ describe("expanded computer APIs", () => {
 				toolSession: session,
 				kernelMode: "per-call",
 			});
+		// Everything the model reads from a cell: printed text and structured displays.
+		const trees = async (call: string) => {
+			const result = await run(`win = await computer.window(42)\n${call}`);
+			expect(result.exitCode).toBe(0);
+			return `${result.output}${JSON.stringify(result.displayOutputs)}`.split("- button [ref=e1]").length - 1;
+		};
 		try {
-			const trailing = await run("win = await computer.window(42)\nawait win.observe()");
-			expect(trailing.exitCode).toBe(0);
-			expect(trailing.output.split("- button [ref=e1]")).toHaveLength(2);
-			expect(trailing.output).toContain("'nodeCount': 1");
+			for (const call of [
+				"await win.observe()",
+				"display(await win.observe())",
+				"await win.observe(silent=True)",
+				"await win.observe({'silent': True})",
+				"await win.observe({'silent': True}, silent=None)",
+				"await win.observe({'silent': True}, silent=False)",
+				"await win.observe({'silent': False}, silent=True)",
+			]) {
+				expect([call, await trees(call)]).toEqual([call, 1]);
+			}
 			const read = await run(
 				"obs = await (await computer.window(42)).observe()\nprint(obs['ax'] == '- button [ref=e1]')",
 			);
 			expect(read.output.trim().split("\n").at(-1)).toBe("True");
-			const silent = await run("win = await computer.window(42)\nawait win.observe(silent=True)");
-			expect(silent.output.split("- button [ref=e1]")).toHaveLength(2);
 		} finally {
 			await prelude.invoke({ action: "close" }, { session, toolCallId: "observe-once-py" });
 		}
