@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Added
+
+- Exported `matchesReplacementCredential` and `isSameOAuthAccount`, which tell whether storing a credential replaces an existing account row and whether two credentials belong to the same account ([#14901](https://github.com/can1357/oh-my-pi/pull/14901) by [@will-bogusz](https://github.com/will-bogusz))
+
+### Fixed
+
+- Fixed custom OpenAI-compatible Responses streams truncating reasoning when a proxy omits the summary index after a completed section, and running custom tools such as `apply_patch` with empty input when the final item repeats `input: ""` ([#11863](https://github.com/can1357/oh-my-pi/pull/11863) by [@moodiness](https://github.com/moodiness))
+- Fixed Codex WebSocket prewarm to accept an optional service tier and send the model/tier routing hint consistently with normal requests, preserving omitted and explicit service-tier requests ([#15022](https://github.com/can1357/oh-my-pi/pull/15022) by [@xiangnan0811](https://github.com/xiangnan0811)).
+- Fixed the OAuth sign-in result page breaking or rendering injected markup when a provider error or callback value contains `</script>` or `$` replacement sequences ([#15037](https://github.com/can1357/oh-my-pi/pull/15037) by [@BAKocska](https://github.com/BAKocska)).
+- Fixed Anthropic requests failing with 400 "All tools cannot be deferred" when a conversation that had no tools gains them (`omp -p --no-tools`, then `omp -c`), or a resumed session keeps none of its earlier tools ([#15233](https://github.com/can1357/oh-my-pi/pull/15233) by [@will-bogusz](https://github.com/will-bogusz))
+
+## [18.8.9] - 2026-10-10
+
+### Changed
+
+- Updated state field rendering to trim trailing whitespace and normalize empty collection formatting for consistent prompt output
+
+## [18.8.8] - 2026-10-10
+
+### Fixed
+
+- Fixed OpenAI Responses and Codex tool calls running with empty `{}` arguments when a compatible host or proxy ends the call with an empty arguments payload after streaming the real ones ([#15099](https://github.com/can1357/oh-my-pi/pull/15099) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed truncated Factory Droid Gemini responses ending as a hard error or a half-received tool call instead of being retried ([#15103](https://github.com/can1357/oh-my-pi/pull/15103) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed Factory Droid Gemini ignoring an error the server reports mid-response, which hid its status and retried errors that cannot succeed ([#15103](https://github.com/can1357/oh-my-pi/pull/15103) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed resumed OpenAI Responses sessions (xAI, Factory Droid, OpenAI and other hosts) dropping all earlier encrypted reasoning on their first request; GitHub Copilot still rebuilds history until its first response ([#15148](https://github.com/can1357/oh-my-pi/pull/15148) by [@will-bogusz](https://github.com/will-bogusz))
+
 ## [18.8.7] - 2026-10-09
 
 ### Added

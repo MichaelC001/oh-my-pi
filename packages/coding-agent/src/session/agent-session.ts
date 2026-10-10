@@ -154,7 +154,7 @@ import type {
 	ToolInfo,
 	TreePreparation,
 } from "../extensibility/extensions";
-import { emitSessionShutdownEvent, TOP_LEVEL_AGENT } from "../extensibility/extensions";
+import { emitSessionShutdownEvent, TOP_LEVEL_AGENT, UNAVAILABLE_ANNOTATIONS } from "../extensibility/extensions";
 import { extensionEventFromSessionEvent } from "../extensibility/extensions/lifecycle-mirror";
 import { ManagedTimers } from "../extensibility/extensions/managed-timers";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
@@ -931,18 +931,9 @@ export class AgentSession implements SettingsScope {
 
 	readonly #eval: EvalRunner;
 	readonly #evalToolSession: ToolSession | undefined;
-	/**
-	 * AsyncJobManager owned by this session (top-level only). Subagents leave
-	 * this undefined and **MUST NOT** dispose the global instance on teardown.
-	 */
+	/** Manager owned by this top-level session; subagents borrow but never dispose it. */
 	readonly #ownedAsyncJobManager: AsyncJobManager | undefined;
-	/**
-	 * AsyncJobManager scoped to this session for introspection/cancellation.
-	 *
-	 * This differs from `#ownedAsyncJobManager`: subagents can inherit a parent
-	 * manager for their own owner id, while secondary top-level sessions are left
-	 * undefined to avoid reading the primary's jobs.
-	 */
+	/** Manager of this session's root, used for its own job queries and deliveries. */
 	readonly #asyncJobManager: AsyncJobManager | undefined;
 	/** Clears this session's owner delivery sink registration; set when a manager + agent id exist. */
 	#unregisterAsyncDeliverySink: (() => void) | undefined;
@@ -2373,7 +2364,7 @@ export class AgentSession implements SettingsScope {
 				this.#todo.syncFromBranch();
 				this.#modelMentions.syncFromBranch();
 			},
-			resetAdvisorRuntimes: (reason?: string) => this.#advisors.resetAllRuntimes(reason),
+			resetAdvisorRuntimes: (reason, options) => this.#advisors.resetAllRuntimes(reason, options),
 			rebaseAdvisorPrefix: reason => this.#advisors.rebaseDeliveredPrefixes(reason),
 			rebaseAfterCompaction: () => this.#stats.rebaseAfterCompaction(),
 			recordAnchoredHistoryRewrite: tokensRemoved => this.#stats.recordAnchoredHistoryRewrite(tokensRemoved),
@@ -8111,6 +8102,9 @@ export class AgentSession implements SettingsScope {
 			},
 			getSystemPrompt: () => this.systemPrompt,
 			runEphemeralTurn: args => this.runEphemeralTurn(args),
+			// The SDK always builds a runner (which receives the annotations factory); this runner-less
+			// context only exists for directly constructed sessions, which have no `/annotate` wiring.
+			annotations: UNAVAILABLE_ANNOTATIONS,
 			setInterval: (callback, ms, ...args) => this.#fallbackTimers().setInterval(callback, ms, ...args),
 			setTimeout: (callback, ms, ...args) => this.#fallbackTimers().setTimeout(callback, ms, ...args),
 			clearTimer: timer => this.#fallbackTimers().clear(timer),
@@ -10725,11 +10719,16 @@ export class AgentSession implements SettingsScope {
 
 	#resetCurrentResponsesProviderSession(reason: string): void {
 		const currentModel = this.model;
-		if (currentModel?.api !== "openai-responses" && currentModel?.api !== "openai-codex-responses") {
+		if (currentModel?.api === "openai-responses") {
+			// Keep the closed record: it rebuilds history from message content until
+			// the next success, while a fresh one on a host without connection
+			// binding would resend the native items the server just refused.
+			this.#providerSessionState.get(`openai-responses:${currentModel.provider}`)?.close();
+		} else if (currentModel?.api === "openai-codex-responses") {
+			this.#closeProviderSessionsForModelSwitch(currentModel, currentModel);
+		} else {
 			return;
 		}
-
-		this.#closeProviderSessionsForModelSwitch(currentModel, currentModel);
 		this.agent.appendOnlyContext?.invalidateForModelChange();
 		logger.debug("Reset Responses provider session after stale replay error", {
 			provider: currentModel.provider,
