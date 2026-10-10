@@ -948,6 +948,8 @@ export class AgentSession implements SettingsScope {
 	#modelRegistry: ModelRegistry;
 	/** Creation-time permission for switchSession to keep the current model when a target's saved model is unrestorable. */
 	readonly #allowSessionModelFallback: boolean;
+	/** Creation-time: false when the extension UI context cannot reach a human (ACP without form elicitation). */
+	readonly #interactivePrompts: boolean;
 	#usageFallbackConfirmer: UsageFallbackConfirmer | undefined;
 	#usagePreflightAbortControllers = new Set<AbortController>();
 	/** In-flight vision descriptions that gate prompt admission; abort() cancels them. */
@@ -1581,6 +1583,7 @@ export class AgentSession implements SettingsScope {
 		this.memoryEnabled = config.memoryEnabled ?? true;
 		this.#modelRegistry = config.modelRegistry;
 		this.#allowSessionModelFallback = config.allowSessionModelFallback === true;
+		this.#interactivePrompts = config.interactivePrompts !== false;
 		this.#extensionRoots =
 			config.extensionRoots ??
 			(() => ({
@@ -12510,7 +12513,8 @@ export class AgentSession implements SettingsScope {
 	/**
 	 * Ask before a provider's first automatic spend and return the approved
 	 * actions. Consent is persisted in that provider's independent settings
-	 * group; a headless host spends only credits about to expire and gets a
+	 * group; a host that cannot prompt (no extension UI, or one whose prompts
+	 * cannot reach a human) spends only credits about to expire and gets a
 	 * one-shot notice for the rest while the mode is unset.
 	 */
 	async #confirmAutoRedeem(
@@ -12523,7 +12527,7 @@ export class AgentSession implements SettingsScope {
 		const settingsKey = provider === "anthropic" ? "claudeResets.autoRedeem" : "codexResets.autoRedeem";
 		const source = provider === "anthropic" ? "claude-auto-reset" : "codex-auto-reset";
 		const runner = this.#extensionRunner;
-		if (!runner?.hasUI()) {
+		if (!runner?.hasUI() || !this.#interactivePrompts) {
 			const approved = headlessApprovedResetActions("unset", actions);
 			const waiting = actions.find(action => !approved.some(spend => spend.attemptKey === action.attemptKey));
 			if (waiting && !coordinator.notifiedKeys.has(waiting.attemptKey)) {
