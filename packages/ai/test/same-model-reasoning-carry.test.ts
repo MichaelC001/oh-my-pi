@@ -313,6 +313,15 @@ describe("same-model reasoning carry", () => {
 		expect(JSON.stringify(items)).toContain(`"text":${JSON.stringify(THINK)}`);
 	});
 
+	it("judges a routed turn by the model that actually served it", () => {
+		const devinK3: Source = { provider: "devin", api: "devin-agent", model: "kimi-k3" };
+		const servedElsewhere = { ...priorTurn(devinK3), upstreamModel: "MODEL_GOOGLE_GEMINI_3_PRO" };
+		const servedByK3 = { ...priorTurn(devinK3), upstreamModel: "kimi-k3" };
+
+		expect(completionsAssistant(moonshotK3(), history(servedElsewhere)).content).toBe(DEMOTED);
+		expect(completionsAssistant(moonshotK3(), history(servedByK3)).reasoning_content).toBe(TRACE);
+	});
+
 	it("carries the same DeepSeek revision between hosts", () => {
 		const source: Source = { provider: "openrouter", api: "openrouter", model: "deepseek/deepseek-v4-flash" };
 

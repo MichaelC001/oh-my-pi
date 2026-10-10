@@ -760,11 +760,20 @@ export function transformMessages<TApi extends Api>(
 			// its full plaintext reasoning replays natively where the target has
 			// a native slot, exactly as the target replays its own turns. Errored
 			// turns keep the text fallback: Responses encoders skip their reasoning.
+			// A router's reported serving model is the identity that produced the
+			// reasoning, so it is what must match.
 			const carriesSameModelReasoning =
 				!isSameModel &&
 				assistantMsg.stopReason !== "error" &&
 				targetHasReasoningSlot &&
-				carriesReasoning(assistantMsg, model);
+				carriesReasoning(
+					{
+						provider: assistantMsg.provider,
+						api: assistantMsg.api,
+						model: assistantMsg.upstreamModel ?? assistantMsg.model,
+					},
+					model,
+				);
 
 			const isAnthropicTarget = isAnthropicMessagesModel(model);
 			// Anthropic's all-or-none contract on prior-turn thinking blocks
