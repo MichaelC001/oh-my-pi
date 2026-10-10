@@ -88,7 +88,7 @@ class StyledText implements Component {
 
 class OptionalText implements Component {
 	readonly #text: StyledText;
-	#value = "";
+	value = "";
 	readonly #empty: readonly string[] = [];
 	readonly #hidden = node("text", { text: "", hidden: true });
 
@@ -97,17 +97,17 @@ class OptionalText implements Component {
 	}
 
 	describe(cx: DescribeContext): NativeNode {
-		return this.#value ? this.#text.describe(cx) : this.#hidden;
+		return this.value ? this.#text.describe(cx) : this.#hidden;
 	}
 
 	setText(value: string): void {
-		if (value === this.#value) return;
-		this.#value = value;
+		if (value === this.value) return;
+		this.value = value;
 		this.#text.setText(value);
 	}
 
 	render(width: number): readonly string[] {
-		return this.#value ? this.#text.render(width) : this.#empty;
+		return this.value ? this.#text.render(width) : this.#empty;
 	}
 
 	invalidate(): void {
@@ -197,6 +197,10 @@ export class FormField implements Component, Focusable, MouseRoutable {
 
 	get focused(): boolean {
 		return this.#focused;
+	}
+
+	get hasError(): boolean {
+		return this.#error.value !== "";
 	}
 
 	get debugChildren(): readonly Component[] {

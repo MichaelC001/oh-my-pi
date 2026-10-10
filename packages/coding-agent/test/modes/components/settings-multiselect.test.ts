@@ -4,6 +4,9 @@ import { SettingsSelectorComponent } from "@oh-my-pi/pi-tui/overlays/settings-se
 import { createSettingsHost } from "@oh-my-pi/pi-coding-agent/config/settings-ui";
 import { createPluginSettingsHost } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/settings-host";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { TspDocument } from "@oh-my-pi/pi-tui/native/apply";
+import { Reconciler } from "@oh-my-pi/pi-tui/native/reconcile";
+import type { TspNode } from "@oh-my-pi/pi-wire";
 
 import { cfgDevAutoqa } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { cfgContextFilesExtra } from "@oh-my-pi/pi-coding-agent/session/context-settings";
@@ -106,6 +109,12 @@ async function submitText(component: SettingsSelectorComponent, value: string): 
 	await Promise.resolve();
 }
 
+function nativeErrorText(node: TspNode): string {
+	const text = node.k === "text" ? (node.p?.spans ?? []).filter(span => span.s === "error").map(span => span.t) : [];
+	for (const child of node.c ?? []) text.push(nativeErrorText(child));
+	return text.join("\n");
+}
+
 describe("extra context filenames editor", () => {
 	it("saves multiple filenames as an array and lets users disable extras", async () => {
 		const component = openExtraContextFiles();
@@ -128,5 +137,13 @@ describe("extra context filenames editor", () => {
 		await submitText(component, input);
 		expect(cfgContextFilesExtra.get(settings)).toEqual(["TEAM.md"]);
 		expect(Bun.stripANSI(component.render(120).join("\n"))).toMatch(error);
+		const document = new TspDocument("settings");
+		const reconciler = new Reconciler("settings");
+		const ops = reconciler.reconcile(
+			{ main: [], dock: [], layer: [component] },
+			{ cols: 120, reduceMotion: false, dark: true, supports: () => true, feature: () => true },
+		);
+		expect(document.applyFrame({ sf: "settings", s: 1, ops })).toEqual([]);
+		expect(nativeErrorText(document.snapshot())).toMatch(error);
 	});
 });
