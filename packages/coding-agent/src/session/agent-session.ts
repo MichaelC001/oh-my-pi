@@ -141,6 +141,7 @@ import { WorkPoolRegistry } from "../task/workpool";
 import { type BashPtyOptions, type BashResult, releaseShellSessions } from "../exec/bash-executor";
 import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
+import { createAnnotationsAPI } from "../extensibility/custom-commands/bundled/annotate/api";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import type {
 	ExtensionCommandContext,
@@ -8033,7 +8034,7 @@ export class AgentSession implements SettingsScope {
 			return this.#extensionRunner.createCommandContext();
 		}
 
-		return {
+		const context: ExtensionCommandContext = {
 			ui: noOpUIContext,
 			mode: "print",
 			hasUI: false,
@@ -8095,10 +8096,19 @@ export class AgentSession implements SettingsScope {
 			},
 			getSystemPrompt: () => this.systemPrompt,
 			runEphemeralTurn: args => this.runEphemeralTurn(args),
+			annotations: createAnnotationsAPI(
+				() => context,
+				text => {
+					this.sendUserMessage(text).catch(error => {
+						logger.warn("Annotation feedback was not delivered", { error: String(error) });
+					});
+				},
+			),
 			setInterval: (callback, ms, ...args) => this.#fallbackTimers().setInterval(callback, ms, ...args),
 			setTimeout: (callback, ms, ...args) => this.#fallbackTimers().setTimeout(callback, ms, ...args),
 			clearTimer: timer => this.#fallbackTimers().clear(timer),
 		};
+		return context;
 	}
 
 	/** Lazily create the runner-less command-context timer registry (#5664). */

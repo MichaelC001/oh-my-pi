@@ -80,8 +80,10 @@ export function formatCodeReviewAnnotations(
 
 /** Renders a review request from one frozen target snapshot. */
 export function buildReviewPrompt(target: ResolvedReviewTarget, additionalInstructions?: string): string {
+	// A supplied patch has no checkout to re-run `git diff` against, so it is always embedded in full.
 	const skipDiff =
-		target.rawDiff.length > LARGE_DIFF_CHARACTER_LIMIT || target.snapshot.files.length > LARGE_DIFF_FILE_LIMIT;
+		target.kind !== "patch" &&
+		(target.rawDiff.length > LARGE_DIFF_CHARACTER_LIMIT || target.snapshot.files.length > LARGE_DIFF_FILE_LIMIT);
 	const linesPerFile = skipDiff ? Math.max(5, Math.floor(100 / target.snapshot.files.length)) : 0;
 	const files = target.snapshot.files.map(file => renderReviewPromptFile(file, linesPerFile));
 	const agentCount = getRecommendedReviewAgentCount(target.snapshot);

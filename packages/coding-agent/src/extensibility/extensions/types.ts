@@ -70,6 +70,7 @@ import type {
 import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
 import type { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import type { ComposerShapeDefinition } from "@oh-my-pi/pi-tui/overlays/composer-shape-registry";
+import type { CodeReviewAnnotation, TextReviewAnnotation } from "@oh-my-pi/pi-tui/overlays/annotation-types";
 export type { ComposerShapeDefinition } from "@oh-my-pi/pi-tui/overlays/composer-shape-registry";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { EditToolDetails } from "@oh-my-pi/pi-tui/tools/edit";
@@ -482,6 +483,96 @@ export interface ExtensionAgentIdentity {
 	parentId?: string;
 }
 
+/** Text an annotation run targets; `file` paths resolve against the live session cwd. */
+export type AnnotationTextSource =
+	| { kind: "text"; text: string; label?: string }
+	| { kind: "file"; path: string }
+	/** The latest non-empty assistant reply on the active branch. */
+	| { kind: "last" };
+
+/** A diff an annotation run targets, frozen once before notes are matched or the overlay opens. */
+export type AnnotationDiffSource =
+	/** A git-format patch supplied by the caller. */
+	| { kind: "diff"; diff: string; label?: string }
+	/** Staged + unstaged (or jj working-copy) changes in the live session cwd. */
+	| { kind: "uncommitted" }
+	/** A GitHub PR: `https://github.com/owner/repo/pull/N` or `pr://owner/repo/N`. */
+	| { kind: "pr"; ref: string };
+
+export type AnnotationSource = AnnotationTextSource | AnnotationDiffSource;
+
+/** A note on a text source: whole-source when `line` is omitted, else one 1-based source line. */
+export interface AnnotationTextNote {
+	note: string;
+	line?: number;
+}
+
+/**
+ * A note on a diff source: whole-file when `line` is omitted. `line` is a line number on
+ * `side` (default `"new"`; use `"old"` for removed lines); `occurrence` picks among repeated
+ * sections for the same path (default 1).
+ */
+export interface AnnotationDiffNote {
+	path: string;
+	note: string;
+	line?: number;
+	side?: "old" | "new";
+	occurrence?: number;
+}
+
+/**
+ * Where the built feedback goes. `"auto"` matches `/annotate`: notes are pasted into the
+ * composer, an LLM review request is sent. `"paste"` and `"send"` force one channel
+ * (`"send"` uses `pi.sendUserMessage` semantics); `"none"` only returns the text.
+ */
+export type AnnotationDelivery = "auto" | "paste" | "send" | "none";
+
+interface AnnotationRequestBase {
+	deliver?: AnnotationDelivery;
+}
+
+/** Diff-only options: `review` builds the full `/review` request; `focus` adds review focus text. */
+interface AnnotationDiffRequestOptions {
+	review?: boolean;
+	focus?: string;
+}
+
+export type AnnotationSubmitRequest =
+	| (AnnotationRequestBase & { source: AnnotationTextSource; notes: AnnotationTextNote[] })
+	| (AnnotationRequestBase &
+			AnnotationDiffRequestOptions & {
+				source: AnnotationDiffSource;
+				notes: AnnotationDiffNote[];
+			});
+
+export type AnnotationOpenRequest =
+	| (AnnotationRequestBase & { source: AnnotationTextSource })
+	| (AnnotationRequestBase & Pick<AnnotationDiffRequestOptions, "focus"> & { source: AnnotationDiffSource });
+
+export interface AnnotationResult {
+	/** Feedback exactly as `/annotate` renders it; undefined when there was nothing to report. */
+	text: string | undefined;
+	/** Channel the text went to; `"none"` when it was only returned. */
+	delivered: "paste" | "send" | "none";
+	/** Whether `text` is an LLM review request rather than pasteable notes. */
+	review: boolean;
+	/** Normalized notes: line notes carry the quoted source line or diff row. */
+	annotations: TextReviewAnnotation[] | CodeReviewAnnotation[];
+	/** Text after an external-editor edit inside the overlay (`open` on text sources only). */
+	editedText?: string;
+}
+
+/**
+ * `/annotate` as an API. `submit` turns caller-supplied notes into the same feedback without UI;
+ * `open` mounts the annotation overlay on a caller-chosen source (`mode === "tui"` only) and
+ * resolves with the operator's notes, or undefined when dismissed.
+ * Both reject when a source cannot be read or a note does not match its source.
+ */
+export interface ExtensionAnnotationsAPI {
+	submit(request: AnnotationSubmitRequest): Promise<AnnotationResult>;
+	open(request: AnnotationOpenRequest): Promise<AnnotationResult | undefined>;
+}
+
 export interface ExtensionContext {
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
@@ -537,6 +628,8 @@ export interface ExtensionContext {
 	runEphemeralTurn?(options: EphemeralTurnOptions): Promise<EphemeralTurnResult>;
 	/** Structured memory runtime for status/search/save across the configured backend. */
 	memory?: MemoryRuntimeContext;
+	/** `/annotate` as an API: build or collect annotation feedback on text and diffs. */
+	annotations: ExtensionAnnotationsAPI;
 	/**
 	 * Schedule a repeating callback whose throws are contained. Unlike raw
 	 * `setInterval`, a synchronous throw or rejected promise from `callback` is
