@@ -6,6 +6,9 @@ import * as envApiKey from "@oh-my-pi/pi-ai/env-api-key";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
+import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import {
@@ -128,7 +131,13 @@ describe("Claude saved-reset trigger integration", () => {
 		autoRedeem?: "unset" | "yes" | "no";
 		salvageHorizonHours?: number;
 		keepCredits?: number;
-	}): { session: AgentSession; coordinator: CodexAutoRedeemCoordinator; targets: ResetCreditTarget[] } {
+		extensionRunner?: boolean;
+	}): {
+		session: AgentSession;
+		coordinator: CodexAutoRedeemCoordinator;
+		targets: ResetCreditTarget[];
+		notices: string[];
+	} {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected bundled anthropic/claude-sonnet-4-5 to exist");
 		authStorage.keys.setRuntime("anthropic", "test-key");
@@ -201,9 +210,27 @@ describe("Claude saved-reset trigger integration", () => {
 			settings,
 			modelRegistry,
 			codexResetCoordinator: coordinator,
+			extensionRunner: options.extensionRunner
+				? new ExtensionRunner([], new ExtensionRuntime(), tempDir.path(), sessionManager, modelRegistry)
+				: undefined,
 		});
 		sessions.push(session);
-		return { session, coordinator, targets };
+		const notices: string[] = [];
+		session.subscribe(event => {
+			if (event.type === "notice") notices.push(event.message);
+		});
+		return { session, coordinator, targets, notices };
+	}
+
+	function imminentClaudeStatus(): { report: UsageReport; status: ResetCreditAccountStatus } {
+		const report = claudeReport(0);
+		const status = claudeStatus(false);
+		status.report = report;
+		for (const credit of status.credits) {
+			credit.expiresAt = new Date(Date.now() + 4 * 60_000).toISOString();
+			credit.usedFractions = { "anthropic:7d": 0 };
+		}
+		return { report, status };
 	}
 
 	it("redeems the exact live Cedar grant on a blocked retry and immediately recovers", async () => {
@@ -362,16 +389,10 @@ describe("Claude saved-reset trigger integration", () => {
 	});
 
 	it.each(["yes", "no", "unset"] as const)(
-		"only consumes an imminent reset with consent when auto-redeem is %s",
+		"spends a reset expiring within five minutes without a prompt UI unless auto-redeem is no (%s)",
 		async autoRedeem => {
-			const report = claudeReport(0);
-			const status = claudeStatus(false);
-			status.report = report;
-			for (const credit of status.credits) {
-				credit.expiresAt = new Date(Date.now() + 4 * 60_000).toISOString();
-				credit.usedFractions = { "anthropic:7d": 0 };
-			}
-			const { session, coordinator, targets } = buildSession({
+			const { report, status } = imminentClaudeStatus();
+			const { session, coordinator, targets, notices } = buildSession({
 				report,
 				status,
 				autoRedeem,
@@ -382,8 +403,9 @@ describe("Claude saved-reset trigger integration", () => {
 			await session.fetchUsageReports();
 			await coordinator.sweepPromise;
 			expect(targets).toEqual(
-				autoRedeem === "yes"
-					? [
+				autoRedeem === "no"
+					? []
+					: [
 							{
 								provider: "anthropic",
 								credentialId: CREDENTIAL_ID,
@@ -392,21 +414,53 @@ describe("Claude saved-reset trigger integration", () => {
 								email: EMAIL,
 								orgId: ORG_ID,
 							},
-						]
-					: [],
+						],
 			);
+			if (autoRedeem === "unset") {
+				expect(notices).toContainEqual(expect.stringContaining(`Spending a saved Claude reset for ${EMAIL}`));
+			}
 
 			coordinator.lastSweepAt = 0;
 			await session.fetchUsageReports();
 			await coordinator.sweepPromise;
-			expect(targets).toHaveLength(autoRedeem === "yes" ? 1 : 0);
+			expect(targets).toHaveLength(autoRedeem === "no" ? 0 : 1);
 		},
 	);
 
+	it("still asks before a reset expiring within five minutes when a prompt UI is available", async () => {
+		const { report, status } = imminentClaudeStatus();
+		const { session, coordinator, targets } = buildSession({
+			report,
+			status,
+			autoRedeem: "unset",
+			salvageHorizonHours: 0,
+			extensionRunner: true,
+		});
+		const questions: string[] = [];
+		const runner = session.extensionRunner!;
+		await initializeExtensions(session, {
+			reportSendError: () => {},
+			reportRuntimeError: () => {},
+			uiContext: Object.create(runner.getUIContext(), {
+				select: {
+					value: async (question: string) => {
+						questions.push(question);
+						return "No";
+					},
+				},
+			}),
+		});
+
+		await session.fetchUsageReports();
+		await coordinator.sweepPromise;
+		expect(questions).toEqual([expect.stringContaining("Spend a saved Claude rate-limit reset?")]);
+		expect(targets).toEqual([]);
+	});
+
 	it("does not spend headlessly before independent Claude consent", async () => {
 		// Codex being disabled does not enable Claude, and an unset headless
-		// session cannot spend silently.
-		const { session, coordinator, targets } = buildSession({
+		// session cannot spend a reset that is not about to expire.
+		const { session, coordinator, targets, notices } = buildSession({
 			report: claudeReport(0.5),
 			status: claudeStatus(false),
 			autoRedeem: "unset",
@@ -417,5 +471,6 @@ describe("Claude saved-reset trigger integration", () => {
 		expect(targets).toHaveLength(0);
 		expect(coordinator.attemptedKeys.size).toBe(0);
 		expect(cfgClaudeResetsAutoRedeem.get(session.settings)).toBe("unset");
+		expect(notices).toEqual([expect.stringContaining("auto-redeem is unset and no prompt UI is available")]);
 	});
 });
