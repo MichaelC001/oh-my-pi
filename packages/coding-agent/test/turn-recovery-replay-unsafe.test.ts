@@ -74,6 +74,7 @@ function createHost(
 		sessionManager: {
 			getLastModelChangeRole: () => options.lastModelChangeRole,
 			getBranch: () => [],
+			getBranchView: () => [],
 			getSessionId: () => "test-session",
 		} as never,
 		persistedAssistantEntryId: () => undefined,
