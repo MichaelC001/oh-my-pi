@@ -5012,9 +5012,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			};
 		}
 
-		if (model?.api === "openai-codex-responses") {
+		const prewarmModel = session.model;
+		if (prewarmModel?.api === "openai-codex-responses") {
 			// `.api` equality doesn't narrow the generic; the guard makes this cast sound.
-			const codexModel = model as Model<"openai-codex-responses">;
+			const codexModel = prewarmModel as Model<"openai-codex-responses">;
 			if (isOpenAICodexWebSocketPreferred(codexModel, { preferWebsockets: session.preferWebsockets })) {
 				void (async () => {
 					try {
@@ -5029,6 +5030,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							sessionId: providerSessionId,
 							preferWebsockets: session.preferWebsockets,
 							providerSessionState: session.providerSessionState,
+							serviceTier: session.effectiveServiceTier(codexModel),
 						});
 					} catch (error) {
 						const errorMessage = error instanceof Error ? error.message : String(error);

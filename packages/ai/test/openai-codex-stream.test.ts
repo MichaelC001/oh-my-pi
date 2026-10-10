@@ -7216,6 +7216,35 @@ describe("openai-codex streaming", () => {
 			.join("");
 		expect(text).toBe("Second");
 	});
+
+	it("passes explicit service tier routing through websocket prewarm", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-prewarm-tier-");
+		setAgentDir(tempDir.path());
+		const model = createCodexTestModel("https://chatgpt.com/backend-api");
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const constructorHints: Array<string | undefined> = [];
+
+		class PrewarmTierWebSocket extends MockWebSocket {
+			constructor(url: string, options?: { headers?: WsHeaders }) {
+				super(url, options);
+				constructorHints.push(options?.headers?.["x-codex-routing-hint"]);
+				this.scheduleOpen();
+			}
+		}
+		global.WebSocket = PrewarmTierWebSocket as unknown as typeof WebSocket;
+
+		try {
+			await prewarmOpenAICodexResponses(model, {
+				apiKey: createCodexTestToken(),
+				sessionId: "ws-prewarm-tier-session",
+				providerSessionState,
+				serviceTier: "priority",
+			});
+			expect(constructorHints).toEqual([`model=${model.requestModelId ?? model.id};tier=priority`]);
+		} finally {
+			for (const state of providerSessionState.values()) state.close();
+		}
+	});
 });
 
 describe("openai-codex SSE statelessness", () => {
