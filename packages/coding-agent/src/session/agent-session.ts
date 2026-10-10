@@ -12525,7 +12525,7 @@ export class AgentSession implements SettingsScope {
 		const runner = this.#extensionRunner;
 		if (!runner?.hasUI()) {
 			const approved = headlessApprovedResetActions("unset", actions);
-			const waiting = actions.find(action => !approved.includes(action));
+			const waiting = actions.find(action => !approved.some(spend => spend.attemptKey === action.attemptKey));
 			if (waiting && !coordinator.notifiedKeys.has(waiting.attemptKey)) {
 				coordinator.notifiedKeys.add(waiting.attemptKey);
 				this.emitNotice(

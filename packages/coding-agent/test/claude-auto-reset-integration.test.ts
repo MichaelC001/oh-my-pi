@@ -411,7 +411,7 @@ describe("Claude saved-reset trigger integration", () => {
 	);
 
 	it("does not spend headlessly before independent Claude consent", async () => {
-		// Codex being disabled does not enable Claude, and an unset headless
+		// Codex being disabled does not enable Claude, and short of a reset about to expire an unset headless
 		// session cannot spend silently.
 		const { session, coordinator, targets } = buildSession({
 			report: claudeReport(0.5),
