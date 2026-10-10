@@ -1378,6 +1378,14 @@ export class WorkerCore {
 		if (event.type === "BackForwardCacheRestore") this.#clearElementCache();
 	};
 
+	/**
+	 * Puppeteer's page `error` event is Chromium's `Inspector.targetCrashed`: the renderer is gone, so every
+	 * later page call stalls until its timeout. The supervisor fails the run in flight and reattaches the tab.
+	 */
+	readonly #onPageCrashed = (): void => {
+		this.#transport.send({ type: "crashed" });
+	};
+
 	constructor(transport: Transport, isolated: boolean) {
 		this.#transport = transport;
 		this.#isolated = isolated;
@@ -1515,6 +1523,7 @@ export class WorkerCore {
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
 			}
 			this.#page.mainFrame().client.on("Page.frameNavigated", this.#onFrameNavigated);
+			this.#page.on("error", this.#onPageCrashed);
 			if (payload.mode === "headless" || payload.emulateFocus) {
 				// Background Chromium tabs stop producing frames, stalling rAF,
 				// IntersectionObserver, and input acknowledgements. Keep owned tabs
@@ -1597,6 +1606,10 @@ export class WorkerCore {
 		let session: CDPSession | undefined;
 		try {
 			session = await target.createCDPSession();
+			// A crashed page answers none of the steps below. `Inspector.enable` reports a renderer
+			// still dead (a relay attach leaves it so), the listener one that dies again as it reloads.
+			session.on("Inspector.targetCrashed", this.#onPageCrashed);
+			await session.send("Inspector.enable").catch(() => undefined);
 			await session.send("Page.enable").catch(() => undefined);
 			await session.send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined);
 			await session.send("Page.stopLoading").catch(() => undefined);

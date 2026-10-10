@@ -13,6 +13,7 @@ import {
 import type { ReadyInfo, WorkerInbound, WorkerOutbound } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-protocol";
 import {
 	acquireTab,
+	getTab,
 	initializeTabWorkerForTest,
 	releaseTab,
 	runInTab,
@@ -435,6 +436,118 @@ describe("visible OMP-owned browser tabs", () => {
 				else if (browser && "browser" in browser && browser.browser.connected) {
 					await releaseBrowser(browser, { kill: true });
 				}
+			}
+		},
+		45_000,
+	);
+});
+
+describe("browser tabs whose renderer crashed", () => {
+	const session = {
+		cwd: process.cwd(),
+		hasUI: false,
+		settings: Settings.isolated(),
+		getSessionFile: () => null,
+	} as unknown as ToolSession;
+
+	/** Resolves once the tab's worker reports a renderer crash; the supervisor's handler, registered first, has run by then. */
+	function crashReport(name: string): Promise<void> {
+		const tab = getTab(name);
+		if (tab?.backend !== "worker") throw new Error("Expected a worker tab");
+		const reported = Promise.withResolvers<void>();
+		const unsubscribe = tab.worker.onMessage(msg => {
+			if (msg.type !== "crashed") return;
+			unsubscribe();
+			reported.resolve();
+		});
+		return reported.promise;
+	}
+
+	/** Kill the tab's renderer over a CDP session of its own. */
+	async function crashRenderer(browser: BrowserHandle, url: string): Promise<void> {
+		if (!("browser" in browser)) throw new Error("Expected a Puppeteer browser");
+		const target = await browser.browser.waitForTarget(candidate => candidate.url() === url, { timeout: 5_000 });
+		const client = await target.createCDPSession();
+		// Page.crash never answers: the renderer it would answer from is gone.
+		void client.send("Page.crash").catch(() => undefined);
+	}
+
+	it.skipIf(!CHROMIUM_AVAILABLE)(
+		"reloads the page on the next call after an idle tab's renderer crashed, and says so",
+		async () => {
+			const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+			const name = `crashed-idle-${process.pid}`;
+			const url = `data:text/html,<title>${name}</title>`;
+			try {
+				await acquireTab(name, browser, { url, timeoutMs: 30_000 });
+				const reported = crashReport(name);
+				await crashRenderer(browser, url);
+				await reported;
+				const result = await runInTab(name, { code: "return await page.title();", timeoutMs: 10_000, session });
+				expect(result.returnValue).toBe(name);
+				expect(result.displays[0]).toMatchObject({
+					type: "text",
+					text: expect.stringContaining("This tab's renderer had crashed"),
+				});
+			} finally {
+				await releaseTab(name, { kill: true });
+				if ("browser" in browser && browser.browser.connected) await releaseBrowser(browser, { kill: true });
+			}
+		},
+		45_000,
+	);
+
+	it.skipIf(!CHROMIUM_AVAILABLE)(
+		"fails the call in flight when the renderer crashes under it",
+		async () => {
+			const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+			const name = `crashed-in-flight-${process.pid}`;
+			const url = `data:text/html,<title>${name}</title>`;
+			try {
+				await acquireTab(name, browser, { url, timeoutMs: 30_000 });
+				const stalled = runInTab(name, {
+					code: "return await page.evaluate(() => new Promise(() => {}));",
+					timeoutMs: 10_000,
+					session,
+				}).catch((error: unknown) => error);
+				await crashRenderer(browser, url);
+				expect(String(await stalled)).toContain("Browser tab's renderer crashed");
+				const next = await runInTab(name, { code: "return await page.title();", timeoutMs: 10_000, session });
+				expect(next.returnValue).toBe(name);
+			} finally {
+				await releaseTab(name, { kill: true });
+				if ("browser" in browser && browser.browser.connected) await releaseBrowser(browser, { kill: true });
+			}
+		},
+		45_000,
+	);
+
+	it.skipIf(!CHROMIUM_AVAILABLE)(
+		"kills a tab whose page crashes again as it reloads",
+		async () => {
+			const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+			const name = `crashed-on-load-${process.pid}`;
+			try {
+				await acquireTab(name, browser, { url: `data:text/html,<title>${name}</title>`, timeoutMs: 30_000 });
+				const reported = crashReport(name);
+				// chrome://crash kills the renderer on every load, so reattaching cannot bring the page back.
+				await runInTab(name, {
+					code: 'await page.goto("chrome://crash").catch(() => undefined);',
+					timeoutMs: 10_000,
+					session,
+				}).catch(() => undefined);
+				await reported;
+				const failure = await runInTab(name, {
+					code: "return await page.title();",
+					timeoutMs: 10_000,
+					session,
+				}).catch((error: unknown) => error);
+				expect(String(failure)).toContain(
+					"Browser tab's renderer crashed and reattaching did not bring the page back; tab killed",
+				);
+			} finally {
+				await releaseTab(name, { kill: true });
+				if ("browser" in browser && browser.browser.connected) await releaseBrowser(browser, { kill: true });
 			}
 		},
 		45_000,
