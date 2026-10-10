@@ -1351,7 +1351,7 @@ describe("omp usage reset", () => {
 	let stderr: string;
 
 	/** Codex and Claude reset endpoints: `codex-team` banks two credits, `codex-spare` none, Claude one grant. */
-	const usageFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+	const handleReset = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
 		const url = new URL(String(input));
 		const method = init?.method ?? "GET";
 		const bearer = new Headers(init?.headers).get("authorization");
@@ -1403,7 +1403,8 @@ describe("omp usage reset", () => {
 			});
 		}
 		return new Response("not found", { status: 404 });
-	}) as typeof fetch;
+	};
+	const usageFetch = Object.assign(handleReset, { preconnect: fetch.preconnect });
 
 	const consumes = () => requests.filter(request => request.method === "POST");
 
