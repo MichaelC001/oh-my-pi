@@ -202,6 +202,53 @@ describe("ProcessTerminal DA1 SIXEL detection", () => {
 
 		expect(TERMINAL.imageProtocol).toBe(ImageProtocol.Sixel);
 		expect(received).toEqual(["x"]);
+		vi.advanceTimersByTime(251);
+		expect(TERMINAL.imageProtocol).toBe(ImageProtocol.Sixel);
+	});
+
+	it("consumes the graphics reply after DA1 has already enabled SIXEL", () => {
+		harness = createProcessTerminalRenderHarness(80, 24, { conpty: false });
+		const received: string[] = [];
+		harness.tui.addInputListener(data => {
+			received.push(data);
+		});
+
+		process.stdin.emit("data", "\x1b[?62;4;22;28c");
+		expect(TERMINAL.imageProtocol).toBe(ImageProtocol.Sixel);
+		process.stdin.emit("data", `${SIXEL_SUPPORTED_REPLY}x`);
+
+		expect(received).toEqual(["x"]);
+		expect(TERMINAL.imageProtocol).toBe(ImageProtocol.Sixel);
+	});
+
+	it("consumes a graphics reply split across the stdin flush deadline after DA1", () => {
+		harness = createProcessTerminalRenderHarness(80, 24, { conpty: false });
+		const received: string[] = [];
+		harness.tui.addInputListener(data => {
+			received.push(data);
+		});
+
+		process.stdin.emit("data", "\x1b[?62;4;22;28c");
+		process.stdin.emit("data", "\x1b[?2;0;1692");
+		vi.advanceTimersByTime(51);
+		expect(received).toEqual([]);
+		process.stdin.emit("data", ";432Sx");
+
+		expect(received).toEqual(["x"]);
+		expect(TERMINAL.imageProtocol).toBe(ImageProtocol.Sixel);
+	});
+
+	it("consumes a negative graphics reply without revoking DA1-advertised support", () => {
+		harness = createProcessTerminalRenderHarness(80, 24, { conpty: false });
+		const received: string[] = [];
+		harness.tui.addInputListener(data => {
+			received.push(data);
+		});
+
+		process.stdin.emit("data", "\x1b[?62;4;22;28c\x1b[?2;3;0Sx");
+
+		expect(received).toEqual(["x"]);
+		expect(TERMINAL.imageProtocol).toBe(ImageProtocol.Sixel);
 	});
 
 	it("reassembles a DA1 advertisement split beyond the stdin flush deadline", () => {

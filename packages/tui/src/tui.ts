@@ -1487,7 +1487,9 @@ export class TUI extends Container {
 		this.terminal.onSixelSupport?.(supported => {
 			if (!supported || this.#stopped || this.#nativeLive || this.terminal.tspExpected) return;
 			if (isImageProtocolForced()) return;
-			this.#finishSixelProbe(true);
+			// Keep consuming an already-requested XTSMGRAPHICS reply until it
+			// arrives or times out, even though DA1 has established support.
+			this.#enableSixelProtocol();
 		});
 		this.terminal.onTspHello?.(hello => this.#onTspHello(hello));
 		this.terminal.start(
@@ -2444,7 +2446,11 @@ export class TUI extends Container {
 
 	#finishSixelProbe(supported: boolean): void {
 		this.#clearSixelProbeState();
-		if (!supported || TERMINAL.imageProtocol) return;
+		if (supported) this.#enableSixelProtocol();
+	}
+
+	#enableSixelProtocol(): void {
+		if (TERMINAL.imageProtocol) return;
 
 		setTerminalImageProtocol(ImageProtocol.Sixel);
 		this.#queryCellSize();

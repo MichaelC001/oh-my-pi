@@ -1275,6 +1275,7 @@ export class ProcessTerminal implements Terminal {
 
 		// DA1 (Primary Device Attributes) response: \x1b[?...c
 		const da1ResponsePattern = /^\x1b\[\?[\d;]*c$/;
+		const da1SixelAttributePattern = /;4(?:;|c$)/u;
 
 		// Private CSI partial: \x1b[?<digits/semicolons>... — incomplete probe response
 		// that the StdinBuffer flushed before the terminator arrived (split across
@@ -1420,7 +1421,7 @@ export class ProcessTerminal implements Terminal {
 			if (da1ResponsePattern.test(sequence)) {
 				// Publish graphics support without forwarding DA1 bytes to application
 				// input or changing ownership of the existing probe sentinel.
-				const supportsSixel = /;4(?:;|c$)/u.test(sequence);
+				const supportsSixel = da1SixelAttributePattern.test(sequence);
 				if (supportsSixel !== this.#sixelSupport) {
 					this.#sixelSupport = supportsSixel;
 					for (const callback of this.#sixelSupportCallbacks) {

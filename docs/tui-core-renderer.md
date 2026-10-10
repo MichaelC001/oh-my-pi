@@ -155,6 +155,8 @@ SIXEL discovery accepts either a positive XTSMGRAPHICS geometry reply or DA1
 attribute 4. `ProcessTerminal.onSixelSupport` publishes and caches the DA1
 advertisement while consuming the reply bytes and preserving sentinel ownership.
 A missing DA1 attribute does not reject support reported by XTSMGRAPHICS.
+Selecting SIXEL from DA1 does not end a pending XTSMGRAPHICS query: its input
+consumer remains until the graphics reply arrives or the probe times out.
 Explicit `PI_FORCE_IMAGE_PROTOCOL` choices, including `none`/`off`, take priority;
 native TSP surfaces keep their own image transport.
 
