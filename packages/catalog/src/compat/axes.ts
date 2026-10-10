@@ -412,8 +412,8 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 	 * wire does not mark reasoning as a summary (`ThinkingContent.summary ===
 	 * false` vouches for nothing more), and its identity (class + family +
 	 * revision) pins one set of weights, so a turn's reasoning may replay
-	 * natively on another host serving the same model. Declare it only for
-	 * families no host serves as summaries.
+	 * natively on another host serving the same model. Marked summaries never
+	 * carry; do not declare it where a host serves summaries unmarked.
 	 * Declared per family in `classes/*.kdl`; a host whose reasoning must not be
 	 * carried in or out sets `#false` in its `providers/*.kdl`. Read through
 	 * `compat/reasoning-carry.ts`.
