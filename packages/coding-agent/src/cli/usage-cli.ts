@@ -689,9 +689,9 @@ function formatExpiringResets(warning: ResetExpiryWarning, nowMs: number): strin
 function formatResetSpendVerdict(verdict: ResetSpendVerdict): string {
 	const outcome =
 		verdict.kind === "auto"
-			? "an open omp session spends it by its last 5 min if eligible then"
+			? "an open interactive omp session spends it by its last 5 min if eligible then"
 			: verdict.kind === "ask"
-				? "an open omp session asks before spending it"
+				? "an open interactive omp session asks before spending it"
 				: "not spent automatically";
 	return `→ ${outcome}  (${verdict.setting}: ${verdict.mode})${verdict.eligibleNow ? "" : " · not eligible now"}`;
 }
