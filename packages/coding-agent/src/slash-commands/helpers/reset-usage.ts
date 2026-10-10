@@ -83,6 +83,11 @@ export function resolveResetUsageTarget(
 	if (!account) {
 		return { error: `No stored account matches "${oneLine(arg.trim())}". List choices with \`${command}\`.` };
 	}
+	if (account.error) {
+		return {
+			error: `${oneLine(account.label)} [${oneLine(account.providerLabel)}]: saved resets unavailable (${oneLine(account.error)}), so nothing was spent.`,
+		};
+	}
 	if (account.redeemableCount <= 0) {
 		const reason = account.unavailableReason ? ` (${oneLine(account.unavailableReason)})` : "";
 		return {

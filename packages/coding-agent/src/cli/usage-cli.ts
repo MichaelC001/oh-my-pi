@@ -1183,19 +1183,21 @@ function failUsageReset(message: string): void {
 }
 
 /**
- * Mask each identity wherever it appears inside free text (`--redact`), in one
- * pass so a mask is never matched again; the longest identity wins an overlap.
+ * Mask each identity wherever it appears inside free text (`--redact`), in any
+ * letter case, in one pass so a mask is never matched again; the longest
+ * identity wins an overlap.
  */
 function identityTextMasker(redaction: Map<string, string>): (text: string) => string {
 	if (redaction.size === 0) return text => text;
+	const masks = new Map([...redaction].map(([value, mask]) => [value.toLowerCase(), mask]));
 	const pattern = new RegExp(
-		[...redaction.keys()]
+		[...masks.keys()]
 			.sort((a, b) => b.length - a.length)
 			.map(value => RegExp.escape(value))
 			.join("|"),
-		"g",
+		"gi",
 	);
-	return text => text.replace(pattern, value => redaction.get(value) ?? value);
+	return text => text.replace(pattern, value => masks.get(value.toLowerCase()) ?? value);
 }
 
 /**
@@ -1341,7 +1343,8 @@ async function runUsageResetCommand(
 			}
 			const { outcome } = await markedRedeem(async () => {
 				try {
-					return await authStorage.resets.redeem({ target, baseUrlResolver });
+					// Bounded like the session executor's redeem: the fence is held until it settles.
+					return await authStorage.resets.redeem({ target, baseUrlResolver, signal: AbortSignal.timeout(15_000) });
 				} catch (error) {
 					// A transport failure can land after the provider applied the reset.
 					return { ok: false, code: "network_error", provider, reason: errorMessage(error) };

@@ -15,7 +15,7 @@ import {
 	createCodexAutoRedeemCoordinator,
 } from "@oh-my-pi/pi-coding-agent/session/codex-auto-reset";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { getAgentDir, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
+import { __resetDirsFromEnvForTests, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import { mockSchedulerWaitWithClock } from "./helpers/mock-scheduler-clock";
 
 import { cfgClaudeResetsAutoRedeem } from "@oh-my-pi/pi-coding-agent/session/settings";
@@ -347,8 +347,11 @@ describe("Claude saved-reset trigger integration", () => {
 	});
 
 	it("adopts a reset `omp usage reset` just spent instead of spending again", async () => {
-		const originalAgentDirEnv = process.env.PI_CODING_AGENT_DIR;
-		const originalAgentDir = getAgentDir();
+		const originalEnv = {
+			PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+			OMP_PROFILE: process.env.OMP_PROFILE,
+			PI_PROFILE: process.env.PI_PROFILE,
+		};
 		setAgentDir(tempDir.path());
 		try {
 			const status = claudeStatus(true);
@@ -379,8 +382,11 @@ describe("Claude saved-reset trigger integration", () => {
 			expect(revalidate).toHaveBeenCalled();
 			expect(session.agent.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "stop" });
 		} finally {
-			setAgentDir(originalAgentDir);
-			if (originalAgentDirEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			for (const [key, value] of Object.entries(originalEnv)) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+			__resetDirsFromEnvForTests();
 		}
 	});
 

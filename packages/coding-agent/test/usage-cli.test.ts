@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { AuthStorage, type OAuthCredential, SqliteAuthCredentialStore, type UsageReport } from "@oh-my-pi/pi-ai";
 import { AuthBrokerClient, RemoteAuthCredentialStore, startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
-import { getConfigRootDir, setAgentDir, TempDir, withFileLock } from "@oh-my-pi/pi-utils";
+import { __resetDirsFromEnvForTests, setAgentDir, TempDir, withFileLock } from "@oh-my-pi/pi-utils";
 import {
 	buildRedactionMap,
 	collectHistoryIdentityStrings,
@@ -1346,15 +1346,21 @@ describe("omp usage reset", () => {
 	});
 
 	let requests: ResetRequest[];
-	/** Codex consume answer; an Error stands in for a dropped connection. */
-	let codexConsume: { status: number; body: unknown } | Error;
+	/** Codex consume answer; an Error stands in for a dropped connection, `stall` for one that never answers. */
+	let codexConsume: { status: number; body: unknown } | Error | "stall";
+	/** Codex listing requests with this bearer fail upstream. */
+	let failingListBearer: string | undefined;
 	let authStorage: AuthStorage;
 	let stdout: string;
 	let stderr: string;
 	/** Settles once the command has listed the Codex accounts. */
 	let listed: PromiseWithResolvers<void>;
 	let tempDir: TempDir;
-	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const originalEnv = {
+		PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+		OMP_PROFILE: process.env.OMP_PROFILE,
+		PI_PROFILE: process.env.PI_PROFILE,
+	};
 
 	/** Codex and Claude reset endpoints: `codex-team` banks two credits, `codex-spare` none, Claude one grant. */
 	const handleReset = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -1365,10 +1371,16 @@ describe("omp usage reset", () => {
 		requests.push({ method, path: url.pathname, bearer, ...(body ? { body } : {}) });
 		if (url.pathname.endsWith("/wham/rate-limit-reset-credits/consume")) {
 			if (codexConsume instanceof Error) throw codexConsume;
+			if (codexConsume === "stall") {
+				const stalled = Promise.withResolvers<Response>();
+				init?.signal?.addEventListener("abort", () => stalled.reject(init.signal?.reason));
+				return stalled.promise;
+			}
 			return Response.json(codexConsume.body, { status: codexConsume.status });
 		}
 		if (url.pathname.endsWith("/wham/rate-limit-reset-credits")) {
 			listed.resolve();
+			if (bearer === failingListBearer) return new Response("upstream unavailable", { status: 503 });
 			const credits =
 				bearer === "Bearer codex-team" || bearer === "Bearer broker-codex"
 					? [
@@ -1426,6 +1438,7 @@ describe("omp usage reset", () => {
 		tempDir = TempDir.createSync("@omp-usage-reset-");
 		setAgentDir(tempDir.path());
 		codexConsume = { status: 200, body: { code: "reset" } };
+		failingListBearer = undefined;
 		authStorage = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")), { usageFetch });
 		await authStorage.credentials.set("openai-codex", [
 			oauth("codex-team", { email: "dev@example.test", accountId: "acct-team" }),
@@ -1453,8 +1466,11 @@ describe("omp usage reset", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		process.exitCode = 0;
-		setAgentDir(originalAgentDir ?? path.join(getConfigRootDir(), "agent"));
-		if (!originalAgentDir) delete process.env.PI_CODING_AGENT_DIR;
+		for (const [key, value] of Object.entries(originalEnv)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		__resetDirsFromEnvForTests();
 		tempDir.removeSync();
 	});
 
@@ -1565,6 +1581,19 @@ describe("omp usage reset", () => {
 		for (const identity of identities) expect(stderr).not.toContain(identity);
 		expect(stripVTControlCharacters(stderr)).toContain("couldn't confirm whether the reset applied");
 		expect(process.exitCode).toBe(1);
+	});
+
+	it("masks an identity in provider text whatever its letter case under --redact", async () => {
+		await authStorage.credentials.set(
+			"anthropic",
+			oauth("claude-case", { email: "Dev@Example.test", orgId: "org-case", orgName: "acme corp" }),
+		);
+		await runUsageCommand({ action: "reset", provider: "claude", json: true, redact: true, noExtensions: true });
+
+		const { accounts } = JSON.parse(stdout) as { accounts: Array<{ credits: Array<{ title?: string }> }> };
+		expect(accounts.map(account => account.credits.map(credit => credit.title))).toEqual([["Reset for De* (ac*)"]]);
+		expect(stdout.toLowerCase()).not.toContain("dev@example.test");
+		expect(stdout.toLowerCase()).not.toContain("acme corp");
 	});
 
 	/** Organizations named like the `codex` alias (inside `openai-codex`) and like the Claude grant id. */
@@ -1710,6 +1739,18 @@ describe("omp usage reset", () => {
 		expect(process.exitCode).toBe(1);
 	});
 
+	it("names a failed listing instead of reporting no usable resets", async () => {
+		failingListBearer = "Bearer codex-spare";
+		const { spare } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${spare}`, noExtensions: true });
+
+		expect(stripVTControlCharacters(stderr)).toContain(
+			"spare@example.test [Codex]: saved resets unavailable (Failed to load saved resets)",
+		);
+		expect(consumes()).toEqual([]);
+		expect(process.exitCode).toBe(1);
+	});
+
 	it.each([
 		["the credit was already redeemed", { status: 200, body: { code: "already_redeemed" } }, "already redeemed"],
 		["nothing is constrained", { status: 200, body: { code: "nothing_to_reset" } }, "nothing to reset right now"],
@@ -1722,6 +1763,18 @@ describe("omp usage reset", () => {
 
 		expect(stripVTControlCharacters(stderr)).toContain(message);
 		expect(stdout).toBe("");
+		expect(consumes()).toHaveLength(1);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("stops waiting on a consume that never answers and reports the spend unconfirmed", async () => {
+		codexConsume = "stall";
+		const timeout = AbortSignal.timeout.bind(AbortSignal);
+		vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => timeout(Math.min(ms, 50)));
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${team}`, noExtensions: true });
+
+		expect(stripVTControlCharacters(stderr)).toContain("couldn't confirm whether the reset applied");
 		expect(consumes()).toHaveLength(1);
 		expect(process.exitCode).toBe(1);
 	});

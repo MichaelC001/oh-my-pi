@@ -4,7 +4,7 @@
  * beside the agent database and leave a marker in it, so another process on
  * that database neither spends while an attempt is in flight nor right after one.
  */
-import * as fs from "node:fs";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDbPath, isEnoent, withFileLock } from "@oh-my-pi/pi-utils";
 import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome } from "./auth-storage";
@@ -47,7 +47,7 @@ export async function withResetFence<T>(
 	onRecent: (marker: ResetMarker) => Promise<T>,
 	spend: (redeem: MarkedRedeem) => Promise<T>,
 ): Promise<T> {
-	await fs.promises.mkdir(path.dirname(lockPath), { recursive: true });
+	await fs.mkdir(path.dirname(lockPath), { recursive: true });
 	return withFileLock(
 		lockPath,
 		async () => {
