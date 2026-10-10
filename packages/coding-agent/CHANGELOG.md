@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed computer-use `await win.observe()` as a cell's last expression printing the accessibility tree twice, once as text and again inside the displayed value
+
 ## [18.8.9] - 2026-10-10
 
 ### Added

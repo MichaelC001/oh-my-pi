@@ -58,6 +58,14 @@ def _make_computer():
     def _step(method, args, kwargs):
         return {"method": method, "args": _arguments(args, kwargs)}
 
+    class _Observation(dict):
+        """A non-silent observe() result; its repr leaves out the `ax` tree observe() already printed."""
+
+        __slots__ = ()
+
+        def __repr__(self):
+            return repr({key: value for key, value in self.items() if key != "ax"})
+
     class _Element:
         __slots__ = ("ref", "role", "nativeRole", "title", "description", "enabled", "focused", "childCount")
 
@@ -193,7 +201,11 @@ def _make_computer():
             self.menu = _Menu(self, "menu")
 
         async def observe(self, options=None, **kwargs):
-            return await self._method("observe", (options,), kwargs)
+            observation = await self._method("observe", (options,), kwargs)
+            silent = kwargs.get("silent", (options or {}).get("silent"))
+            if silent or not isinstance(observation, dict):
+                return observation
+            return _Observation(observation)
 
         async def bringToCurrentSpace(self):
             return await self._method("bringToCurrentSpace", (), {})
