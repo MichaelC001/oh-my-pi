@@ -291,6 +291,65 @@ describe("Claude saved-reset trigger integration", () => {
 		expect(session.agent.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "stop" });
 	});
 
+	it("never spends the reset of an account outside the session's account pool", async () => {
+		// The pooled account holds only the kept reserve; the excluded one has a spare reset.
+		const { session, targets } = buildSession({
+			report: null,
+			status: claudeStatus(true),
+			streamErrorFirst: true,
+			keepCredits: 1,
+		});
+		await authStorage.credentials.set(
+			"anthropic",
+			[
+				{ accountId: ACCOUNT_ID, email: EMAIL, orgId: ORG_ID },
+				{ accountId: "claude-excluded", email: "excluded@example.com", orgId: "org-excluded" },
+			].map(identity => ({
+				type: "oauth" as const,
+				access: `access-${identity.accountId}`,
+				refresh: `refresh-${identity.accountId}`,
+				expires: Date.now() + HOUR,
+				...identity,
+			})),
+		);
+		const [pooled, outside] = authStorage.credentials.list("anthropic");
+		if (!pooled || !outside) throw new Error("expected stored accounts");
+		const excludedReport = claudeReport(1);
+		excludedReport.metadata = { accountId: "claude-excluded", email: "excluded@example.com", orgId: "org-excluded" };
+		const excluded: ResetCreditAccountStatus = {
+			...claudeStatus(true),
+			credentialId: outside.id,
+			accountId: "claude-excluded",
+			email: "excluded@example.com",
+			orgId: "org-excluded",
+			active: false,
+			availableCount: 2,
+			report: excludedReport,
+		};
+		// Far from expiry, so only the restore could spend it.
+		excluded.credits = excluded.credits.map(credit => ({
+			...credit,
+			expiresAt: new Date(Date.now() + 20 * 24 * HOUR).toISOString(),
+		}));
+		vi.spyOn(authStorage.resets, "list").mockImplementation(async () => [
+			{ ...claudeStatus(true), credentialId: pooled.id },
+			excluded,
+		]);
+		const lease = authStorage.sessions.restrict("anthropic", session.sessionId, [`email:${EMAIL}|org:${ORG_ID}`]);
+		mockSchedulerWaitWithClock();
+
+		try {
+			await session.prompt("stay inside the account pool");
+			await session.waitForIdle();
+		} finally {
+			authStorage.sessions.unrestrict("anthropic", session.sessionId, lease);
+			await authStorage.credentials.remove("anthropic");
+		}
+
+		expect(targets).toEqual([]);
+		expect(session.agent.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "error" });
+	});
+
 	it("cancels reset discovery backoff without spending a credit or resuming the task", async () => {
 		const { session, targets } = buildSession({
 			report: null,
