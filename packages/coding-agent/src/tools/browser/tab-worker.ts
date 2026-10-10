@@ -1380,9 +1380,11 @@ export class WorkerCore {
 
 	/**
 	 * Puppeteer's page `error` event is Chromium's `Inspector.targetCrashed`: the renderer is gone, so every
-	 * later page call stalls until its timeout. The supervisor fails the run in flight and reattaches the tab.
+	 * later page call stalls until its timeout. The supervisor fails the run in flight at once and reattaches the
+	 * tab, so the run is cancelled here too rather than going on after its caller was told it failed.
 	 */
 	readonly #onPageCrashed = (): void => {
+		this.#active?.ac.abort(postmortem.markExpectedCleanupError(new ToolAbortError("Browser tab's renderer crashed")));
 		this.#transport.send({ type: "crashed" });
 	};
 
