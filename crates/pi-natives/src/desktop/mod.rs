@@ -313,6 +313,29 @@ impl Request {
 		}
 	}
 
+	/// The request's target, for requests that name one.
+	const fn target(&self) -> Option<&Target> {
+		match self {
+			Self::Capture { target, .. }
+			| Self::CaptureRegion { target, .. }
+			| Self::Observe { target, .. }
+			| Self::MenuItems { target, .. }
+			| Self::MenuSelect { target, .. }
+			| Self::HoldKeys { target, .. }
+			| Self::HoldMouse { target, .. }
+			| Self::Click { target, .. }
+			| Self::MoveMouse { target, .. }
+			| Self::Drag { target, .. }
+			| Self::Scroll { target, .. }
+			| Self::TypeText { target, .. }
+			| Self::KeyChord { target, .. }
+			| Self::AxSnapshot { target, .. }
+			| Self::AxQuery { target, .. }
+			| Self::AxElementAt { target, .. } => Some(target),
+			_ => None,
+		}
+	}
+
 	const fn is_close(&self) -> bool {
 		matches!(self, Self::Close { .. })
 	}
@@ -490,9 +513,9 @@ impl Worker {
 		let selector = target.display_selector();
 		// Bracket the acquisition: a lock on either side marks the frame, so a
 		// later unlock during encoding cannot pass lock-screen pixels as the app.
-		let locked_before = self.backend()?.screen_state().locked;
+		let locked_before = self.backend()?.screen_state(None).locked;
 		let (image, mut geometry) = self.backend()?.capture(target, caps, selector.as_ref())?;
-		let screen_locked = locked_before || self.backend()?.screen_state().locked;
+		let screen_locked = locked_before || self.backend()?.screen_state(None).locked;
 		let source_width = image.width();
 		let source_height = image.height();
 		let layout = self.backend()?.displays()?;
@@ -568,7 +591,8 @@ impl Worker {
 		let result = std::panic::catch_unwind(AssertUnwindSafe(|| self.execute(&request, token)))
 			.unwrap_or_else(|_| Err(DesktopError::internal("native desktop worker panicked")));
 		let result = if activity {
-			self.explain_failure(result)
+			let display = request.target().and_then(Target::display_selector);
+			self.explain_failure(result, display.as_ref())
 		} else {
 			result
 		};
@@ -587,10 +611,15 @@ impl Worker {
 
 	/// A failure while the screen is locked or the display asleep names that
 	/// state, since it is the likeliest cause and the raw error does not say.
-	fn explain_failure<T>(&mut self, result: CoreResult<T>) -> CoreResult<T> {
+	/// A request aimed at one display reports that display's sleep.
+	fn explain_failure<T>(
+		&mut self,
+		result: CoreResult<T>,
+		display: Option<&DisplaySelector>,
+	) -> CoreResult<T> {
 		result.map_err(|mut error| {
 			if let Ok(backend) = self.backend.as_mut()
-				&& let Some(note) = backend.screen_state().failure_note()
+				&& let Some(note) = backend.screen_state(display).failure_note()
 			{
 				error.message = format!("{} ({note})", error.message);
 			}
@@ -764,12 +793,12 @@ impl Worker {
 				base.validate_region(region)?;
 				let selector = base.capture_selector();
 				token.check()?;
-				let locked_before = self.backend()?.screen_state().locked;
+				let locked_before = self.backend()?.screen_state(None).locked;
 				let (image, fresh) =
 					self
 						.backend()?
 						.capture(target, &CaptureCaps::default(), selector.as_ref())?;
-				let screen_locked = locked_before || self.backend()?.screen_state().locked;
+				let screen_locked = locked_before || self.backend()?.screen_state(None).locked;
 				let layout = self.backend()?.displays().map_err(|error| {
 					DesktopError::invalid_coordinate_frame(format!(
 						"could not validate captured display layout: {error}"
@@ -1819,6 +1848,8 @@ mod capture_tests {
 		snapshot_error:         Arc<Mutex<bool>>,
 		cancel_on_snapshot:     Arc<Mutex<Option<CancellationSource>>>,
 		screen:                 Arc<Mutex<ScreenState>>,
+		/// Display selector each `screen_state` read was narrowed to.
+		screen_displays:        Arc<Mutex<Vec<Option<String>>>>,
 		/// Display-awake hold transitions, in order.
 		awake:                  Arc<Mutex<Vec<bool>>>,
 		/// Unlock the session on the next layout read, i.e. after the frame.
@@ -1863,6 +1894,7 @@ mod capture_tests {
 				snapshot_error:         Arc::new(Mutex::new(false)),
 				cancel_on_snapshot:     Arc::new(Mutex::new(None)),
 				screen:                 Arc::new(Mutex::new(ScreenState::default())),
+				screen_displays:        Arc::new(Mutex::new(Vec::new())),
 				awake:                  Arc::new(Mutex::new(Vec::new())),
 				unlock_on_layout:       Arc::new(Mutex::new(false)),
 			}
@@ -1971,7 +2003,11 @@ mod capture_tests {
 				.collect())
 		}
 
-		fn screen_state(&mut self) -> ScreenState {
+		fn screen_state(&mut self, display: Option<&DisplaySelector>) -> ScreenState {
+			self
+				.screen_displays
+				.lock()
+				.push(display.map(|display| format!("{display:?}")));
 			*self.screen.lock()
 		}
 
@@ -2197,6 +2233,34 @@ mod capture_tests {
 			panic!("click without a frame must fail")
 		};
 		(capture.screen_locked, error)
+	}
+
+	#[test]
+	fn a_failure_on_one_display_reads_that_displays_sleep_state() {
+		let backend = FakeWaylandBackend::new();
+		*backend.screen.lock() = ScreenState { locked: false, display_asleep: true };
+		let displays = Arc::clone(&backend.screen_displays);
+		let mut worker = worker_with(backend);
+		let token = CancellationSource::default().token();
+		let (reply, rx) = flume::bounded(1);
+		worker.dispatch(
+			Request::Click {
+				target: Target::Display("display:2".to_string()),
+				x: 1.0,
+				y: 1.0,
+				options: ParsedPointerOptions::parse(None).unwrap(),
+				reply,
+			},
+			&token,
+		);
+		let Err(error) = rx.recv().unwrap() else {
+			panic!("click without a frame must fail")
+		};
+		assert!(error.message.ends_with(" (the display is asleep)"), "{}", error.message);
+		assert_eq!(
+			displays.lock().last(),
+			Some(&Some(format!("{:?}", DisplaySelector::Id("2".into()))))
+		);
 	}
 
 	#[test]

@@ -95,8 +95,8 @@ impl Backend for MacosBackend {
 		self.capture.windows()
 	}
 
-	fn screen_state(&mut self) -> ScreenState {
-		session::screen_state(self.capture.selector())
+	fn screen_state(&mut self, display: Option<&DisplaySelector>) -> ScreenState {
+		session::screen_state(display.unwrap_or_else(|| self.capture.selector()))
 	}
 
 	fn keep_display_awake(&mut self, awake: bool) {

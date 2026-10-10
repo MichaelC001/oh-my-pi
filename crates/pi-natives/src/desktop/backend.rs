@@ -105,9 +105,10 @@ pub trait Backend: Send {
 	fn capabilities(&mut self) -> DesktopCapabilities;
 	fn displays(&mut self) -> CoreResult<Vec<DesktopDisplay>>;
 	fn windows(&mut self) -> CoreResult<Vec<DesktopWindow>>;
-	/// Live lock and display-sleep state. Backends that cannot tell report
-	/// both as false.
-	fn screen_state(&mut self) -> ScreenState {
+	/// Live lock and display-sleep state; `display` narrows the sleep check to
+	/// the display a request targets, else the session's. Backends that cannot
+	/// tell report both as false.
+	fn screen_state(&mut self, _display: Option<&DisplaySelector>) -> ScreenState {
 		ScreenState::default()
 	}
 	/// Hold (`true`) or release (`false`) the platform's prevent-idle-display-
