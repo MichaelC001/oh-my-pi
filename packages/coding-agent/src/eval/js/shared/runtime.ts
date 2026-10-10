@@ -417,6 +417,11 @@ export class JsRuntime {
 		this.#moduleLoader.setPackageRoot(packageRoot);
 	}
 
+	/** The session's internal-URL roots move with it (a re-adopted session has a new artifacts dir). */
+	setLocalRoots(localRoots: Record<string, string> | undefined): void {
+		this.#localRoots = localRoots ?? {};
+	}
+
 	/**
 	 * Install per-run globals. Intended for run-scoped state (browser's `tab`, `display`
 	 * overrides, etc.). Overwrites previous assignments — caller is responsible for any

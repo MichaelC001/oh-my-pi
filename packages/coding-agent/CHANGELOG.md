@@ -12,6 +12,10 @@
 ### Fixed
 
 - Fixed computer-use `win.ref("e5").click()` and other element calls chained on `ref()` throwing a TypeError; `await win.ref("e5")` still resolves the element, and element `click` now documents `count`, `button` and `modifiers` ([#15274](https://github.com/can1357/oh-my-pi/pull/15274) by [@will-bogusz](https://github.com/will-bogusz))
+### Fixed
+
+- Fixed Eval `read("artifact://N")` in JavaScript and Python returning the read tool's line-capped view instead of the artifact's text; `offset`/`limit` now select its lines as for a file ([#15279](https://github.com/can1357/oh-my-pi/pull/15279) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed `read`, `eval` and `bash` notices for lines cut at the column cap pointing back at the same capped view; they now name the `:raw:<line>-<line>` read that returns a cut line whole ([#15279](https://github.com/can1357/oh-my-pi/pull/15279) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.9] - 2026-10-10
 
