@@ -12,7 +12,7 @@
 
 - A `/models` compaction limit set past a model's standard context window now runs that model on its extended window instead of being silently clamped; the hub warns (noting long-context pricing) and saves on a second Enter, in the terminal and in Tern, and rejects limits past the model's largest window ([#15048](https://github.com/can1357/oh-my-pi/pull/15048) by [@H4vC](https://github.com/H4vC))
 - A token compaction limit set in `/models` (or `compaction.modelThresholds`) is now the base omp scales with its usual policy, as if it were the model's window (85% of it by default for bases above ~109k, or `compaction.thresholdPercent` of it), instead of the exact point. Plain numbers saved since 18.8.5 therefore compact earlier; rewrite one as `"f<tokens>"` (or type `f400k` in the hub) to keep it an exact trigger. The `/models` limit field shows where the model would compact as you type (`compacts at 340K · 85% of 400K base`), the preview's **Compacts at** row says why, and the saved message repeats it ([#15065](https://github.com/can1357/oh-my-pi/pull/15065) by [@H4vC](https://github.com/H4vC))
-- Claude saved-reset salvage now plans from the reset inventory in the usage reports instead of listing every Claude account live from every session every few minutes, which tripped Anthropic's usage rate limit; redeeming still re-checks the grant live
+- Background Claude saved-reset salvage now reads each account's reset inventory from its usage report instead of having every open session list every Claude account every few minutes, which tripped Anthropic's usage rate limit; redeeming still re-checks the grant live
 
 ### Fixed
 
