@@ -1,4 +1,5 @@
 def _make_computer():
+    import collections.abc
     import re
 
     def _encode_arg(value):
@@ -76,15 +77,8 @@ def _make_computer():
             # Pickle and copy as the plain dict, `ax` included: this class is local to the prelude.
             return (dict, (dict(self),))
 
-    class _Element:
-        __slots__ = ("ref", "role", "nativeRole", "title", "description", "enabled", "focused", "childCount")
-
-        def __init__(self, snapshot):
-            for field in self.__slots__:
-                setattr(self, field, snapshot.get(field))
-
-        def __repr__(self):
-            return f"<computer.Element ref={self.ref!r} role={self.role!r}>"
+    class _ElementMethods:
+        __slots__ = ()
 
         async def _method(self, method, args, kwargs):
             return await _call([_step("ref", (self.ref,), {}), _step(method, args, kwargs)])
@@ -122,6 +116,54 @@ def _make_computer():
 
         async def children(self):
             return [_Element(snapshot) for snapshot in await self._method("children", (), {})]
+
+    class _Element(_ElementMethods):
+        __slots__ = ("ref", "role", "nativeRole", "title", "description", "enabled", "focused", "childCount")
+
+        def __init__(self, snapshot):
+            for field in self.__slots__:
+                setattr(self, field, snapshot.get(field))
+
+        def __repr__(self):
+            return f"<computer.Element ref={self.ref!r} role={self.role!r}>"
+
+    class _ElementRef(_ElementMethods, collections.abc.Coroutine):
+        """`await ref("e5")` resolves the element; `await ref("e5").click()` calls it directly.
+
+        It is also a coroutine, so `asyncio.create_task(ref("e5"))` still works; the
+        lookup coroutine is created only when the handle itself is awaited or run.
+        """
+
+        __slots__ = ("ref", "_lookup")
+
+        def __init__(self, ref):
+            self.ref = ref
+            self._lookup = None
+
+        def __repr__(self):
+            return f"<computer.ElementRef ref={self.ref!r}>"
+
+        def _coroutine(self):
+            if self._lookup is None:
+                self._lookup = self._resolve()
+            return self._lookup
+
+        async def _resolve(self):
+            snapshot = await _call([_step("ref", (self.ref,), {})])
+            return _Element(snapshot) if isinstance(snapshot, dict) else None
+
+        def __await__(self):
+            return self._coroutine().__await__()
+
+        def send(self, value):
+            return self._coroutine().send(value)
+
+        def throw(self, *args):
+            return self._coroutine().throw(*args)
+
+        def close(self):
+            if self._lookup is not None:
+                self._lookup.close()
 
     class _Namespace:
         __slots__ = ("_root", "_namespace")
@@ -238,10 +280,9 @@ def _make_computer():
         async def find(self, *args, **kwargs):
             return [_Element(snapshot) for snapshot in await self._method("find", args, kwargs)]
 
-        async def ref(self, ref):
-            """Resolve a live accessibility element by its `[ref=eN]` tag."""
-            snapshot = await _call([_step("ref", (ref,), {})])
-            return _Element(snapshot) if isinstance(snapshot, dict) else None
+        def ref(self, ref):
+            """Live accessibility element by its `[ref=eN]` tag: await it, or call element methods on it."""
+            return _ElementRef(ref)
 
     class _Clipboard:
         __slots__ = ()
@@ -292,10 +333,9 @@ def _make_computer():
             snapshot = await self._method("focusedElement", (), {})
             return _Element(snapshot) if isinstance(snapshot, dict) else None
 
-        async def ref(self, ref):
-            """Resolve a live accessibility element by its `[ref=eN]` tag."""
-            snapshot = await self._method("ref", (ref,), {})
-            return _Element(snapshot) if isinstance(snapshot, dict) else None
+        def ref(self, ref):
+            """Live accessibility element by its `[ref=eN]` tag: await it, or call element methods on it."""
+            return _ElementRef(ref)
 
         async def run(self, code, *, read_only=None, timeout=None):
             """Run a JavaScript code string in the persistent desktop session and return its value."""

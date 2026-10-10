@@ -9,6 +9,9 @@
 ### Fixed
 
 - Fixed computer-use `await win.observe()` as a cell's last expression printing the accessibility tree twice, once as text and again inside the displayed value ([#15270](https://github.com/can1357/oh-my-pi/pull/15270) by [@will-bogusz](https://github.com/will-bogusz))
+### Fixed
+
+- Fixed computer-use `win.ref("e5").click()` and other element calls chained on `ref()` throwing a TypeError; `await win.ref("e5")` still resolves the element, and element `click` now documents `count`, `button` and `modifiers` ([#15274](https://github.com/can1357/oh-my-pi/pull/15274) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.9] - 2026-10-10
 

@@ -96,22 +96,39 @@
 				Object.defineProperty(target, field, { value: snapshot[field], enumerable: true });
 		}
 	};
+	const defineElementMethods = (target, ref) => {
+		const via = next => [step("ref", [ref]), next];
+		defineValueMethods(target, elementValueMethods, via);
+		defineMethod(target, "parent", async () => {
+			const parent = await callValue(via(step("parent", [])));
+			return parent ? makeElement(parent) : null;
+		});
+		defineMethod(target, "children", async () => (await callValue(via(step("children", [])))).map(makeElement));
+	};
 	const makeElement = snapshot => {
 		const element = {};
 		copyFields(element, elementFields, snapshot);
 		defineMethod(element, "toString", () => `<element ${snapshot.ref} ${snapshot.role}>`);
-		const via = next => [step("ref", [snapshot.ref]), next];
-		defineValueMethods(element, elementValueMethods, via);
-		defineMethod(element, "parent", async () => {
-			const parent = await callValue(via(step("parent", [])));
-			return parent ? makeElement(parent) : null;
-		});
-		defineMethod(element, "children", async () => (await callValue(via(step("children", [])))).map(makeElement));
+		defineElementMethods(element, snapshot.ref);
 		return Object.freeze(element);
 	};
 	const resolveElement = async chain => {
 		const snapshot = await callValue(chain);
 		return snapshot ? makeElement(snapshot) : null;
+	};
+	// `await ref("e5")` resolves the element; `ref("e5").click()` sends the element call
+	// directly, so the lookup runs only when the handle itself is awaited.
+	const makeRef = ref => {
+		let lookup;
+		const resolve = () => (lookup ??= resolveElement([step("ref", [ref])]));
+		const handle = {};
+		copyFields(handle, ["ref"], { ref });
+		defineMethod(handle, "then", (onFulfilled, onRejected) => resolve().then(onFulfilled, onRejected));
+		defineMethod(handle, "catch", onRejected => resolve().catch(onRejected));
+		defineMethod(handle, "finally", onFinally => resolve().finally(onFinally));
+		defineMethod(handle, "toString", () => `<element ref ${ref}>`);
+		defineElementMethods(handle, ref);
+		return Object.freeze(handle);
 	};
 	const makeWindow = snapshot => {
 		const win = {};
@@ -136,7 +153,7 @@
 			}
 			return observation;
 		});
-		defineMethod(win, "ref", ref => resolveElement([step("ref", [ref])]));
+		defineMethod(win, "ref", makeRef);
 		return Object.freeze(win);
 	};
 	const resolveWindow = async chain => {
@@ -172,7 +189,7 @@
 	computer.focusedWindow = () => resolveWindow([step("focusedWindow", [])]);
 	computer.elementAt = (x, y) => resolveElement([step("elementAt", [x, y])]);
 	computer.focusedElement = () => resolveElement([step("focusedElement", [])]);
-	computer.ref = ref => resolveElement([step("ref", [ref])]);
+	computer.ref = makeRef;
 	computer.clipboard = Object.freeze({
 		read: () => callValue([step("clipboard.read", [])]),
 		write: text => callValue([step("clipboard.write", [text])]),
