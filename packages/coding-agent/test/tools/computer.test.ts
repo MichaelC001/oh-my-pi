@@ -1151,6 +1151,22 @@ describe("computer worker round trips", () => {
 		}
 	});
 
+	it("scopes a display-sleep notice to the session's display", async () => {
+		const session = toolSession();
+		const native = new FakeNativeSession();
+		native.displayAsleep = true;
+		const prelude = workerPrelude(session, native);
+		const result = await prelude.invoke(
+			{ action: "run", code: "await desktop.click(1, 2)" },
+			{ session, toolCallId: "asleep-run", signal: new AbortController().signal },
+		);
+		const [note] = result.content;
+		const text = note?.type === "text" ? note.text : "";
+		expect(text).toMatch(/^Note: when this run ended the session's display is asleep\. /);
+		expect(text).toContain("Nothing on that display can be captured or clicked until it wakes.");
+		expect(text).toContain("`computer.display`");
+	});
+
 	it("adds the lock state to a run timed out by a hung native call without reading capabilities", async () => {
 		const started = Promise.withResolvers<void>();
 		const hung = Promise.withResolvers<DesktopCapture>();

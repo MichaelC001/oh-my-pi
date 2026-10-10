@@ -1,5 +1,8 @@
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import type { CaptureRegion, DesktopCapabilities, DesktopScreenState } from "@oh-my-pi/pi-natives";
+import { prompt } from "@oh-my-pi/pi-utils";
+import screenLockedCaptureNote from "../../prompts/tools/computer-screen-locked-capture.md" with { type: "text" };
+import screenStateTemplate from "../../prompts/tools/computer-screen-state.md" with { type: "text" };
 
 export { COMPUTER_WORKER_ARG } from "../../cli/worker-selectors";
 
@@ -35,35 +38,19 @@ export interface ComputerRunOk {
 }
 
 /** Appended to a screenshot taken while the macOS lock screen is up. */
-export const SCREEN_LOCKED_CAPTURE_NOTE =
-	"screen locked: macOS is showing its lock screen, so a display capture shows the lock screen and a window capture shows that window's last frame behind it";
+export const SCREEN_LOCKED_CAPTURE_NOTE = prompt.render(screenLockedCaptureNote);
 
 /**
- * Tells the model a run ended with the macOS screen locked or the display
- * asleep, so lock-screen pixels and failed captures are not taken for the
- * app's state. Input is never refused because of it.
+ * Tells the model a run ended with the macOS screen locked or the session's
+ * display asleep, so lock-screen pixels and failed captures are not taken
+ * for the app's state. Input is never refused because of it.
  */
 export function screenStateNotice(state: DesktopScreenState | undefined): string | undefined {
 	if (!state?.screenLocked && !state?.displayAsleep) return undefined;
-	const { screenLocked, displayAsleep } = state;
-	const state =
-		screenLocked && displayAsleep
-			? "the screen is locked and the display is asleep"
-			: screenLocked
-				? "the screen is locked"
-				: "the display is asleep";
-	const effects: string[] = [];
-	if (displayAsleep) effects.push("Nothing can be captured or clicked until the display wakes.");
-	else
-		effects.push(
-			"A display screenshot shows the lock screen and a window screenshot shows that window's last frame behind it, so neither confirms what this run did. A background click still reaches the app behind the lock screen.",
-		);
-	if (screenLocked) {
-		effects.push(
-			"While locked, apps expose no accessibility windows, so keystrokes, takeover and accessibility actions fail. The lock stays until someone unlocks the Mac.",
-		);
-	}
-	return `Note: when this run ended ${state}. ${effects.join(" ")}`;
+	return prompt.render(screenStateTemplate, {
+		screenLocked: state.screenLocked,
+		displayAsleep: state.displayAsleep,
+	});
 }
 
 /** Screenshot or zoom emitted during one computer run, with its full input coordinate frame. */
