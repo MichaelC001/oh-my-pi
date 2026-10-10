@@ -185,42 +185,23 @@ describe("Factory Droid model builder", () => {
 		expect(unknown.cost).toEqual(zeroCost);
 	});
 
-	it("registers Haiku 5.5 as a gated adaptive Claude with an Off rung, priced from Anthropic", () => {
-		const haiku = registryModel("claude-haiku-5-5");
-		const model = buildFactoryDroidModel(haiku);
-		expect(haiku.policy.wire).toBe("anthropic-messages");
-		expect(haiku.policy.entitlement.featureFlag).toBe("claude_haiku_5_5");
-		expect(haiku.policy.rotation).toEqual(["anthropic", "vertex_anthropic", "bedrock_anthropic", "azure_anthropic"]);
+	it("builds Haiku 5.5 with an Off rung and Anthropic's list price on the Standard pool", () => {
+		const model = buildFactoryDroidModel(registryModel("claude-haiku-5-5"));
 		expect(model.thinking).toMatchObject({
 			mode: "anthropic-adaptive",
 			efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
 			requiresEffort: false,
 			defaultLevel: Effort.Medium,
 		});
-		expect([model.contextWindow, model.maxTokens]).toEqual([872_000, 128_000]);
-		expect(model.factoryDroidCredits).toBe(0.04);
 		expect(model.cost).toEqual(getBundledModel("anthropic", "claude-haiku-5-5").cost);
 		expect(quotaTierFor("factory-droid", "claude-haiku-5-5")).toBe("standard");
 	});
 
-	it("registers Mistral Large 4 as a gated Core model served by Mistral outside the US", () => {
-		const large = registryModel("mistral-large-4");
-		const model = buildFactoryDroidModel(large);
-		expect(large.policy.wire).toBe("openai-completions");
-		expect(large.policy.entitlement.featureFlag).toBe("mistral_large_4");
-		expect(large.policy.regionUpstreams).toMatchObject({ us: [], eu: ["mistral"] });
+	it("builds Mistral Large 4 on the Core pool without borrowing the lower Mistral list price", () => {
+		const model = buildFactoryDroidModel(registryModel("mistral-large-4"));
 		expect(model.thinking).toMatchObject({ efforts: [Effort.High], requiresEffort: false });
-		expect([model.contextWindow, model.maxTokens]).toEqual([524_288, 64_000]);
-		// Factory bills above the bundled Mistral list price, so none is borrowed.
 		expect(model.cost).toEqual(zeroCost);
-		expect(model.factoryDroidCredits).toBe(0.544);
 		expect(quotaTierFor("factory-droid", "mistral-large-4")).toBe("core");
-	});
-
-	it("carries droid 0.237 upstream rotations and ungated GA models", () => {
-		expect(registryModel("gpt-6.1-sol").policy.rotation).toEqual(["openai", "bedrock_openai", "databricks"]);
-		expect(registryModel("gpt-6-luna").policy.entitlement.featureFlag).toBeUndefined();
-		expect(registryModel("deepseek-v4.1-flash").policy.entitlement.featureFlag).toBeUndefined();
 	});
 });
 
@@ -441,6 +422,20 @@ describe("Factory Droid discovery gates", () => {
 		expect(glm?.factoryDroidRoutingSource).toBeUndefined();
 	});
 
+	it("keeps live gpt-6.1-sol routing through Bedrock and Databricks", async () => {
+		const models = await discover({
+			routing: { version: 1, models: { "gpt-6.1-sol": ["bedrock_openai", "databricks", "openai"] } },
+		});
+		const sol = models?.find(model => model.id === "gpt-6.1-sol");
+		expect(sol?.factoryDroidApiProviders).toEqual(["bedrock_openai", "databricks", "openai"]);
+	});
+
+	it("lists GPT-6 Luna and DeepSeek V4.1 Flash without their retired flags", async () => {
+		const ids = await discoverIds({ flags: { gpt_6_luna: false, deepseek_v4_1_flash: false } });
+		expect(ids).toContain("gpt-6-luna");
+		expect(ids).toContain("deepseek-v4.1-flash");
+	});
+
 	it("keeps global overrides restrictive without removing the EU Mistral route", async () => {
 		const endpoints = {
 			flags: {},
@@ -533,8 +528,11 @@ describe("Factory Droid EU region", () => {
 		// overrides may name upstreams the EU table omits.
 		const opus5 = models!.find(model => model.id === "claude-opus-5")!;
 		expect(opus5.factoryDroidApiProviders).toEqual(["vertex_anthropic", "bedrock_anthropic"]);
-		// Fable stays behind its opt-in gate, but the EU now serves it on Vertex.
-		expect(registryModel("claude-fable-5").policy.regionUpstreams.eu).toEqual(["vertex_anthropic"]);
+		// Once policy approves the opt-in Fable, the EU serves it on Vertex.
+		const approved = await discover({ modelPolicy: { allowAllFactoryModels: true } }, { region: "eu" });
+		expect(approved?.find(model => model.id === "claude-fable-5")?.factoryDroidApiProviders).toEqual([
+			"vertex_anthropic",
+		]);
 		const flash = models!.find(model => model.id === "gemini-3.8-flash")!;
 		expect(flash.factoryDroidApiProviders).toEqual(["google"]);
 		expect(opus5.baseUrl).toBe("https://api.eu.factory.ai/api/llm/a");

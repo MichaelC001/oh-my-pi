@@ -128,10 +128,10 @@ describe("Anthropic disabled-thinking compat", () => {
 });
 
 /** Haiku 5.5 on a binding-controls host; the request is captured at the fetch boundary. */
-function haiku(provider: "anthropic" | "cloudflare-ai-gateway"): Model<"anthropic-messages"> {
+function haiku(provider: "anthropic" | "cloudflare-ai-gateway", id = "claude-haiku-5-5"): Model<"anthropic-messages"> {
 	return buildModel({
-		id: "claude-haiku-5-5",
-		name: "Claude Haiku 5.5",
+		id,
+		name: id,
 		api: "anthropic-messages",
 		provider,
 		baseUrl:
@@ -201,6 +201,36 @@ describe("Anthropic thinking-binding beta follows block_binding", () => {
 			const fallback = await haikuRequest(target, history, undefined);
 			expect(fallback.body.thinking?.type).toBe("adaptive");
 			expect(fallback.body.thinking?.block_binding).toEqual({ prefix_mismatch_behavior: "drop_block" });
+			expect(fallback.beta).toContain("thinking-binding-controls-2026-08-01");
+		},
+	);
+
+	it.each(["anthropic", "cloudflare-ai-gateway"] as const)(
+		"%s Sonnet 5.5 Off sends between_tools without binding, but after xhigh falls back to default adaptive with the beta",
+		async provider => {
+			const target = haiku(provider, "claude-sonnet-5-5");
+			const off = await haikuRequest(target, [{ role: "user", content: "q0", timestamp: 1 }], undefined);
+			expect(off.body.thinking).toEqual({ type: "between_tools" });
+			expect(off.beta).not.toContain("thinking-binding-controls-2026-08-01");
+
+			const controller = new AbortController();
+			controller.abort();
+			const first: AssistantMessage = await streamAnthropic(
+				target,
+				{ messages: [{ role: "user", content: "q0", timestamp: 1 }] },
+				{ apiKey: "sk-ant-api-test", signal: controller.signal, thinkingEnabled: true, reasoning: Effort.XHigh },
+			).result();
+			const fallback = await haikuRequest(
+				target,
+				[
+					{ role: "user", content: "q0", timestamp: 1 },
+					{ ...first, content: [{ type: "text", text: "ok" }], stopReason: "stop", timestamp: 2 },
+					{ role: "user", content: "q1", timestamp: 3 },
+				],
+				undefined,
+			);
+			// The API's default adaptive thinking (field omitted), with the beta, as before.
+			expect(fallback.body.thinking).toBeUndefined();
 			expect(fallback.beta).toContain("thinking-binding-controls-2026-08-01");
 		},
 	);

@@ -4566,11 +4566,29 @@ function thinkingOffSendsNoAdaptive(
 		// Without per-message effort the effort controls never block `disabled`.
 		if (model.compat.supportsPerMessageEffort !== true) return true;
 		if (!effortControlsBlockDisabledThinking(model, messages, records())) return true;
+	} else if (disabledThinking === "between-tools") {
+		return !betweenToolsEffortInForceTooHigh(model, records);
 	} else if (disabledThinking !== undefined) {
 		return disabledThinking !== "adaptive";
 	}
 	if (model.compat.requiresThinkingEnabled) return false;
-	return model.compat.supportsBetweenToolsThinking || !isAdaptiveOnlyThinking(model);
+	if (model.compat.supportsBetweenToolsThinking) return !betweenToolsEffortInForceTooHigh(model, records);
+	return !isAdaptiveOnlyThinking(model);
+}
+
+/**
+ * Whether the top-level effort earlier requests left in force is `xhigh` or
+ * `max`, which `between_tools` rejects, so buildParams falls back to default
+ * adaptive thinking. Without per-message effort the turn's own pin (at most
+ * `high`) is the top-level effort, so it never falls back.
+ */
+function betweenToolsEffortInForceTooHigh(
+	model: Model<"anthropic-messages">,
+	records: () => readonly AnthropicControlRecord[],
+): boolean {
+	if (model.compat.supportsPerMessageEffort !== true) return false;
+	const latest = records().findLast(record => record.controls.effort)?.controls.effort?.topLevel;
+	return latest === "xhigh" || latest === "max";
 }
 
 /**
