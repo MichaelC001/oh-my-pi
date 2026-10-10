@@ -958,6 +958,105 @@ describe("computer prelude", () => {
 		}
 	});
 
+	class RefCallSession extends FakeNativeSession {
+		readonly axCalls: unknown[] = [];
+		override async axNode(ref: string): Promise<AxNode> {
+			this.axCalls.push(["axNode", ref]);
+			return axNode;
+		}
+		override async axPerform(ref: string, action: string): Promise<void> {
+			this.axCalls.push(["axPerform", ref, action]);
+		}
+		override async axClick(ref: string, opts?: PointerOptions | null): Promise<void> {
+			this.axCalls.push(["axClick", ref, opts]);
+		}
+	}
+
+	it("chains element calls on JavaScript ref() handles, direct and in runs, and double-clicks", async () => {
+		const session = toolSession();
+		const native = new RefCallSession();
+		const prelude = workerPrelude(session, native);
+		const context = { session, toolCallId: "ref-chain-js" };
+		const realm = createContext({
+			__omp_display__: () => {},
+			__omp_prelude__: async (_name: string, parameters: unknown) => {
+				const result = await prelude.invoke(parameters, context);
+				return { text: "", details: result.details };
+			},
+		});
+		runInContext(prelude.javascript, realm);
+		try {
+			const role = await runInContext(
+				`(async () => {
+					const win = await computer.window(42);
+					await win.ref("e1").click({ count: 2 });
+					await computer.ref("e1").press();
+					const el = await win.ref("e1");
+					await el.click({ count: 2, button: "right" });
+					await computer.run(async ({ desktop }) => {
+						const win = await desktop.window(42);
+						await win.ref("e1").click({ count: 2 });
+						await desktop.ref("e1").press();
+					});
+					return el.role;
+				})()`,
+				realm,
+			);
+			expect(role).toBe("button");
+			expect(native.axCalls).toEqual([
+				["axNode", "e1"],
+				["axClick", "e1", { count: 2 }],
+				["axNode", "e1"],
+				["axPerform", "e1", "press"],
+				["axNode", "e1"],
+				["axNode", "e1"],
+				["axClick", "e1", { button: "right", count: 2 }],
+				["axNode", "e1"],
+				["axClick", "e1", { count: 2 }],
+				["axNode", "e1"],
+				["axPerform", "e1", "press"],
+			]);
+		} finally {
+			await prelude.invoke({ action: "close" }, context);
+		}
+	});
+
+	it("chains element calls on Python ref() handles and still awaits them to elements", async () => {
+		let definitions: readonly EvalPreludeDefinition[] = [];
+		const session: ToolSession = { ...toolSession(), getEvalPreludes: () => definitions };
+		const native = new RefCallSession();
+		const prelude = workerPrelude(session, native);
+		definitions = [prelude];
+		try {
+			const result = await executePython(
+				[
+					"win = await computer.window(42)",
+					'await win.ref("e1").click(count=2)',
+					'await computer.ref("e1").press()',
+					'el = await win.ref("e1")',
+					"print(repr(el))",
+				].join("\n"),
+				{
+					cwd: process.cwd(),
+					sessionId: `computer-ref-chain-py-${crypto.randomUUID()}`,
+					toolSession: session,
+					kernelMode: "per-call",
+				},
+			);
+			expect(result.exitCode).toBe(0);
+			expect(result.output.trim()).toBe("<computer.Element ref='e1' role='button'>");
+			expect(native.axCalls).toEqual([
+				["axNode", "e1"],
+				["axClick", "e1", { count: 2 }],
+				["axNode", "e1"],
+				["axPerform", "e1", "press"],
+				["axNode", "e1"],
+			]);
+		} finally {
+			await prelude.invoke({ action: "close" }, { session, toolCallId: "ref-chain-py-close" });
+		}
+	});
+
 	it("treats text-only Python host responses as unavailable capabilities", async () => {
 		const calls: unknown[] = [];
 		let definitions: readonly EvalPreludeDefinition[] = [];

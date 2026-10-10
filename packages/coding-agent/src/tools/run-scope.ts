@@ -386,6 +386,11 @@ export function bindRunFacade<T extends object>(
 					const result = Reflect.apply(value, current, args);
 					if (result && typeof result === "object") {
 						const then = Reflect.get(result, "then");
+						// A handle that is also thenable (`desktop.ref("e5")`) keeps its methods; each of
+						// its calls, `then` included, is gated the same way.
+						if (typeof then === "function" && !(result instanceof Promise)) {
+							return bindRunFacade(result, signal, rejectionOwner, onFloatingRejection);
+						}
 						if (typeof then === "function") {
 							return trackBrowserRunPromise(
 								Promise.resolve(result).then(resolved => {
