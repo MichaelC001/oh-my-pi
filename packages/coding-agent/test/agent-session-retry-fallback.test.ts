@@ -2435,6 +2435,75 @@ describe("AgentSession retry fallback", () => {
 		});
 	});
 
+	it("pauses an advisor on a usage limit instead of switching under retry.fallbackOn except-usage-limit", async () => {
+		vi.spyOn(modelRegistry.authStorage.limits, "markReached").mockResolvedValue({ switched: false });
+		const mainModel = getBundledModel("openai", "gpt-4o-mini");
+		const advisorPrimary = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const advisorFallback = getBundledModel("google", "gemini-2.5-flash");
+		if (!mainModel || !advisorPrimary || !advisorFallback) {
+			throw new Error("Expected bundled advisor fallback models to exist");
+		}
+
+		const mainMock = createMockModel({ responses: [{ content: ["Primary complete"] }] });
+		const advisorMock = createMockModel();
+		const requestedAdvisorModels: string[] = [];
+		const advisorYielded = Promise.withResolvers<void>();
+		const advisorPrimarySelector = `${advisorPrimary.provider}/${advisorPrimary.id}`;
+		const advisorRoleSelector = `${advisorPrimarySelector}:high`;
+		const advisorFallbackSelector = `${advisorFallback.provider}/${advisorFallback.id}`;
+
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model: mainModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: mainMock.stream,
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.fallbackOn": "except-usage-limit",
+			"retry.fallbackChains": {
+				advisor: [advisorFallbackSelector],
+			},
+			"advisor.syncBacklog": "1",
+		});
+		settings.setModelRole("commit", `${mainModel.provider}/${mainModel.id}`);
+		settings.setModelRole("advisor", advisorRoleSelector);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+			advisorTools: [],
+			advisorConfigs: [{ name: "quota-test", model: advisorRoleSelector }],
+			advisorStreamFn: (model, context, options) => {
+				requestedAdvisorModels.push(`${model.provider}/${model.id}`);
+				advisorMock.push({ stopReason: "error", errorMessage: "429 usage_limit_reached" });
+				return advisorMock.stream(model, context, options);
+			},
+		});
+		session.subscribe(event => {
+			if (event.type === "advisor_yielded") advisorYielded.resolve();
+		});
+
+		session.setAdvisorEnabled(true);
+		await session.prompt("Complete one primary turn");
+		await session.waitForIdle();
+		await advisorYielded.promise;
+
+		expect(requestedAdvisorModels).not.toContain(advisorFallbackSelector);
+		expect(requestedAdvisorModels[0]).toBe(advisorPrimarySelector);
+		expect(session.getAdvisorAgent()?.state.model).toMatchObject({
+			provider: advisorPrimary.provider,
+			id: advisorPrimary.id,
+		});
+		expect(session.getAdvisorStatusOverview().advisors[0]?.yielded).toBe(true);
+	});
+
 	it("hops an advisor to the chain owned by the fallback it landed on", async () => {
 		const mainModel = getBundledModel("openai", "gpt-4o-mini");
 		const advisorPrimary = getBundledModel("anthropic", "claude-sonnet-4-5");
