@@ -802,6 +802,10 @@ describe("selectCollapsedTodos walking viewport (#5873)", () => {
 		const pending = selectCollapsedTodos(mk(6, [1]), never, 5);
 		expect(contents(pending)).toEqual(["Task 1", "Task 2", "Task 3", "Task 4", "Task 5", "Task 6"]);
 		expect(pending.summary).toBe("");
+
+		const active = selectCollapsedTodos(mk(6, []), () => true, 5);
+		expect(contents(active)).toEqual(["Task 1", "Task 2", "Task 3", "Task 4", "Task 5", "Task 6"]);
+		expect(active.summary).toBe("");
 	});
 
 	it("keeps an overflow summary when one active task overflows the cap and pending remains", () => {
