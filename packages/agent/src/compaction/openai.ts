@@ -20,7 +20,7 @@ import { getCodexAttestationHeader } from "@oh-my-pi/pi-ai/providers/openai-code
 import { createOpenAICodexCompactionRequestContext } from "@oh-my-pi/pi-ai/providers/openai-codex-compaction";
 import { applyCodexResponsesLiteShape } from "@oh-my-pi/pi-ai/providers/openai-codex/request-transformer";
 import { createOpenAICodexCompatibilityMetadata } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
-import { setHeaderIfAbsent } from "@oh-my-pi/pi-ai/providers/inference-headers";
+import { applySessionHeader } from "@oh-my-pi/pi-ai/providers/inference-headers";
 import {
 	encodeResponsesToolResultOutput,
 	hoistInterleavedResponsesToolBatchMessages,
@@ -863,8 +863,7 @@ export async function requestOpenAiRemoteCompaction(
 				Authorization: `Bearer ${apiKey}`,
 				...model.headers,
 			};
-	const sessionHeader = model.compat && "sessionHeader" in model.compat ? model.compat.sessionHeader : undefined;
-	if (sessionHeader && opts?.sessionId) setHeaderIfAbsent(headers, sessionHeader, opts.sessionId);
+	applySessionHeader(headers, model.compat, opts?.sessionId);
 
 	// Codex endpoints require additional auth headers
 	if (isCodexResponses) {
