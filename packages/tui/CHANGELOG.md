@@ -6,6 +6,10 @@
 
 - Fixed SIXEL auto-detection on terminals that advertise graphics through DA1 attribute 4 but do not answer XTSMGRAPHICS, including native Windows Terminal; SVG figures and inline images no longer require `PI_FORCE_IMAGE_PROTOCOL=sixel`. Terminals that answer both queries keep consuming the pending graphics reply after DA1 enables SIXEL, preventing probe bytes from reaching application input ([#15226](https://github.com/can1357/oh-my-pi/pull/15226) by [@pgkim42](https://github.com/pgkim42)).
 
+### Changed
+
+- `StatusLineComponent.describeComposerFacts()` includes the configured `git` segment among the composer's facts (branch and status, the `status.git` click action, pinned so it outlasts the other facts) instead of leaving the branch to Tern's pane header ([#15220](https://github.com/can1357/oh-my-pi/pull/15220) by [@H4vC](https://github.com/H4vC))
+
 ## [18.8.8] - 2026-10-10
 
 ### Breaking Changes
