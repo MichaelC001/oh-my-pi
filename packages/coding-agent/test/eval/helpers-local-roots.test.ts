@@ -4,6 +4,7 @@ import { TempDir } from "@oh-my-pi/pi-utils/temp";
 import { resolveEvalUrlRoots } from "../../src/eval/backend";
 import { createHelpers, type HelperContext } from "../../src/eval/js/shared/helpers";
 import type { ToolSession } from "../../src/tools";
+import { rejectionOf } from "../helpers/rejection";
 
 /**
  * The eval helpers (`read`/`write`) must substitute injected on-disk
@@ -66,7 +67,8 @@ describe("eval js helpers internal-url resolution", () => {
 		expect(helpers.hasRoot("artifact://12")).toBe(true);
 		expect(await helpers.read("artifact://12")).toBe(`${wide}\nsecond\nthird\n`);
 		expect(await helpers.read("artifact://12", { offset: 2, limit: 1 })).toBe("second");
-		await expect(helpers.read("artifact://7")).rejects.toThrow(/Artifact 7 not found/);
+		// Not in this session's dir: the prelude falls back to the read tool.
+		expect(await helpers.read("artifact://7")).toBeUndefined();
 	});
 
 	it("leaves artifact selectors to the read tool and refuses artifact writes", async () => {
@@ -75,7 +77,9 @@ describe("eval js helpers internal-url resolution", () => {
 		const helpers = createHelpers(makeCtx(tmp.path(), { artifact: artifacts }));
 
 		expect(helpers.hasRoot("artifact://12:raw:1-1")).toBe(false);
-		await expect(helpers.writeFile("artifact://12", "x")).rejects.toThrow(/not supported/i);
+		expect(await rejectionOf(helpers.writeFile("artifact://12", "x"))).toMatchObject({
+			message: expect.stringMatching(/not supported/i),
+		});
 		expect(await Bun.file(path.join(artifacts, "12")).exists()).toBe(false);
 	});
 

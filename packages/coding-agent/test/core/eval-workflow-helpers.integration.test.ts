@@ -82,4 +82,29 @@ describe.skipIf(!SHOULD_RUN)("python eval workflow helpers", () => {
 			await kernel.shutdown();
 		}
 	});
+
+	it("read() of an artifact: empty for a non-positive limit, read tool for another session's id", async () => {
+		using tempDir = TempDir.createSync("@eval-workflow-artifact-fallback-");
+		const artifacts = path.join(tempDir.path(), "artifacts");
+		await Bun.write(path.join(artifacts, "12.eval.log"), "first\nsecond\nthird\n");
+		const kernel = await PythonKernel.start({ cwd: tempDir.path() });
+		try {
+			// Stub only the host bridge, as the JS prelude tests stub `__omp_call_tool__`.
+			const code = [
+				"calls = []",
+				"_bridge_call = lambda name, args: calls.append((name, args['path'])) or {'text': 'from the read tool'}",
+				"print('EMPTY', [read('artifact://12', limit=0), read('artifact://12', limit=-1), read('artifact://7', limit=0)])",
+				"print('CALLS', calls)",
+				"print('TOOL', read('artifact://7'), '|', read('artifact://7', offset=2, limit=2))",
+				"print('CALLS', calls)",
+			].join("\n");
+			const result = await executePythonWithKernel(kernel, code, { localRoots: { artifact: artifacts } });
+			expect(result.exitCode).toBe(0);
+			expect(result.output).toContain("EMPTY ['', '', '']\nCALLS []");
+			expect(result.output).toContain("TOOL from the read tool | from the read tool");
+			expect(result.output).toContain("CALLS [('read', 'artifact://7:raw'), ('read', 'artifact://7:raw:2-3')]");
+		} finally {
+			await kernel.shutdown();
+		}
+	});
 });

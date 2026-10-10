@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { isEnoent } from "@oh-my-pi/pi-utils";
+import { isEnoent } from "@oh-my-pi/pi-utils/fs-error";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import type { JsStatusEvent } from "./types";
 
@@ -32,7 +32,8 @@ export interface HelperContext {
  * onto the global scope.
  */
 export interface HelperBundle {
-	read(rawPath: string, options?: HelperOptions): Promise<string>;
+	/** Resolves to `undefined` when `artifact://<id>` is not in this session's artifacts dir; the prelude then asks the read tool. */
+	read(rawPath: string, options?: HelperOptions): Promise<string | undefined>;
 	writeFile(rawPath: string, data: unknown): Promise<string>;
 	env(key?: string, value?: string): string | Record<string, string> | undefined;
 	/** Whether `rawPath` is an internal URL whose scheme has an injected root (served by these helpers, not delegated to the read tool). */
@@ -44,7 +45,9 @@ const utf8Encoder = new TextEncoder();
 export function createHelpers(ctx: HelperContext): HelperBundle {
 	return {
 		read: async (rawPath, options = {}) => {
-			const { filePath, file, size } = await resolveRegularFile(ctx, rawPath);
+			const resolved = await resolveRegularFile(ctx, rawPath);
+			if (!resolved) return undefined;
+			const { filePath, file, size } = resolved;
 			let text = await file.text();
 			const offset = typeof options.offset === "number" ? options.offset : 1;
 			const limit = typeof options.limit === "number" ? options.limit : undefined;
@@ -131,18 +134,17 @@ function resolveHelperPath(ctx: HelperContext, rawPath: string, op: "read" | "wr
 	return resolveUnderRoot(scheme, root, match[2], rawPath);
 }
 
-/** The file backing `artifact://<id>` in the artifacts dir `root`: `<id>.<tool>.log`. */
-async function resolveArtifactPath(root: string, id: string, rawPath: string): Promise<string> {
+/** The file backing `artifact://<id>` in the artifacts dir `root` (`<id>.<tool>.log`), or `undefined` when absent. */
+async function resolveArtifactPath(root: string, id: string): Promise<string | undefined> {
 	let files: string[];
 	try {
 		files = await fs.readdir(root);
 	} catch (error) {
 		if (!isEnoent(error)) throw error;
-		files = [];
+		return undefined;
 	}
 	const name = files.find(file => file.startsWith(`${id}.`));
-	if (!name) throw new ToolError(`Artifact ${id} not found: ${rawPath}`);
-	return path.join(root, name);
+	return name === undefined ? undefined : path.join(root, name);
 }
 
 /** Resolve an internal-URL relative path under its root, mirroring the host
@@ -173,13 +175,14 @@ function resolveUnderRoot(scheme: string, root: string, rawRelative: string, raw
 async function resolveRegularFile(
 	ctx: HelperContext,
 	rawPath: string,
-): Promise<{ filePath: string; file: Bun.BunFile; size: number }> {
+): Promise<{ filePath: string; file: Bun.BunFile; size: number } | undefined> {
 	const match = INTERNAL_URL_RE.exec(rawPath);
 	const artifactRoot = match?.[1].toLowerCase() === "artifact" ? ctx.localRoots().artifact : undefined;
 	const filePath =
 		artifactRoot && match && ARTIFACT_ID_RE.test(match[2])
-			? await resolveArtifactPath(artifactRoot, match[2], rawPath)
+			? await resolveArtifactPath(artifactRoot, match[2])
 			: resolveHelperPath(ctx, rawPath, "read");
+	if (filePath === undefined) return undefined;
 	const file = Bun.file(filePath);
 	const stat = await file.stat();
 	if (stat.isDirectory()) {

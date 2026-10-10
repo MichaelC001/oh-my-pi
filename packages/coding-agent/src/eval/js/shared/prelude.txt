@@ -60,6 +60,13 @@ if (!globalThis.__omp_js_prelude_loaded__) {
 			const toolPath = withReadLineSelector(path, options);
 			return toolPath === null ? "" : readToolText(toolPath);
 		}
+		if (/^artifact:\/\//i.test(path)) {
+			const rawPath = withReadLineSelector(`${path}:raw`, options);
+			if (rawPath === null) return "";
+			const text = await callHelper("read", path, options);
+			// Held by another session: the read tool searches every registered artifacts dir.
+			return text ?? readToolText(rawPath);
+		}
 		return callHelper("read", path, options);
 	};
 	const write = async (path, data) => callHelper("writeFile", path, data);
