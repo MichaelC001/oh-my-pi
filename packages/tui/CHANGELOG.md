@@ -127,6 +127,7 @@
 
 - Fixed relative file links in Tern assistant replies opening against the folder omp was started in; they now open the file in the session's working directory ([#14879](https://github.com/can1357/oh-my-pi/pull/14879) by [@H4vC](https://github.com/H4vC))
 - Fixed Tern modals with no clickable exit: BTW history, git shortcuts and autoresearch gain a Close button, plan review a Cancel button, the agent transcript viewer and `/annotate` review a top-right `esc` that runs Esc, and the `/move` dialog Accept, Cancel and Confirm buttons; new `escCloseButton()` builds the `esc` keycap button ([#14894](https://github.com/can1357/oh-my-pi/pull/14894) by [@H4vC](https://github.com/H4vC))
+- Fixed extension statuses set via `ctx.ui.setStatus` losing their SGR colours and text styles under the status line; other escape sequences are still stripped ([#14500](https://github.com/can1357/oh-my-pi/pull/14500) by [@sandboiii](https://github.com/sandboiii))
 
 ## [18.8.2] - 2026-10-07
 
