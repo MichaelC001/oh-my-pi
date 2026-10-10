@@ -6,18 +6,23 @@
 
 - Added opt-in JSON editing for free-form array settings, with credential settings kept masked in rows and editors ([#15252](https://github.com/can1357/oh-my-pi/pull/15252) by [@Shadorain](https://github.com/Shadorain)).
 
+### Changed
+
+- Reduced the time to rebuild a long session's transcript on resume when it contains repeated `wait` polls or todo updates ([#13767](https://github.com/can1357/oh-my-pi/pull/13767) by [@sjawhar](https://github.com/sjawhar))
+- `OutputSink` summaries report the first and last line the column cap cut (`columnTruncatedRange`), and the column-cut notice names the `:raw` line selector of the artifact or file that returns a cut line whole ([#15279](https://github.com/can1357/oh-my-pi/pull/15279) by [@will-bogusz](https://github.com/will-bogusz))
+
 ### Fixed
 
 - Native settings editors now display submission and validation errors instead of silently keeping the editor open ([#15252](https://github.com/can1357/oh-my-pi/pull/15252) by [@Shadorain](https://github.com/Shadorain)).
 - Fixed `/tree` stalling when opened on very long session histories ([#12527](https://github.com/can1357/oh-my-pi/pull/12527) by [@azain47](https://github.com/azain47)).
 - Fixed `/tree` exhausting memory on long sessions with many branch points ([#12622](https://github.com/can1357/oh-my-pi/pull/12622) by [@ParadaCarleton](https://github.com/ParadaCarleton)).
-
-### Changed
-
-- Reduced the time to rebuild a long session's transcript on resume when it contains repeated `wait` polls or todo updates ([#13767](https://github.com/can1357/oh-my-pi/pull/13767) by [@sjawhar](https://github.com/sjawhar))
-### Changed
-
-- `OutputSink` summaries report the first and last line the column cap cut (`columnTruncatedRange`), and the column-cut notice names the `:raw` line selector of the artifact or file that returns a cut line whole ([#15279](https://github.com/can1357/oh-my-pi/pull/15279) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed extension statuses set via `ctx.ui.setStatus` losing their SGR colours and text styles under the status line; other escape sequences are still stripped ([#14500](https://github.com/can1357/oh-my-pi/pull/14500) by [@sandboiii](https://github.com/sandboiii))
+- Fixed the eval status list's `… N earlier` row to include status events dropped from long-running cells ([#14992](https://github.com/can1357/oh-my-pi/pull/14992) by [@azain47](https://github.com/azain47)).
+- Fixed the loop watchdog attributing `ui.loop-blocked` to work outside the late window or outweighed by unlabeled time. Named phases now include `phaseMs`; earlier work and unlabeled stalls remain `unknown`, including after a TUI restart ([#15019](https://github.com/can1357/oh-my-pi/pull/15019) by [@jaredlyon](https://github.com/jaredlyon)).
+- Fixed `ui.loop-blocked` reporting `unknown` when a terminal write blocks the event loop while the terminal drains (Windows, or when the output pump is unavailable); those stalls are now logged as `ui.terminal-write` ([#15029](https://github.com/can1357/oh-my-pi/pull/15029) by [@jaredlyon](https://github.com/jaredlyon)).
+- Fixed Agent Hub and status-line spend dropping cumulative subagent cost after compaction, parking, or follow-up turns while keeping nested task-result charges on child rows ([#15038](https://github.com/can1357/oh-my-pi/pull/15038) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
+- Fixed dead keys on Windows Terminal 1.24 and earlier (US-International and similar layouts): `'` or `"` followed by Space now types the quote instead of a space, and a dead key followed by Enter or Tab types the quote instead of submitting or inserting a tab ([#15138](https://github.com/can1357/oh-my-pi/pull/15138) by [@davide-butera](https://github.com/davide-butera))
+- Fixed SIXEL auto-detection on terminals that advertise graphics through DA1 attribute 4 but do not answer XTSMGRAPHICS, including native Windows Terminal; SVG figures and inline images no longer require `PI_FORCE_IMAGE_PROTOCOL=sixel`. Terminals that answer both queries keep consuming the pending graphics reply after DA1 enables SIXEL, preventing probe bytes from reaching application input ([#15226](https://github.com/can1357/oh-my-pi/pull/15226) by [@pgkim42](https://github.com/pgkim42)).
 
 ## [18.8.9] - 2026-10-10
 
@@ -30,9 +35,6 @@
 - `classifyTerminalMultiplexer()` reports `"orca"` inside Orca terminals while `isInsideTerminalMultiplexer()` stays false there, so Orca keeps the direct-terminal render path; `TERMINAL_MULTIPLEXER_ENV_KEYS` lists every environment variable multiplexer detection reads ([#13620](https://github.com/can1357/oh-my-pi/pull/13620) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy))
 - Added `terminalMultiplexerSessions()`, `terminalMultiplexerForTerm()`, `classifyTerminalMultiplexerModule()`, and `routeTerminalMultiplexerNotification()`, driven by one multiplexer registry that now owns notification routing and per-multiplexer capability overrides ([#13620](https://github.com/can1357/oh-my-pi/pull/13620) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy))
 - Added `change` and `progress` table-chart kinds with `ChartSpec.baseline` and `TableColumn.scores`: a before/after table whose rows have their own units charts each metric as a factor of the baseline column (rows without two numbers are named in the caption), and `analyzeTable` reads whole-number scores (`12/12`, `154/160`) as the percent of their total, keeping `a / b` pairs and lists as written
-### Fixed
-
-- Fixed SIXEL auto-detection on terminals that advertise graphics through DA1 attribute 4 but do not answer XTSMGRAPHICS, including native Windows Terminal; SVG figures and inline images no longer require `PI_FORCE_IMAGE_PROTOCOL=sixel`. Terminals that answer both queries keep consuming the pending graphics reply after DA1 enables SIXEL, preventing probe bytes from reaching application input ([#15226](https://github.com/can1357/oh-my-pi/pull/15226) by [@pgkim42](https://github.com/pgkim42)).
 
 ### Changed
 
@@ -45,10 +47,6 @@
 ### Fixed
 
 - Fixed `parseCell` throwing on table cells such as `3 constructor` or `2 valueOf calls`, and reading a `constructor` cell as a missing value
-
-### Fixed
-
-- Fixed dead keys on Windows Terminal 1.24 and earlier (US-International and similar layouts): `'` or `"` followed by Space now types the quote instead of a space, and a dead key followed by Enter or Tab types the quote instead of submitting or inserting a tab ([#15138](https://github.com/can1357/oh-my-pi/pull/15138) by [@davide-butera](https://github.com/davide-butera))
 
 ## [18.8.8] - 2026-10-10
 
@@ -76,12 +74,6 @@
 ### Fixed
 
 - Fixed the Agents hub Time column rewinding and freezing for running subagents between progress updates ([#15140](https://github.com/can1357/oh-my-pi/pull/15140) by [@H4vC](https://github.com/H4vC))
-- Fixed Agent Hub and status-line spend dropping cumulative subagent cost after compaction, parking, or follow-up turns while keeping nested task-result charges on child rows ([#15038](https://github.com/can1357/oh-my-pi/pull/15038) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
-
-### Fixed
-
-- Fixed the loop watchdog attributing `ui.loop-blocked` to work outside the late window or outweighed by unlabeled time. Named phases now include `phaseMs`; earlier work and unlabeled stalls remain `unknown`, including after a TUI restart ([#15019](https://github.com/can1357/oh-my-pi/pull/15019) by [@jaredlyon](https://github.com/jaredlyon)).
-- Fixed `ui.loop-blocked` reporting `unknown` when a terminal write blocks the event loop while the terminal drains (Windows, or when the output pump is unavailable); those stalls are now logged as `ui.terminal-write` ([#15029](https://github.com/can1357/oh-my-pi/pull/15029) by [@jaredlyon](https://github.com/jaredlyon)).
 
 ## [18.8.7] - 2026-10-09
 
@@ -99,7 +91,6 @@
 - Reduced memory retained by discarded TSP images and previews ([#14336](https://github.com/can1357/oh-my-pi/pull/14336) by [@iliaal](https://github.com/iliaal)).
 - Fixed startup capability probes printing as text in the prompt (e.g. `25a1;stsp;q;{…}pppppp`) on terminals that cannot parse them, such as macOS Terminal.app.
 - Fixed the `/resume` picker flashing while a search runs over a large session history: background fuzzy matches now land in one update instead of reordering the list dozens of times per keystroke.
-- Fixed the eval status list's `… N earlier` row to include status events dropped from long-running cells ([#14992](https://github.com/can1357/oh-my-pi/pull/14992) by [@azain47](https://github.com/azain47)).
 
 ## [18.8.6] - 2026-10-08
 
@@ -134,7 +125,6 @@
 
 - Fixed relative file links in Tern assistant replies opening against the folder omp was started in; they now open the file in the session's working directory ([#14879](https://github.com/can1357/oh-my-pi/pull/14879) by [@H4vC](https://github.com/H4vC))
 - Fixed Tern modals with no clickable exit: BTW history, git shortcuts and autoresearch gain a Close button, plan review a Cancel button, the agent transcript viewer and `/annotate` review a top-right `esc` that runs Esc, and the `/move` dialog Accept, Cancel and Confirm buttons; new `escCloseButton()` builds the `esc` keycap button ([#14894](https://github.com/can1357/oh-my-pi/pull/14894) by [@H4vC](https://github.com/H4vC))
-- Fixed extension statuses set via `ctx.ui.setStatus` losing their SGR colours and text styles under the status line; other escape sequences are still stripped ([#14500](https://github.com/can1357/oh-my-pi/pull/14500) by [@sandboiii](https://github.com/sandboiii))
 
 ## [18.8.2] - 2026-10-07
 

@@ -2,14 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- Exported `matchesReplacementCredential` and `isSameOAuthAccount`, which tell whether storing a credential replaces an existing account row and whether two credentials belong to the same account ([#14901](https://github.com/can1357/oh-my-pi/pull/14901) by [@will-bogusz](https://github.com/will-bogusz))
+
+### Fixed
+
+- Fixed custom OpenAI-compatible Responses streams truncating reasoning when a proxy omits the summary index after a completed section, and running custom tools such as `apply_patch` with empty input when the final item repeats `input: ""` ([#11863](https://github.com/can1357/oh-my-pi/pull/11863) by [@moodiness](https://github.com/moodiness))
+- Fixed Codex WebSocket prewarm to accept an optional service tier and send the model/tier routing hint consistently with normal requests, preserving omitted and explicit service-tier requests ([#15022](https://github.com/can1357/oh-my-pi/pull/15022) by [@xiangnan0811](https://github.com/xiangnan0811)).
+- Fixed the OAuth sign-in result page breaking or rendering injected markup when a provider error or callback value contains `</script>` or `$` replacement sequences ([#15037](https://github.com/can1357/oh-my-pi/pull/15037) by [@BAKocska](https://github.com/BAKocska)).
+- Fixed Anthropic requests failing with 400 "All tools cannot be deferred" when a conversation that had no tools gains them (`omp -p --no-tools`, then `omp -c`), or a resumed session keeps none of its earlier tools ([#15233](https://github.com/can1357/oh-my-pi/pull/15233) by [@will-bogusz](https://github.com/will-bogusz))
+
 ## [18.8.9] - 2026-10-10
 
 ### Changed
 
 - Updated state field rendering to trim trailing whitespace and normalize empty collection formatting for consistent prompt output
-### Fixed
-
-- Fixed Anthropic requests failing with 400 "All tools cannot be deferred" when a conversation that had no tools gains them (`omp -p --no-tools`, then `omp -c`), or a resumed session keeps none of its earlier tools ([#15233](https://github.com/can1357/oh-my-pi/pull/15233) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.8] - 2026-10-10
 
@@ -29,10 +37,8 @@
 ### Fixed
 
 - Fixed Claude Haiku 5.5 requests silently enabling adaptive thinking when reasoning is off, on native Bedrock (main and helper calls) and the Anthropic API; conversations whose earlier effort controls rule out disabled thinking fall back to lowest-effort adaptive thinking instead of failing ([#14996](https://github.com/can1357/oh-my-pi/pull/14996) by [@bse-ai](https://github.com/bse-ai)).
-- Fixed Codex WebSocket prewarm to accept an optional service tier and send the model/tier routing hint consistently with normal requests, preserving omitted and explicit service-tier requests ([#15022](https://github.com/can1357/oh-my-pi/pull/15022) by [@xiangnan0811](https://github.com/xiangnan0811)).
 - Fixed `/session pin` being ignored when every stored account is quota-blocked, which routed the next request to a different exhausted account instead of the pinned one ([#14997](https://github.com/can1357/oh-my-pi/issues/14997)).
 - Fixed `minimax-code-cn` sessions staying pinned to a key whose Token Plan quota is exhausted (`用量上限` 429) instead of rotating to a sibling credential ([#15053](https://github.com/can1357/oh-my-pi/issues/15053)).
-- Fixed the OAuth sign-in result page breaking or rendering injected markup when a provider error or callback value contains `</script>` or `$` replacement sequences ([#15037](https://github.com/can1357/oh-my-pi/pull/15037) by [@BAKocska](https://github.com/BAKocska)).
 
 ## [18.8.6] - 2026-10-08
 
@@ -60,9 +66,6 @@
 - Fixed `omp -p` and other short-lived auth-broker clients missing from `omp usage clients`: usage still waiting for the 10-second report batch is now sent to the broker before the process exits ([#14899](https://github.com/can1357/oh-my-pi/pull/14899) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed Cursor web fetches that were cut off by a dropped connection disappearing from resumed and rebuilt sessions; they now show as interrupted ([#14819](https://github.com/can1357/oh-my-pi/pull/14819) by [@jchanghong023](https://github.com/jchanghong023))
 - Anthropic hosted web search can honor custom providers' OAuth-style request shaping and configured headers consistently with conversations ([#14919](https://github.com/can1357/oh-my-pi/pull/14919) by [@farnoy](https://github.com/farnoy))
-### Added
-
-- Exported `matchesReplacementCredential` and `isSameOAuthAccount`, which tell whether storing a credential replaces an existing account row and whether two credentials belong to the same account ([#14901](https://github.com/can1357/oh-my-pi/pull/14901) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.4] - 2026-10-08
 
@@ -222,9 +225,6 @@
 - Fixed Cursor "prepaid balance is used up" (`USAGE_PRICING_REQUIRED`) failures repeating on the same account instead of rotating to a sibling Cursor credential ([#14053](https://github.com/can1357/oh-my-pi/issues/14053))
 - Sessions no longer get stuck on `400 string_above_max_length` after a model writes its whole tool invocation into the tool name. Tool calls with blank names, names longer than 128 characters, or names containing whitespace or control characters are dropped from replayed history, together with their tool results. This also applies when OpenAI Responses replays its stored native history ([#13985](https://github.com/can1357/oh-my-pi/pull/13985) by [@Xytronix](https://github.com/Xytronix)).
 - Fixed Bedrock Converse requests failing with a "bound to a different conversation" 400 after the system prompt changed under signed thinking: the request is retried once without replayed reasoning ([#14019](https://github.com/can1357/oh-my-pi/pull/14019) by [@nick-maderight](https://github.com/nick-maderight))
-### Fixed
-
-- Fixed custom OpenAI-compatible Responses streams truncating reasoning when a proxy omits the summary index after a completed section, and running custom tools such as `apply_patch` with empty input when the final item repeats `input: ""` ([#11863](https://github.com/can1357/oh-my-pi/pull/11863) by [@moodiness](https://github.com/moodiness))
 
 ## [18.4.9] - 2026-10-01
 

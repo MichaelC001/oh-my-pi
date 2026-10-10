@@ -2,9 +2,17 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Renamed `takeRecentLoopPhase()` to `takeLoopPhaseAttribution()`, which returns `LoopPhaseAttribution` (`{ label, ms }`) instead of a string, returns `undefined` unless a window was armed with `resetLoopPhaseWindow()`, and names a label only when it outweighs unlabeled time ([#15019](https://github.com/can1357/oh-my-pi/pull/15019) by [@jaredlyon](https://github.com/jaredlyon)).
+
 ### Changed
 
 - Sped up streaming JSON string scanning for long tool-argument payloads by bulk-skipping ordinary characters ([#14297](https://github.com/can1357/oh-my-pi/pull/14297) by [@abilliontokens](https://github.com/abilliontokens)).
+
+### Fixed
+
+- Fixed archive extraction failing on Windows without the symlink privilege: symlink entries now degrade to a directory junction or an in-archive file copy instead of failing the whole archive with `EPERM`, dangling links that cannot be copied are skipped instead of aborting, and directory symlink entries are extracted instead of being skipped ([#14820](https://github.com/can1357/oh-my-pi/pull/14820) by [@jchanghong023](https://github.com/jchanghong023)).
 
 ## [18.8.9] - 2026-10-10
 
@@ -17,9 +25,6 @@
 ### Fixed
 
 - Fixed `formatDuration` printing `60.0s` for durations just under a minute; they now read `1m` ([#15121](https://github.com/can1357/oh-my-pi/pull/15121) by [@H4vC](https://github.com/H4vC))
-### Breaking Changes
-
-- Renamed `takeRecentLoopPhase()` to `takeLoopPhaseAttribution()`, which returns `LoopPhaseAttribution` (`{ label, ms }`) instead of a string, returns `undefined` unless a window was armed with `resetLoopPhaseWindow()`, and names a label only when it outweighs unlabeled time ([#15019](https://github.com/can1357/oh-my-pi/pull/15019) by [@jaredlyon](https://github.com/jaredlyon)).
 
 ## [18.8.7] - 2026-10-09
 
@@ -37,10 +42,6 @@
 
 - Added `PI_NATIVES_DIR` support to `getNativesDir()` for configuring the native addon directory.
 - Added `ZipPackage` for lazily reading ZIP-based document packages with a total decompressed-size limit, along with `DocxImage.readBytes()` for accessing raw DOCX image data.
-
-### Fixed
-
-- Fixed archive extraction failing on Windows without the symlink privilege: symlink entries now degrade to a directory junction or an in-archive file copy instead of failing the whole archive with `EPERM`, dangling links that cannot be copied are skipped instead of aborting, and directory symlink entries are extracted instead of being skipped ([#14820](https://github.com/can1357/oh-my-pi/pull/14820) by [@jchanghong023](https://github.com/jchanghong023)).
 
 ## [18.8.0] - 2026-10-07
 

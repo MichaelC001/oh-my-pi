@@ -2,27 +2,41 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- Fixed JS eval cells with a syntax error (such as a raw backtick inside a template literal) failing with the engine's position-less message; the error now names the cell line and column and shows a short code frame ([#14275](https://github.com/can1357/oh-my-pi/issues/14275), [#14376](https://github.com/can1357/oh-my-pi/pull/14376) by [@tahakotil](https://github.com/tahakotil)).
-- `omp plugin install` now passes raw non-GitHub git URLs (`https://git.example.com/group/repo`, `ssh://…`) to bun as `git+…` so they are cloned via git instead of being misread as an npm tarball (ZlibError: error decompressing). Inline userinfo credentials are stripped from the spec — `bun install` persists it into `plugins/package.json` and `bun.lock`, and a long-lived repository token must not land in those files; private repositories authenticate via SSH, a git credential helper, or `.netrc`.
-- MCP HTTP reconnects now release obsolete tool generations instead of growing session memory on every reconnect ([#11784](https://github.com/can1357/oh-my-pi/issues/11784)).
-- `/debug` memory reports now keep large heap snapshots out of JavaScript strings and reject empty snapshots instead of saving zero-byte files ([#11785](https://github.com/can1357/oh-my-pi/issues/11785)).
-
-## [18.1.18] - 2026-09-11
-
 ### Added
 
 - Added `ctx.annotations` so extensions can submit or collect `/annotate` feedback on text and diffs ([#15260](https://github.com/can1357/oh-my-pi/pull/15260) by [@Shadorain](https://github.com/Shadorain)).
 - Added **Extra Context Files** to `/settings` → **Context** so custom instruction filenames can be configured without editing YAML ([#15252](https://github.com/can1357/oh-my-pi/pull/15252) by [@Shadorain](https://github.com/Shadorain)).
+
 ### Fixed
 
+- Fixed SDK and RPC sessions keeping a stale MCP tool list when a server's tools changed while extensions were loading; `createAgentSession` now adopts the change before it returns ([#11315](https://github.com/can1357/oh-my-pi/pull/11315) by [@aktanazat](https://github.com/aktanazat)).
+- `omp plugin install` now passes raw non-GitHub git URLs (`https://git.example.com/group/repo`, `ssh://…`) to bun as `git+…` so they are cloned via git instead of being misread as an npm tarball (ZlibError: error decompressing). Inline userinfo credentials are stripped from the spec — `bun install` persists it into `plugins/package.json` and `bun.lock`, and a long-lived repository token must not land in those files; private repositories authenticate via SSH, a git credential helper, or `.netrc` ([#11810](https://github.com/can1357/oh-my-pi/pull/11810) by [@blindcat-10835](https://github.com/blindcat-10835)).
+- Fixed long agent runs stopping on a second OpenAI Responses request-body timeout: the one-shot shake-and-retry recovery is re-armed by any turn that produced output, so a prompt that kept making progress can recover its newly grown history instead of terminating, while back-to-back timeouts still get exactly one changed request ([#12654](https://github.com/can1357/oh-my-pi/pull/12654) by [@hellofrommorgan](https://github.com/hellofrommorgan)).
+- Fixed JS eval cells with a syntax error (such as a raw backtick inside a template literal) failing with the engine's position-less message; the error now names the cell line and column and shows a short code frame ([#14275](https://github.com/can1357/oh-my-pi/issues/14275), [#14376](https://github.com/can1357/oh-my-pi/pull/14376) by [@tahakotil](https://github.com/tahakotil)).
+- Fixed a Collab host or guest staying disconnected after its network dropped and came back without a reset (Wi-Fi lost, a laptop sleeping): the relay socket still read as open, so an idle host's room was gone from the relay until something was typed. The client now pings the relay every 15 s and reconnects when it has heard nothing for 40 s ([#14387](https://github.com/can1357/oh-my-pi/pull/14387) by [@andrewleech](https://github.com/andrewleech)).
+- Fixed ACP and browser diagnostics and SSH host listings pointing to the default location instead of the configured log or SSH config paths ([#14558](https://github.com/can1357/oh-my-pi/pull/14558) by [@Dante-dan](https://github.com/Dante-dan)).
+- Fixed advisors returning to a model that refused the reviewed content (for example `Refusal (cyber)`) every five minutes; they now stay on the fallback until a compaction, handoff, or new conversation ([#14743](https://github.com/can1357/oh-my-pi/pull/14743) by [@mvid](https://github.com/mvid))
+- Plugin registry discovery warnings (unparsable registry, invalid plugin ids, missing `installPath`) are now logged instead of silently dropped ([#14503](https://github.com/can1357/oh-my-pi/issues/14503)) ([#14788](https://github.com/can1357/oh-my-pi/pull/14788) by [@tahakotil](https://github.com/tahakotil)).
+- Fixed OpenRouter Decisions (Jev) judge calls returning 404 when `models.yml` sets a provider-wide OpenRouter `baseUrl` (such as a relay at `.../api/v1`); judge models now use the matching `.../api/alpha` root on the same host instead of `.../api/v1/decisions` ([#14848](https://github.com/can1357/oh-my-pi/pull/14848) by [@jerryfane](https://github.com/jerryfane))
+- Fixed Codex `config.toml` files (`~/.codex/config.toml` when enabled, and project `.codex/config.toml`) being rejected with an `Invalid item … Missing path` warning; keys that match an omp setting, such as `personality`, now apply from a project's `.codex/config.toml` as they do from `.claude/settings.json` ([#14850](https://github.com/can1357/oh-my-pi/pull/14850) by [@mottopanikeiku](https://github.com/mottopanikeiku))
+- Fixed secrets leaking into advisor prompts when a one-line preview was cut in the middle of a secret; previews are now redacted before they are cut ([#14863](https://github.com/can1357/oh-my-pi/pull/14863) by [@alnaggar-dev](https://github.com/alnaggar-dev))
+- Fixed missing `withFileMutationQueue` export from the tools barrel and legacy Pi compatibility shim, unblocking plugins like `pi-wayfinder-guard` ([#14892](https://github.com/can1357/oh-my-pi/pull/14892) by [@twotnguyen](https://github.com/twotnguyen))
+- Fixed `omp auth-broker migrate --include-oauth` skipping Google Antigravity accounts and ChatGPT Team workspace members as already on the broker whenever it held another account sharing their project or workspace ([#14901](https://github.com/can1357/oh-my-pi/pull/14901) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed legacy pi extensions importing `getCurrentSystemMessage` (`@earendil-works/pi-ai` root), `compositeTuiLine` (`pi-tui` root), and `parseSkillBlock` (`pi-coding-agent` root) failing plugin validation under omp; extensions such as `pi-optchat` install again ([#14909](https://github.com/can1357/oh-my-pi/pull/14909) by [@Frenchy2k1](https://github.com/Frenchy2k1))
+- Fixed slow completions ignoring an explicitly configured thinking level, including `:max` and `:off` ([#14961](https://github.com/can1357/oh-my-pi/pull/14961) by [@xiangnan0811](https://github.com/xiangnan0811))
+- Fixed session writes failing with `SessionLockError` on Windows FSLogix profile disks ([#14973](https://github.com/can1357/oh-my-pi/pull/14973) by [@astrosloth](https://github.com/astrosloth))
+- Fixed eval calls that run helpers in a loop bloating the session file and slowing resume: each cell now saves only its newest 200 status events plus a count of earlier ones ([#14992](https://github.com/can1357/oh-my-pi/pull/14992) by [@azain47](https://github.com/azain47)).
+- Fixed Codex session prewarm using a different model or service tier from the resolved agent session ([#15022](https://github.com/can1357/oh-my-pi/pull/15022) by [@xiangnan0811](https://github.com/xiangnan0811)).
+- Fixed subagent completion-probe charges disappearing after parking or restart ([#15038](https://github.com/can1357/oh-my-pi/pull/15038) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
+- Fixed processes started from Python eval cells (e.g. `omp -p` via `subprocess.run`) hanging on the kernel's control channel; cell code and its children now read EOF from stdin ([#15061](https://github.com/can1357/oh-my-pi/pull/15061) by [@kimprap](https://github.com/kimprap))
+- Fixed the custom-tool quickstart: it used a `--tool` flag omp does not have and pointed at a `todo/` example that is not in the repo; it now uses the shipped `hello` example and the supported discovery routes ([#15088](https://github.com/can1357/oh-my-pi/pull/15088) by [@danzaio](https://github.com/danzaio), fixes [#15069](https://github.com/can1357/oh-my-pi/issues/15069))
+- Fixed browser screenshots telling the model to scale image coordinates by the resize factor alone, so `clickAt` landed off target on any page captured at a device scale above 1 (headless 1.25×, Retina 2×); the note now gives the factor to CSS pixels on Chromium, Tern and cmux tabs ([#15106](https://github.com/can1357/oh-my-pi/pull/15106) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed browser calls on a tab whose renderer crashed waiting out their timeout: the call now fails at once with the page reloaded, or the tab closed when the page cannot come back (headless, connected Chrome, relay) ([#15142](https://github.com/can1357/oh-my-pi/pull/15142) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed a session staying busy for good, with every later message queued and never answered, when the session file could not be written as an automatic retry ended (a full disk or an unwritable transcript) ([#15177](https://github.com/can1357/oh-my-pi/pull/15177) by [@sjawhar](https://github.com/sjawhar))
+- Fixed collapsed todo lists spending a whole row on `… 1 more todo`; the hidden todo is now shown in that row instead ([#15189](https://github.com/can1357/oh-my-pi/pull/15189) by [@ravshansbox](https://github.com/ravshansbox))
+- Concurrent SDK sessions can run their own async jobs; subagent IRC follow-up results reach only the owning top-level session ([#15229](https://github.com/can1357/oh-my-pi/issues/15229)).
 - Fixed computer-use `await win.observe()` as a cell's last expression printing the accessibility tree twice, once as text and again inside the displayed value ([#15270](https://github.com/can1357/oh-my-pi/pull/15270) by [@will-bogusz](https://github.com/will-bogusz))
-### Fixed
-
 - Fixed computer-use `win.ref("e5").click()` and other element calls chained on `ref()` throwing a TypeError; `await win.ref("e5")` still resolves the element, and element `click` now documents `count`, `button` and `modifiers` ([#15274](https://github.com/can1357/oh-my-pi/pull/15274) by [@will-bogusz](https://github.com/will-bogusz))
-### Fixed
-
 - Fixed Eval `read("artifact://N")` in JavaScript and Python returning the read tool's line-capped view instead of the artifact's text; `offset`/`limit` now select its lines as for a file ([#15279](https://github.com/can1357/oh-my-pi/pull/15279) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed `read`, `eval` and `bash` notices for lines cut at the column cap pointing back at the same capped view; they now name the `:raw:<line>-<line>` read that returns a cut line whole ([#15279](https://github.com/can1357/oh-my-pi/pull/15279) by [@will-bogusz](https://github.com/will-bogusz))
 
@@ -33,8 +47,6 @@
 - Added capability-driven extension terminal launches for tmux, Zellij, Herdr, and CMUX, with consolidated multiplexer detection, provider/shell capability feedback, and required POSIX-shell confirmation for shell-input launches; CMUX shell input preserves non-ASCII arguments and pane working directories ([#13620](https://github.com/can1357/oh-my-pi/pull/13620) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
 - Added `/fork pane|window|tab` to open a fork of the session in a new multiplexer pane or window while this session keeps running; bare `/fork` still forks in place ([#13620](https://github.com/can1357/oh-my-pi/pull/13620) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
 - Added Orca CLI-based launches for `/fork pane|window|tab` and `ctx.ui.openTerminal()`, with POSIX-shell confirmation; when Orca can only start a tab as a background terminal, the launch reports a warning instead of a visible tab ([#13620](https://github.com/can1357/oh-my-pi/pull/13620) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
-- Fixed `ask` questions in Tern covering the end of the transcript with a sheet that blocked scrolling, hiding the explanation the question was about; the question now sits in the composer's place, framed like the composer, below a transcript you can read and scroll while deciding ([#14812](https://github.com/can1357/oh-my-pi/pull/14812) by [@H4vC](https://github.com/H4vC))
-- Fixed secrets leaking into advisor prompts when a one-line preview was cut in the middle of a secret; previews are now redacted before they are cut ([#14863](https://github.com/can1357/oh-my-pi/pull/14863) by [@alnaggar-dev](https://github.com/alnaggar-dev))
 
 ### Changed
 
@@ -46,14 +58,6 @@
 ### Fixed
 
 - Fixed table charts failing on a table cell such as `3 constructor` or `2 valueOf calls`
-
-### Fixed
-
-- Fixed ACP and browser diagnostics and SSH host listings pointing to the default location instead of the configured log or SSH config paths ([#14558](https://github.com/can1357/oh-my-pi/pull/14558) by [@Dante-dan](https://github.com/Dante-dan)).
-
-### Fixed
-
-- Concurrent SDK sessions can run their own async jobs; subagent IRC follow-up results reach only the owning top-level session ([#15229](https://github.com/can1357/oh-my-pi/issues/15229)).
 
 ## [18.8.8] - 2026-10-10
 
@@ -79,7 +83,6 @@
 - Fixed browser `open` with `app.relay` and a `target` failing with `No page target matched` or `Selected tab is no longer available` when the matching tab was opened a moment earlier outside omp; it now waits briefly for the relay to list the tab ([#15112](https://github.com/can1357/oh-my-pi/pull/15112) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed a timed-out `browser.open` holding up the next open of the same browser (apps launched with `app.path` excepted) until its abandoned launch or connect returned; the timeout error now names the step that stalled ([#15117](https://github.com/can1357/oh-my-pi/pull/15117) by [@jinpyo-jeon](https://github.com/jinpyo-jeon) and [@will-bogusz](https://github.com/will-bogusz))
 - Fixed browser tabs crashing mid-load on some pages with a same-site iframe, Google Travel among them, after which every open, screenshot and evaluate on the tab timed out ([#15118](https://github.com/can1357/oh-my-pi/pull/15118) by [@will-bogusz](https://github.com/will-bogusz))
-- Fixed browser screenshots telling the model to scale image coordinates by the resize factor alone, so `clickAt` landed off target on any page captured at a device scale above 1 (headless 1.25×, Retina 2×); the note now gives the factor to CSS pixels on Chromium, Tern and cmux tabs ([#15106](https://github.com/can1357/oh-my-pi/pull/15106) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed the custom-tool examples' full-documentation link opening a missing page ([#15076](https://github.com/can1357/oh-my-pi/pull/15076) by [@qingshungLI](https://github.com/qingshungLI))
 - Fixed the `/models` compaction limit preview and **Compacts at** row rounding fractional percentages (`12.5%` showed as `13%`) ([#15074](https://github.com/can1357/oh-my-pi/pull/15074) by [@H4vC](https://github.com/H4vC))
 - Fixed `/omfg` save, overwrite, and validation prompts in Tern opening as a sheet over the candidate rule; they now sit in the composer slot like `ask`, so the rule stays readable while you choose ([#15058](https://github.com/can1357/oh-my-pi/pull/15058) by [@H4vC](https://github.com/H4vC))
@@ -88,12 +91,6 @@
 - Fixed auto-compaction overflowing the context window every cycle when `compaction.thresholdTokens` or an `f<tokens>` model limit is at or past a window the provider caps lower (such as Factory's 196K Kimi K3); it now compacts at the window less the reserve, and `/models` shows the trigger as capped ([#15146](https://github.com/can1357/oh-my-pi/pull/15146) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed resumed xAI, Factory Droid and OpenAI sessions forgetting earlier reasoning on their first request, while a retry after a stale Responses item error still rebuilds history ([#15148](https://github.com/can1357/oh-my-pi/pull/15148) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed the startup default ignoring the model a provider's discovery names as the account's default: with no model chosen, Devin Pro now starts on SWE-2 at High instead of SWE-1.6 ([#15115](https://github.com/can1357/oh-my-pi/pull/15115) by [@will-bogusz](https://github.com/will-bogusz))
-- Fixed collapsed todo lists spending a whole row on `… 1 more todo`; the hidden todo is now shown in that row instead ([#15189](https://github.com/can1357/oh-my-pi/pull/15189) by [@ravshansbox](https://github.com/ravshansbox))
-- Fixed a session staying busy for good, with every later message queued and never answered, when the session file could not be written as an automatic retry ended (a full disk or an unwritable transcript) ([#15177](https://github.com/can1357/oh-my-pi/pull/15177) by [@sjawhar](https://github.com/sjawhar))
-- Fixed browser calls on a tab whose renderer crashed waiting out their timeout: the call now fails at once with the page reloaded, or the tab closed when the page cannot come back (headless, connected Chrome, relay) ([#15142](https://github.com/can1357/oh-my-pi/pull/15142) by [@will-bogusz](https://github.com/will-bogusz))
-- Fixed the custom-tool quickstart: it used a `--tool` flag omp does not have and pointed at a `todo/` example that is not in the repo; it now uses the shipped `hello` example and the supported discovery routes ([#15088](https://github.com/can1357/oh-my-pi/pull/15088) by [@danzaio](https://github.com/danzaio), fixes [#15069](https://github.com/can1357/oh-my-pi/issues/15069))
-- Fixed `/tan` forks retaining nested task-result billing after inherited spend is reset ([#15039](https://github.com/can1357/oh-my-pi/pull/15039) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
-- Fixed subagent completion-probe charges disappearing after parking or restart ([#15038](https://github.com/can1357/oh-my-pi/pull/15038) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
 
 ## [18.8.7] - 2026-10-09
 
@@ -122,17 +119,14 @@
 
 ### Fixed
 
-- Plugin registry discovery warnings (unparsable registry, invalid plugin ids, missing `installPath`) are now logged instead of silently dropped ([#14503](https://github.com/can1357/oh-my-pi/issues/14503)) ([#14788](https://github.com/can1357/oh-my-pi/pull/14788) by [@tahakotil](https://github.com/tahakotil)).
 - Reduced memory growth after one-shot side requests without interrupting ongoing conversations ([#14334](https://github.com/can1357/oh-my-pi/pull/14334) by [@iliaal](https://github.com/iliaal)).
 - Fixed sessions staying untitled when you interrupted the first reply to send a queued steer message.
-- Fixed Codex session prewarm using a different model or service tier from the resolved agent session ([#15022](https://github.com/can1357/oh-my-pi/pull/15022) by [@xiangnan0811](https://github.com/xiangnan0811)).
 - Fixed browser downloads saving into another tab's `downloads` folder, and `tab.waitForDownload()` saving into the system Downloads folder once another tab closed; each tab in a Chromium omp launched or spawned now saves into its own, iframe downloads included. In those browsers a download no tab tracks (started by a page omp did not open, or finishing after its tab closed) now keeps Chromium's GUID file name instead of its suggested name; connected and relay browsers keep real file names ([#14544](https://github.com/can1357/oh-my-pi/pull/14544) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed browser calls in relay mode failing with "The browser relay … is out of date" after an omp upgrade until the old relay was killed by hand; omp now restarts a relay it started itself under an older version ([#14416](https://github.com/can1357/oh-my-pi/pull/14416) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed `/rename` without a title dropping the session's title card (icon and short code) ([#14980](https://github.com/can1357/oh-my-pi/issues/14980))
 - Fixed title cards showing the emoji instead of the Nerd Font icon when the model misremembered the icon's name: dashes for underscores (`nf-md-text-box`), the wrong icon set (`nf-md-spinner` for `nf-fa-spinner`), or reordered, missing, or extra words (`nf-md-test` for `nf-md-test_tube`).
 - Fixed `omp update` ignoring the `update.channel` setting: canary users were checked against stable releases, and `--canary`/`--stable` were never remembered.
 - Fixed interrupting a reply to send a queued steer message briefly showing omp as idle (title, progress, working indicator) before the steer ran; RPC and SDK clients also no longer see a final `agent_end` for that interrupt.
-- Fixed eval calls that run helpers in a loop bloating the session file and slowing resume: each cell now saves only its newest 200 status events plus a count of earlier ones ([#14992](https://github.com/can1357/oh-my-pi/pull/14992) by [@azain47](https://github.com/azain47)).
 - Fixed browser tab recordings and video frame/contact-sheet extraction creating `omp-browser-recording-*` and `omp-video-*` scratch directories in your working directory instead of the system temp directory.
 - Fixed edit snapshots retaining excess history when metadata or displayed-line provenance grows; the 64 MiB snapshot budget now counts UTF-8 bytes, so CJK- and emoji-heavy files keep fewer versions ([#14975](https://github.com/can1357/oh-my-pi/pull/14975) by [@iliaal](https://github.com/iliaal)).
 
@@ -162,11 +156,6 @@
 - Fixed sessions moved with `/wt` disappearing from resume lists; sessions in Git worktrees now remain discoverable and can be resumed or relocated if their worktree was removed.
 - Fixed live config reload ignoring edits made during startup or right after a config symlink was retargeted, until the next unrelated edit.
 
-- Fixed tool-result pruning re-writing the whole Anthropic prompt cache when the pruned result sat behind many small turns ([#14751](https://github.com/can1357/oh-my-pi/pull/14751) by [@will-bogusz](https://github.com/will-bogusz))
-- Fixed resumed Claude sessions losing earlier thinking and prompt-cache reuse when extension or MCP tools they last ran with register before the first message; applies to sessions saved by this version or later ([#14754](https://github.com/can1357/oh-my-pi/pull/14754) by [@will-bogusz](https://github.com/will-bogusz))
-- Fixed processes started from Python eval cells (e.g. `omp -p` via `subprocess.run`) hanging on the kernel's control channel; cell code and its children now read EOF from stdin ([#15061](https://github.com/can1357/oh-my-pi/pull/15061) by [@kimprap](https://github.com/kimprap))
-- Fixed session writes failing with `SessionLockError` on Windows FSLogix profile disks ([#14973](https://github.com/can1357/oh-my-pi/pull/14973) by [@astrosloth](https://github.com/astrosloth))
-
 ## [18.8.5] - 2026-10-08
 
 ### Added
@@ -175,7 +164,6 @@
 
 ### Fixed
 
-- Fixed slow completions ignoring an explicitly configured thinking level, including `:max` and `:off` ([#14961](https://github.com/can1357/oh-my-pi/pull/14961) by [@xiangnan0811](https://github.com/xiangnan0811))
 - Fixed `omp usage` reporting an account exactly at its reserve (e.g. 30% left with a 30% reserve) as eligible instead of inside reserve ([#14765](https://github.com/can1357/oh-my-pi/pull/14765) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed the todo reminder pushing the agent to keep working after it offered options and asked the user to choose ([#14800](https://github.com/can1357/oh-my-pi/pull/14800) by [@mrmans0n](https://github.com/mrmans0n))
 - Fixed the todo reminder telling the model to keep working right after it asked the user a bolded or italicised question ([#12051](https://github.com/can1357/oh-my-pi/issues/12051), [#14353](https://github.com/can1357/oh-my-pi/pull/14353) by [@F0Rextasy](https://github.com/F0Rextasy))
@@ -199,7 +187,6 @@
 ### Removed
 
 - Removed the `PI_SUBPROCESS_CMD` environment variable; subagents run in-process and never read it ([#14632](https://github.com/can1357/oh-my-pi/pull/14632) by [@jorgoose](https://github.com/jorgoose))
-- Fixed `omp auth-broker migrate --include-oauth` skipping Google Antigravity accounts and ChatGPT Team workspace members as already on the broker whenever it held another account sharing their project or workspace ([#14901](https://github.com/can1357/oh-my-pi/pull/14901) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.4] - 2026-10-08
 
@@ -210,9 +197,7 @@
 ### Fixed
 
 - Fixed `omp auth-broker serve` logging every client as `unknown` (or as whatever a caller put in `X-Forwarded-For`); it now logs the socket address, with `--trust-proxy-headers` for brokers behind a reverse proxy ([#14762](https://github.com/can1357/oh-my-pi/pull/14762) by [@will-bogusz](https://github.com/will-bogusz))
-- Fixed missing `withFileMutationQueue` export from the tools barrel and legacy Pi compatibility shim, unblocking plugins like `pi-wayfinder-guard` ([#14892](https://github.com/can1357/oh-my-pi/pull/14892) by [@twotnguyen](https://github.com/twotnguyen))
 - Fixed relative file links in Tern assistant replies opening against the folder omp was started in after `/wt` or `/move`; they now open the file in the session's working directory ([#14879](https://github.com/can1357/oh-my-pi/pull/14879) by [@H4vC](https://github.com/H4vC))
-- Fixed legacy pi extensions importing `getCurrentSystemMessage` (`@earendil-works/pi-ai` root), `compositeTuiLine` (`pi-tui` root), and `parseSkillBlock` (`pi-coding-agent` root) failing plugin validation under omp; extensions such as `pi-optchat` install again ([#14909](https://github.com/can1357/oh-my-pi/pull/14909) by [@Frenchy2k1](https://github.com/Frenchy2k1))
 - Fixed the BTW history, git shortcuts, and autoresearch sheets in Tern having no Close button, and the plan review sheet having no Cancel button ([#14894](https://github.com/can1357/oh-my-pi/pull/14894) by [@H4vC](https://github.com/H4vC))
 - Fixed the agent transcript viewer and `/annotate` review in Tern having no clickable way out; both now show a clickable `esc` at the top right ([#14894](https://github.com/can1357/oh-my-pi/pull/14894) by [@H4vC](https://github.com/H4vC))
 - Fixed the `/move` folder picker in Tern having only key hints; Accept (Tab), Cancel (Esc) and Confirm (Enter) are now clickable buttons ([#14894](https://github.com/can1357/oh-my-pi/pull/14894) by [@H4vC](https://github.com/H4vC))
@@ -236,15 +221,12 @@
 - Fixed quadratic slowdown in `omp cleanse` on large tsc/clippy/golangci output ([#14706](https://github.com/can1357/oh-my-pi/pull/14706) by [@H4vC](https://github.com/H4vC))
 - Fixed documents served as `application/octet-stream` being downloaded twice ([#14708](https://github.com/can1357/oh-my-pi/pull/14708) by [@H4vC](https://github.com/H4vC))
 - Fixed collab TUI guests rebuilding the transcript per token ([#14715](https://github.com/can1357/oh-my-pi/pull/14715) by [@H4vC](https://github.com/H4vC))
-- Fixed advisors returning to a model that refused the reviewed content (for example `Refusal (cyber)`) every five minutes; they now stay on the fallback until a compaction, handoff, or new conversation ([#14743](https://github.com/can1357/oh-my-pi/pull/14743) by [@mvid](https://github.com/mvid))
 
 ## [18.8.3] - 2026-10-07
 
 ### Fixed
 
 - Fixed repeat opens of the model picker, model hub, or agents views stacking duplicates; the open one is brought forward instead ([#14846](https://github.com/can1357/oh-my-pi/pull/14846) by [@H4vC](https://github.com/H4vC))
-- Fixed OpenRouter Decisions (Jev) judge calls returning 404 when `models.yml` sets a provider-wide OpenRouter `baseUrl` (such as a relay at `.../api/v1`); judge models now use the matching `.../api/alpha` root on the same host instead of `.../api/v1/decisions` ([#14848](https://github.com/can1357/oh-my-pi/pull/14848) by [@jerryfane](https://github.com/jerryfane))
-- Fixed Codex `config.toml` files (`~/.codex/config.toml` when enabled, and project `.codex/config.toml`) being rejected with an `Invalid item … Missing path` warning; keys that match an omp setting, such as `personality`, now apply from a project's `.codex/config.toml` as they do from `.claude/settings.json`
 
 ## [18.8.2] - 2026-10-07
 
@@ -827,7 +809,6 @@
 ### Fixed
 
 - Fixed the `mnemopi.polyphonicRecall` and `mnemopi.enhancedRecall` settings (and `MNEMOPI_POLYPHONIC_RECALL` / `MNEMOPI_ENHANCED_RECALL`) having no effect: polyphonic recall now surfaces graph- and fact-linked memories, enhanced recall caches repeated recalls until the next memory write, and both apply per session instead of through process-wide defaults ([#2323](https://github.com/can1357/oh-my-pi/issues/2323))
-- Fixed a Collab host or guest staying disconnected after its network dropped and came back without a reset (Wi-Fi lost, a laptop sleeping): the relay socket still read as open, so an idle host's room was gone from the relay until something was typed. The client now pings the relay every 15 s and reconnects when it has heard nothing for 40 s ([#14387](https://github.com/can1357/oh-my-pi/pull/14387) by [@andrewleech](https://github.com/andrewleech)).
 - Fixed `computer.window(74)` matching every open window and `computer.window({ id: 74 })` matching none; a numeric id now resolves the same window as `"74"` ([#13649](https://github.com/can1357/oh-my-pi/pull/13649) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed `/fast on` showing fast mode as active on Codex models whose discovered service tiers list others but not priority; it now reports that fast mode is unavailable for the current model. Models whose tier list is empty keep `/fast` ([#13782](https://github.com/can1357/oh-my-pi/pull/13782) by [@H4vC](https://github.com/H4vC)).
 - Cancelling a concurrently queued prompt now preserves the other prompt's hidden keyword context instead of removing it with the cancelled message ([#11872](https://github.com/can1357/oh-my-pi/pull/11872) by [@andrebrait](https://github.com/andrebrait)).
@@ -847,8 +828,6 @@
 ### Removed
 
 - Removed the bash tool's `env` parameter; services inherit the configured shell environment
-- Fixed hosted OpenAI web search on hosts that accept only string tool_choice values, such as Command Code ([#13666](https://github.com/can1357/oh-my-pi/pull/13666) by [@riicodespretty](https://github.com/riicodespretty))
-- Fixed SDK and RPC sessions keeping a stale MCP tool list when a server's tools changed while extensions were loading; `createAgentSession` now adopts the change before it returns ([#11315](https://github.com/can1357/oh-my-pi/pull/11315) by [@aktanazat](https://github.com/aktanazat)).
 
 ## [18.4.3] - 2026-09-28
 
@@ -1357,7 +1336,6 @@
 
 ### Fixed
 
-- Fixed long agent runs stopping on a second OpenAI Responses request-body timeout: the one-shot shake-and-retry recovery is re-armed by any turn that produced output, so a prompt that kept making progress can recover its newly grown history instead of terminating, while back-to-back timeouts still get exactly one changed request ([#12654](https://github.com/can1357/oh-my-pi/pull/12654) by [@hellofrommorgan](https://github.com/hellofrommorgan)).
 - Fixed system prompt configuration validation so systemPromptTemplate and customSystemPrompt cannot conflict with a full systemPrompt replacement, including when values are empty.
 - Added browser-relay support for listing eligible pages without attaching to or claiming them.
 - Fixed Codex compatibility with the sloppy edit tool.
