@@ -11,6 +11,10 @@
 - Native settings editors now display submission and validation errors instead of silently keeping the editor open ([#15252](https://github.com/can1357/oh-my-pi/pull/15252) by [@Shadorain](https://github.com/Shadorain)).
 - Fixed `/tree` stalling when opened on very long session histories ([#12527](https://github.com/can1357/oh-my-pi/pull/12527) by [@azain47](https://github.com/azain47)).
 
+### Changed
+
+- Reduced the time to rebuild a long session's transcript on resume when it contains repeated `wait` polls or todo updates ([#13767](https://github.com/can1357/oh-my-pi/pull/13767) by [@sjawhar](https://github.com/sjawhar))
+
 ## [18.8.9] - 2026-10-10
 
 ### Breaking Changes
