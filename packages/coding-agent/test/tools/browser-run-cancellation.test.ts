@@ -239,7 +239,7 @@ describe("browser run cancellation", () => {
 		const controller = new AbortController();
 		const deferred = Promise.withResolvers<string>();
 		const handle = {
-			then: (onFulfilled: (value: string) => unknown, onRejected: (reason: unknown) => unknown) =>
+			then: (onFulfilled?: (value: string) => unknown, onRejected?: (reason: unknown) => unknown) =>
 				deferred.promise.then(onFulfilled, onRejected),
 			click: async () => "clicked",
 		};
