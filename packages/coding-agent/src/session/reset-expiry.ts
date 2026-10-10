@@ -10,6 +10,7 @@ import type {
 	UsageResetCreditDetail,
 	UsageResetCredits,
 } from "@oh-my-pi/pi-ai";
+import { truncateToWidth } from "@oh-my-pi/pi-tui";
 import { bankedResetCreditExpiryMs } from "@oh-my-pi/pi-tui/overlays/usage-display";
 import { formatDuration, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
@@ -79,34 +80,37 @@ export function classifyResetExpiry(report: UsageReport, nowMs: number): ResetEx
 	credits.sort((a, b) => a.expiresAtMs - b.expiresAtMs);
 
 	// Codex measures one account-wide chat window; each Claude grant clears its own windows,
-	// so the warning is about the soonest grant whose covered windows are worth restoring.
+	// so only Claude grants whose covered windows are worth restoring warn and count.
+	const codexWindow = provider === "openai-codex" ? fullestCodexChatWindow(report) : undefined;
+	const worth = (credit: UsageResetCreditDetail): { limit: UsageLimit; usedFraction: number } | undefined => {
+		if (provider === "openai-codex") {
+			return codexWindow?.usedFraction !== undefined && codexWindow.usedFraction >= SALVAGE_MIN_USED_FRACTION
+				? { limit: codexWindow.limit, usedFraction: codexWindow.usedFraction }
+				: undefined;
+		}
+		const covered = fullestClaudeLimit(claudeCoveredLimits(report.limits, credit), credit);
+		return covered && covered.used >= SALVAGE_MIN_USED_FRACTION
+			? { limit: covered.limit, usedFraction: covered.used }
+			: undefined;
+	};
 	let warned: { credit: UsageResetCreditDetail; expiresAtMs: number } | undefined;
 	let fullest: { limit: UsageLimit; usedFraction: number } | undefined;
-	if (provider === "openai-codex") {
-		const window = fullestCodexChatWindow(report);
-		if (window?.usedFraction !== undefined) fullest = { limit: window.limit, usedFraction: window.usedFraction };
-		warned = credits[0];
-	} else {
-		for (const entry of credits) {
-			if (entry.expiresAtMs - nowMs > SOON_MS) break;
-			const covered = fullestClaudeLimit(claudeCoveredLimits(report.limits, entry.credit), entry.credit);
-			if (covered && covered.used >= SALVAGE_MIN_USED_FRACTION) {
-				warned = entry;
-				fullest = { limit: covered.limit, usedFraction: covered.used };
-				break;
-			}
+	for (const entry of credits) {
+		if (entry.expiresAtMs - nowMs > SOON_MS) break;
+		fullest = worth(entry.credit);
+		if (fullest) {
+			warned = entry;
+			break;
 		}
 	}
-	if (!warned || !fullest || fullest.usedFraction < SALVAGE_MIN_USED_FRACTION) return undefined;
+	if (!warned || !fullest) return undefined;
 	const remainingMs = warned.expiresAtMs - nowMs;
-	if (remainingMs > SOON_MS) return undefined;
 
 	const tier = remainingMs <= IMMINENT_MS ? "imminent" : "soon";
 	const horizonMs = tier === "imminent" ? IMMINENT_MS : SOON_MS;
 	let count = 0;
 	for (const { credit, expiresAtMs } of credits) {
-		// Earlier grants that cleared only quiet windows are not worth warning about.
-		if (expiresAtMs >= warned.expiresAtMs && expiresAtMs - nowMs <= horizonMs) count += credit.remainingCount ?? 1;
+		if (expiresAtMs - nowMs <= horizonMs && worth(credit)) count += credit.remainingCount ?? 1;
 	}
 	return {
 		provider,
@@ -249,9 +253,7 @@ export function formatResetExpiryNotice(reports: readonly UsageReport[], nowMs: 
 	const label = sanitizeText(formatActiveAccountLabel(usageReportIdentity(report)) ?? "")
 		.replace(/\s+/g, " ")
 		.trim();
-	const account = label
-		? ` on ${label.length > NOTICE_LABEL_MAX ? `${label.slice(0, NOTICE_LABEL_MAX - 1)}…` : label}`
-		: "";
+	const account = label ? ` on ${truncateToWidth(label, NOTICE_LABEL_MAX)}` : "";
 	const due = formatDuration(warning.expiresAtMs - nowMs);
 	const resets =
 		warning.count === 1

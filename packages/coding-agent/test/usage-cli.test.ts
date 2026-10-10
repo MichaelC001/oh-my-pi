@@ -1271,10 +1271,8 @@ describe("formatUsageBreakdown", () => {
 	});
 
 	it.each([
-		{
-			name: "the account is not eligible",
-			inventory: { eligible: false, redeemableCount: 0 },
-		},
+		{ name: "the account is not eligible", inventory: { eligible: false } },
+		{ name: "nothing is redeemable", inventory: { redeemableCount: 0 } },
 		{ name: "the server selected another grant", inventory: { nextCreditId: "other" } },
 	])("offers no spend command when $name", ({ inventory }) => {
 		const now = Date.parse("2026-01-01T00:00:00.000Z");
@@ -1293,6 +1291,29 @@ describe("formatUsageBreakdown", () => {
 		const report = { ...base, metadata: { email: "evil\u001b[2J\n\tname@example.test" } };
 		const notice = formatResetExpiryNotice([report], now);
 		expect(notice).toBe("Saved Claude reset on evil name@example.test expires in 6h · /usage");
+	});
+
+	it("does not count a later Claude grant that clears only a quiet window", () => {
+		const now = Date.parse("2026-01-01T00:00:00.000Z");
+		const report = claudeResetReport(now, { "anthropic:5h": 0.1, "anthropic:7d": 0.8 }, [
+			cedarGrant(now, "cedar", 1 * HOUR, { clears: ["anthropic:7d"] }),
+			cedarGrant(now, "juniper", 6 * HOUR, { program: "juniper_tide", clears: ["anthropic:5h"] }),
+		]);
+		const text = stripVTControlCharacters(
+			formatUsageBreakdown([report], [], now, undefined, [], undefined, resetExpiryOptions()),
+		);
+		expect(text).toContain("▲ 1 saved reset expires within 24h");
+		expect(text).toContain("1 expires in 1h");
+	});
+
+	it("cuts a long account in the TUI notice without splitting a character", () => {
+		const now = Date.parse("2026-01-01T00:00:00.000Z");
+		const base = claudeResetReport(now, { "anthropic:5h": 0.6 }, [cedarGrant(now, "cedar", 6 * HOUR)]);
+		const report = { ...base, metadata: { email: `${"a".repeat(78)}😀😀@example.test` } };
+		const notice = formatResetExpiryNotice([report], now)!;
+		expect(notice.isWellFormed()).toBe(true);
+		expect(notice).toContain("…");
+		expect(notice).toEndWith(" expires in 6h · /usage");
 	});
 
 	it.each([
