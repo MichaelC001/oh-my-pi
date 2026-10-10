@@ -172,6 +172,7 @@ describe("settings as a native prefs page", () => {
 		const { selector } = harness({ "display.colorBlind": true, "compaction.thresholdPercent": 80 });
 		const { props } = prefs(selector);
 		expect(props.page).toBe("appearance");
+		expect(props.lead).toBeTruthy();
 		expect(props.pages.find(p => p.id === "appearance")?.changed).toBe(1);
 		expect(props.pages.find(p => p.id === "context")?.changed).toBe(1);
 		expect(props.pages.find(p => p.id === "shell")?.changed).toBeUndefined();
