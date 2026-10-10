@@ -985,6 +985,8 @@ When a usage refresh detects an eligible banked reset expiring within the next *
 
 `salvageHorizonHours` controls earlier, usage-based salvage; setting it to `0` leaves the five-minute last-chance rule active. Set the provider's `autoRedeem` to `no` to disable all automatic spending.
 
+`omp usage` and the active account's status-line usage segment flag banked resets expiring within **7 days** when the account's fullest window they restore is at least 25% used. Within **24 hours**, `omp usage` opens with a banner per account: whether the sweep above spends the reset or asks first (only while an interactive omp session is open), or that it will not, and the `/usage reset` target that spends it now when the provider allows. The interactive TUI shows that warning once per conversation.
+
 ### Other groups
 
 Every schema path not individually tabulated in this catalog is explicitly deferred to `omp config list`. Additional groups include:
