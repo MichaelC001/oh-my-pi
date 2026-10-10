@@ -66,7 +66,7 @@ This follows the same rules as the primary's fallback: `retry.enabled` and `retr
 
 `tier.advisor` controls service tier for all advisors. It defaults to `none` (standard processing); `inherit` follows the primary's live per-family tier, including `/fast` changes. Concrete values (`auto`, `default`, `flex`, `scale`, `priority`, `ultrafast`) are applied only when the advisor model's provider family supports them.
 
-`retry.fallbackOn` also decides which advisor failures may switch models: under `usage-limit` an outage retries the advisor's own model and only a usage limit walks the chain; under `except-usage-limit` a usage limit rotates credentials, waits, or pauses the advisor instead of switching.
+`retry.fallbackOn` also decides which advisor failures may switch models: under `usage-limit` only a usage limit walks the chain, and any other failure stays on the advisor's own model with its usual retries before the review is dropped; under `except-usage-limit` a usage limit rotates credentials, waits, or pauses the advisor instead of switching.
 
 ### Default advisor settings
 
