@@ -44,14 +44,19 @@ function contextFileNameError(entry: unknown): string | undefined {
 	return undefined;
 }
 
-/**
- * Extra instruction filenames discovered in addition to AGENTS.md / CLAUDE.md / GEMINI.md.
- * Config-file only: the names are open-ended, so there is no settings-panel vocabulary.
- */
+/** Extra instruction filenames discovered in addition to AGENTS.md / CLAUDE.md / GEMINI.md. */
 export const cfgContextFilesExtra = register({
 	id: "contextFiles.extra",
 	type: "array",
 	default: EMPTY_STRING_ARRAY,
+	ui: {
+		tab: "context",
+		group: "General",
+		label: "Extra Context Files",
+		editor: "json",
+		description:
+			'Additional instruction filenames as a JSON list, e.g. ["AGENTS.local.md"]. Use names, not paths; [] disables extra files. Start a new session to load them.',
+	},
 	validate: raw => {
 		if (raw === undefined) return;
 		if (!Array.isArray(raw)) throw new Error("contextFiles.extra must be a list of file names");

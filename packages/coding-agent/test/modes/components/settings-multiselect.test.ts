@@ -6,6 +6,7 @@ import { createPluginSettingsHost } from "@oh-my-pi/pi-coding-agent/extensibilit
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
 import { cfgDevAutoqa } from "@oh-my-pi/pi-coding-agent/tools/settings";
+import { cfgContextFilesExtra } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 
 beforeAll(async () => {
 	await initTheme();
@@ -87,5 +88,45 @@ describe("settings section sidebar", () => {
 
 		clickOption(comp, "Developer");
 		expect(cfgDevAutoqa.get(settings)).toBe(true);
+	});
+});
+
+function openExtraContextFiles(): SettingsSelectorComponent {
+	const component = createSelector();
+	for (let i = 0; i < 3; i++) component.handleInput("\x1b[C");
+	component.handleNativeEvent({ type: "activate", key: "", item: "contextFiles.extra" });
+	return component;
+}
+
+async function submitText(component: SettingsSelectorComponent, value: string): Promise<void> {
+	component.handleInput("\x01");
+	component.handleInput("\x0b");
+	for (const character of value) component.handleInput(character);
+	component.handleInput("\r");
+	await Promise.resolve();
+}
+
+describe("extra context filenames editor", () => {
+	it("saves multiple filenames as an array and lets users disable extras", async () => {
+		const component = openExtraContextFiles();
+		await submitText(component, '["AGENTS.local.md","TEAM.md"]');
+		expect(cfgContextFilesExtra.get(settings)).toEqual(["AGENTS.local.md", "TEAM.md"]);
+
+		component.handleInput("\r");
+		await submitText(component, "[]");
+		expect(cfgContextFilesExtra.get(settings)).toEqual([]);
+	});
+
+	it.each([
+		["[", /Invalid array JSON/],
+		['{"file":"TEAM.md"}', /Invalid array JSON/],
+		['["../TEAM.md"]', /file names, not paths/],
+		['["AGENTS.md"]', /built-in context file/],
+	])("keeps the saved filenames when input %s is rejected", async (input, error) => {
+		cfgContextFilesExtra.set(settings, ["TEAM.md"]);
+		const component = openExtraContextFiles();
+		await submitText(component, input);
+		expect(cfgContextFilesExtra.get(settings)).toEqual(["TEAM.md"]);
+		expect(Bun.stripANSI(component.render(120).join("\n"))).toMatch(error);
 	});
 });
