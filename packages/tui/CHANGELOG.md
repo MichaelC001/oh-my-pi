@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added opt-in JSON editing for free-form array settings.
+- Added opt-in JSON editing for free-form array settings ([#15252](https://github.com/can1357/oh-my-pi/pull/15252) by [@Shadorain](https://github.com/Shadorain)).
 
 ## [18.8.8] - 2026-10-10
 
