@@ -194,6 +194,7 @@
 ### Removed
 
 - Removed the `PI_SUBPROCESS_CMD` environment variable; subagents run in-process and never read it ([#14632](https://github.com/can1357/oh-my-pi/pull/14632) by [@jorgoose](https://github.com/jorgoose))
+- Fixed `omp auth-broker migrate --include-oauth` skipping Google Antigravity accounts and ChatGPT Team workspace members as already on the broker whenever it held another account sharing their project or workspace ([#14901](https://github.com/can1357/oh-my-pi/pull/14901) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.4] - 2026-10-08
 
