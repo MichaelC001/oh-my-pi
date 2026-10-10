@@ -147,14 +147,31 @@ export function claudeResetStatusesFromReports(
 	accounts: readonly OAuthAccountSummary[],
 	reports: readonly UsageReport[],
 ): ResetCreditAccountStatus[] {
+	const storedOrgIds = new Set(accounts.map(account => normalized(account.orgId)).filter(orgId => orgId));
 	return accounts.map(account => {
-		const status: ResetCreditAccountStatus = {
+		let status: ResetCreditAccountStatus = {
 			...account,
 			provider: CLAUDE_PROVIDER,
 			availableCount: 0,
 			credits: [],
 		};
-		const report = reports.find(candidate => reportMatchesStatus(candidate, status));
+		let report = reports.find(candidate => reportMatchesStatus(candidate, status));
+		if (!report && !status.orgId) {
+			// Discovery stamps the organization it resolves for a credential stored
+			// without one, as a live listing does on its status. A report naming
+			// another stored account's organization belongs to that account.
+			const adoptable: ResetCreditAccountStatus[] = [];
+			for (const candidate of reports) {
+				const orgId = candidate.metadata?.orgId;
+				if (typeof orgId !== "string" || storedOrgIds.has(normalized(orgId))) continue;
+				const adopted = { ...status, orgId, report: candidate };
+				if (reportMatchesStatus(candidate, adopted)) adoptable.push(adopted);
+			}
+			if (adoptable.length === 1) {
+				status = adoptable[0]!;
+				report = status.report;
+			}
+		}
 		const inventory = report?.resetCredits;
 		if (!report || !inventory) return { ...status, error: "Usage report has no saved-reset inventory" };
 		const credits = inventory.credits?.filter((credit): credit is UsageResetCredit => typeof credit.id === "string");

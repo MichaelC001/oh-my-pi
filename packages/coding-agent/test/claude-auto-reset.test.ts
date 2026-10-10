@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import type { ResetCreditAccountStatus, UsageReport, UsageResetCredit } from "@oh-my-pi/pi-ai";
+import type { OAuthAccountSummary, ResetCreditAccountStatus, UsageReport, UsageResetCredit } from "@oh-my-pi/pi-ai";
 import {
+	claudeResetStatusesFromReports,
 	planClaudeResetRedemptions,
 	type ClaudeResetPlanInput,
 	type ClaudeResetSkipReason,
@@ -569,5 +570,39 @@ describe("planClaudeResetRedemptions: expiry salvage", () => {
 		expect(plan.actions.map(action => action.accountKey)).toEqual(["anthropic|org-a|11", "anthropic|org-b|22"]);
 		expect(new Set(plan.actions.map(action => action.attemptKey)).size).toBe(2);
 		expect(plan.actions.map(action => action.target.credentialId)).toEqual([11, 22]);
+	});
+});
+
+describe("claudeResetStatusesFromReports", () => {
+	const legacy: OAuthAccountSummary = { position: 0, credentialId: 11, email: "user@example.com", active: true };
+	const early = status({
+		credit: { requiresLimit: false, blocking: [], clears: ["anthropic:7d"], usedFractions: { "anthropic:7d": 0.4 } },
+	});
+
+	function withInventory(usage: UsageReport): UsageReport {
+		const { availableCount, redeemableCount, eligible, nextCreditId, credits } = early;
+		return { ...usage, resetCredits: { availableCount, redeemableCount, eligible, nextCreditId, credits } };
+	}
+
+	it("salvages for a credential stored without its organization under the one discovery stamped on its report", () => {
+		const reports = [withInventory(report({ orgId: "org-a", weeklyUsed: 0.4 }))];
+		const statuses = claudeResetStatusesFromReports([legacy], reports);
+		const plan = planClaudeResetRedemptions(input({ trigger: "sweep", reports, statuses }));
+		expect(plan.actions).toMatchObject([
+			{
+				reason: "expiring-credit",
+				accountKey: "anthropic|org-a|11",
+				target: { provider: "anthropic", credentialId: 11, creditId: "cedar-1", orgId: "org-a" },
+			},
+		]);
+	});
+
+	it("never hands a credential stored without its organization a stored sibling organization's report", () => {
+		const sibling: OAuthAccountSummary = { ...legacy, position: 1, credentialId: 22, orgId: "org-a", active: false };
+		const reports = [withInventory(report({ orgId: "org-a", weeklyUsed: 0.4 }))];
+		const statuses = claudeResetStatusesFromReports([legacy, sibling], reports);
+		const plan = planClaudeResetRedemptions(input({ trigger: "sweep", reports, statuses }));
+		expect(plan.actions.map(action => action.target.credentialId)).toEqual([22]);
+		expect(plan.skipped).toContainEqual({ accountKey: "anthropic|-|11", rule: "account", reason: "credits-unknown" });
 	});
 });
