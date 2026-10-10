@@ -416,11 +416,7 @@ describe("PluginManager.install with git sources", () => {
 			const prepare = (async () => {
 				await Bun.write(
 					pluginsPkgJson,
-					JSON.stringify(
-						{ name: "omp-plugins", private: true, dependencies: { "gh-plugin": spec } },
-						null,
-						2,
-					),
+					JSON.stringify({ name: "omp-plugins", private: true, dependencies: { "gh-plugin": spec } }, null, 2),
 				);
 				const installedDir = path.join(pluginsNodeModules, "gh-plugin");
 				await fs.mkdir(installedDir, { recursive: true });
