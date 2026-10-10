@@ -208,16 +208,17 @@ describe("eval js read() URI delegation", () => {
 		]);
 	});
 
-	function loadArtifactPrelude(artifacts: string) {
+	function loadArtifactPrelude(artifacts: string | undefined) {
+		const roots: Record<string, string> = artifacts === undefined ? {} : { artifact: artifacts };
 		const calls: Array<{ name: string; args: unknown }> = [];
 		const sandbox = loadPrelude(async (name, args) => {
 			calls.push({ name, args });
 			return { text: "from the read tool" };
 		});
 		sandbox.__omp_helpers__ = createHelpers({
-			cwd: () => artifacts,
+			cwd: () => process.cwd(),
 			env: new Map(),
-			localRoots: () => ({ artifact: artifacts }),
+			localRoots: () => roots,
 			emitStatus: () => {},
 		});
 		return { calls, sandbox };
@@ -245,6 +246,17 @@ describe("eval js read() URI delegation", () => {
 		expect(calls).toEqual([
 			{ name: "read", args: { path: "artifact://7:raw" } },
 			{ name: "read", args: { path: "artifact://7:raw:2-3" } },
+		]);
+	});
+
+	it("asks the read tool for the raw view when no artifacts dir was injected", async () => {
+		const { calls, sandbox } = loadArtifactPrelude(undefined);
+
+		expect(await vm.runInContext(`read("artifact://12")`, sandbox)).toBe("from the read tool");
+		expect(await vm.runInContext(`read("artifact://12:raw:1-1")`, sandbox)).toBe("from the read tool");
+		expect(calls).toEqual([
+			{ name: "read", args: { path: "artifact://12:raw" } },
+			{ name: "read", args: { path: "artifact://12:raw:1-1" } },
 		]);
 	});
 });

@@ -60,6 +60,7 @@ if "__omp_prelude_loaded__" not in globals():
 
     _OMP_INTERNAL_URL_RE = re.compile(r"^([a-z][a-z0-9+.-]*)://(.*)$", re.IGNORECASE)
     _OMP_ARTIFACT_ID_RE = re.compile(r"^\d+$")
+    _OMP_BARE_ARTIFACT_RE = re.compile(r"^artifact://\d+$", re.IGNORECASE)
 
     def _omp_url_roots() -> dict:
         """On-disk roots for internal-URL schemes, keyed by scheme (PI_EVAL_LOCAL_ROOTS)."""
@@ -98,13 +99,12 @@ if "__omp_prelude_loaded__" not in globals():
             return result["text"]
         return result
 
-    def _is_artifact_url(path: str | Path) -> bool:
-        return isinstance(path, str) and path[:11].lower() == "artifact://"
-
     def _artifact_file(path: str) -> Path | None:
         """This session's file for `artifact://<id>` (`<id>.<tool>.log` in its
-        artifacts dir), or None when the id is not there."""
-        root = _omp_url_roots()["artifact"]
+        artifacts dir), or None when the id is not there or no dir is known."""
+        root = _omp_url_roots().get("artifact")
+        if not root:
+            return None
         artifact_id = path[11:]
         try:
             names = os.listdir(root)
@@ -156,15 +156,15 @@ if "__omp_prelude_loaded__" not in globals():
 
     def read(path: str | Path, offset: int = 1, limit: int | None = None) -> str:
         """Read file or read-tool URI contents. offset/limit are 1-indexed lines."""
-        if _should_delegate_read(path):
-            return _read_through_tool(path, offset, limit)
-        if _is_artifact_url(path):
+        if isinstance(path, str) and _OMP_BARE_ARTIFACT_RE.match(path):
             if limit is not None and limit <= 0:
                 return ""
             p = _artifact_file(path)
             if p is None:
-                # Held by another session: the read tool searches every registered artifacts dir.
+                # Another session's, or no artifacts dir was injected: the read tool searches every registered one.
                 return _read_through_tool(f"{path}:raw", offset, limit)
+        elif _should_delegate_read(path):
+            return _read_through_tool(path, offset, limit)
         else:
             p = _resolve_omp_path(path)
         data = p.read_text(encoding="utf-8")

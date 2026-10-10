@@ -66,7 +66,7 @@ export interface LimitsMeta {
 	/**
 	 * `unit` may be absent in sessions persisted before it was recorded. `lines` is
 	 * the first-to-last range of cut lines, and `selectorBase` the target a
-	 * `:raw:<first>-<last>` selector reads them whole from (an artifact's
+	 * `:raw:<line>-<line>` selector reads one of them whole from (an artifact's
 	 * `artifact://<id>` stands in when absent).
 	 */
 	columnTruncated?: {
@@ -341,11 +341,14 @@ export function formatOutputNotice(meta: OutputMeta | undefined): string {
 		// a resumed legacy session renders "… 768 undefined" and stripOutputNotice
 		// stops matching the persisted "… 768 chars" text.
 		let columnNotice = `Some lines truncated to ${c.maxColumn} ${c.unit ?? "chars"}`;
-		// An artifact cut to a head/tail sample renumbers its lines, so only a complete one names a range.
+		// An artifact cut to a head/tail sample renumbers its lines, so only a complete one names a line.
 		const selectorBase =
 			c.selectorBase ?? (c.artifactId != null && !c.artifactElidedBytes ? `artifact://${c.artifactId}` : undefined);
 		if (c.lines && selectorBase !== undefined) {
-			columnNotice += `. Use ${selectorBase}:raw:${c.lines.first}-${c.lines.last} to read them whole`;
+			// One line per selector: a span of cut lines can exceed what one read returns.
+			const { first, last } = c.lines;
+			columnNotice += `. Use ${selectorBase}:raw:${first}-${first} to read line ${first} whole`;
+			if (last > first) columnNotice += `; cut lines run to line ${last}, each read the same way`;
 		} else if (c.artifactId != null) {
 			columnNotice += `. ${formatFullOutputReference(c.artifactId, c.artifactElidedBytes)}`;
 		}
