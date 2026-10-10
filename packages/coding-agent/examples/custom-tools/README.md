@@ -38,8 +38,10 @@ dir instead: `~/.omp/profiles/<name>/agent/tools`.
 
 `--tools` selects registered tool names, never file paths. `hello` is the name
 the factory in `hello/index.ts` returns. Without the flag the tool is still
-discovered and loaded; `--tools hello` requests it by name on top of the
-session's usual set.
+discovered and loaded alongside the built-in tools. `--tools hello` restricts
+the session's tools to just `hello`, which keeps the demo focused but drops
+built-ins such as `read` and `bash`; list them too (`--tools read,bash,hello`)
+to keep them.
 
 Then in omp:
 
