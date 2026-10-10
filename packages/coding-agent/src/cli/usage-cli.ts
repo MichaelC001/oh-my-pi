@@ -1316,37 +1316,41 @@ async function runUsageResetCommand(
 		return;
 	}
 	const { label, provider, availableCount, target } = resolved.account;
-	const redeem = async (): Promise<ResetCreditRedeemOutcome> => {
-		try {
-			return await authStorage.resets.redeem({ target, baseUrlResolver });
-		} catch (error) {
-			// A transport failure can land after the provider applied the reset.
-			return { ok: false, code: "network_error", provider, reason: errorMessage(error) };
-		}
-	};
+	const who = `${oneLine(label)} (${formatResetProviderName(provider)})`;
 	const lockKey = resetAccountLockKey(target);
+	if (!lockKey) {
+		failUsageReset(
+			`${who}: this login stores no account id or email to fence the spend against other omp processes, so nothing was spent. Run \`omp\` and use /login to sign in to it again.`,
+		);
+		return;
+	}
 	// The fence a session's automatic spend takes: neither spends while the
 	// other's attempt is in flight or within a minute of it.
-	const result = lockKey
-		? await withResetFence<ResetCreditRedeemOutcome | ResetMarker>(
-				resetLockPath(lockKey),
-				async marker => marker,
-				async markedRedeem => {
-					if (provider === "openai-codex") {
-						const live = await authStorage.resets.list({
-							provider,
-							baseUrlResolver,
-							signal: AbortSignal.timeout(10_000),
-						});
-						const balance = checkCodexBalance(live, target.credentialId, availableCount);
-						if (balance) return { ok: false, code: balance === "spent" ? "offer_changed" : balance, provider };
-					}
-					return (await markedRedeem(redeem)).outcome;
-				},
-			)
-		: await redeem();
+	const result = await withResetFence<ResetCreditRedeemOutcome | ResetMarker>(
+		resetLockPath(lockKey),
+		async marker => marker,
+		async markedRedeem => {
+			if (provider === "openai-codex") {
+				const live = await authStorage.resets.list({
+					provider,
+					baseUrlResolver,
+					signal: AbortSignal.timeout(10_000),
+				});
+				const balance = checkCodexBalance(live, target.credentialId, availableCount);
+				if (balance) return { ok: false, code: balance === "spent" ? "offer_changed" : balance, provider };
+			}
+			const { outcome } = await markedRedeem(async () => {
+				try {
+					return await authStorage.resets.redeem({ target, baseUrlResolver });
+				} catch (error) {
+					// A transport failure can land after the provider applied the reset.
+					return { ok: false, code: "network_error", provider, reason: errorMessage(error) };
+				}
+			});
+			return outcome;
+		},
+	);
 	if ("state" in result) {
-		const who = `${oneLine(label)} (${formatResetProviderName(provider)})`;
 		const ago = formatDuration(Date.now() - result.atMs);
 		failUsageReset(
 			result.state === "reset"

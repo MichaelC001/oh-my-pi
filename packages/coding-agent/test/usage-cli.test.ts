@@ -17,7 +17,7 @@ import {
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import { resetAccountLockKey } from "@oh-my-pi/pi-coding-agent/session/codex-auto-reset";
-import { readResetMarker, resetLockPath } from "@oh-my-pi/pi-coding-agent/session/reset-fence";
+import { resetLockPath } from "@oh-my-pi/pi-coding-agent/session/reset-fence";
 import {
 	collectUnreportedAccounts,
 	type UsageAccountIdentity,
@@ -1637,13 +1637,14 @@ describe("omp usage reset", () => {
 		]);
 	});
 
-	it("leaves the reset marker a session adopts after a spend", async () => {
-		const { team } = credentialIds();
-		await runUsageCommand({ action: "reset", target: `codex/${team}`, noExtensions: true });
+	it("refuses to spend on an account whose login cannot be fenced", async () => {
+		await authStorage.credentials.set("anthropic", oauth("claude-anon", { orgId: "org-anon" }));
+		const { claude } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `claude/${claude}`, noExtensions: true });
 
-		const marker = await readResetMarker(codexTeamLockPath());
-		expect(marker.state).toBe("reset");
-		expect(Date.now() - marker.atMs).toBeLessThan(60_000);
+		expect(consumes()).toEqual([]);
+		expect(stripVTControlCharacters(stderr)).toContain("no account id or email to fence the spend");
+		expect(process.exitCode).toBe(1);
 	});
 
 	it("waits for a session holding the account's reset lock and spends nothing after its reset", async () => {
