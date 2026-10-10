@@ -244,6 +244,34 @@ describe("Factory Droid gemini wire — history replay", () => {
 		expect(result.content[1]).not.toHaveProperty("textSignature");
 	});
 
+	it("stores and replays signed thinking exactly as received", async () => {
+		const summary = "```thinking\nWeigh the divisors.\n```\n";
+		const { result } = await run("is 7919 prime?", [
+			JSON.stringify({
+				candidates: [
+					{
+						content: {
+							parts: [
+								{ thought: true, text: summary, thoughtSignature: "sig-think" },
+								{ text: "7919 is prime." },
+							],
+						},
+					},
+				],
+			}),
+			finishChunk("STOP"),
+		]);
+		expect(result.content[0]).toMatchObject({ type: "thinking", thinking: summary, thinkingSignature: "sig-think" });
+
+		const { contents } = await run({
+			messages: [{ role: "user", content: "is 7919 prime?", timestamp: 1 }, result],
+		});
+		expect(contents.find(entry => entry.role === "model")?.parts[0]).toEqual({
+			text: summary,
+			thoughtSignature: "sig-think",
+		});
+	});
+
 	it("drops sentinel-signed thinking rather than exposing it as assistant text", async () => {
 		const { contents } = await run({
 			messages: [

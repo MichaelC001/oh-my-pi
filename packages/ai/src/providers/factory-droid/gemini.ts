@@ -389,7 +389,8 @@ export function streamFactoryDroidGemini(
 
 			stream.push({ type: "start", partial: output });
 
-			const textBlocks = new GoogleTextBlocks(output, stream);
+			// Factory replays signed thinking as plain text, so summaries stay as received.
+			const textBlocks = new GoogleTextBlocks(output, stream, "verbatim");
 			let finishReason: string | undefined;
 			let blockReason: string | undefined;
 			const toolCallIndices: number[] = [];

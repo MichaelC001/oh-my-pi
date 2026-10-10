@@ -555,6 +555,9 @@ export function pushToolCallEvents(
 	stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: output });
 }
 
+/** How {@link GoogleTextBlocks} keeps thought text: healed of leaked fence delimiters (#8719), or as received. */
+export type GoogleThoughtText = "healed" | "verbatim";
+
 /**
  * Folds streamed generateContent text and thought parts into text and thinking
  * blocks, opening a new block whenever the part kind changes. A part's
@@ -564,6 +567,7 @@ export function pushToolCallEvents(
 export class GoogleTextBlocks {
 	readonly #output: AssistantMessage;
 	readonly #stream: AssistantMessageEventStream;
+	readonly #thoughtText: GoogleThoughtText;
 	#block: TextContent | ThinkingContent | null = null;
 	#contentIndex = -1;
 	// Heals a leaked reasoning-fence opener (```thinking / ``````thinking) that some
@@ -571,9 +575,10 @@ export class GoogleTextBlocks {
 	// stripper per thinking block; created lazily on first thinking delta.
 	#thinkingStripper: ThinkingFenceStripper | null = null;
 
-	constructor(output: AssistantMessage, stream: AssistantMessageEventStream) {
+	constructor(output: AssistantMessage, stream: AssistantMessageEventStream, thoughtText: GoogleThoughtText) {
 		this.#output = output;
 		this.#stream = stream;
+		this.#thoughtText = thoughtText;
 	}
 
 	/** Folds one response part; parts without text are ignored. */
@@ -593,8 +598,8 @@ export class GoogleTextBlocks {
 			this.#block && (this.#block.type === "thinking") === isThinking ? this.#block : this.#open(isThinking);
 		this.#sign(block, thoughtSignature);
 		if (block.type === "thinking") {
-			this.#thinkingStripper ??= new ThinkingFenceStripper();
-			const delta = this.#thinkingStripper.push(text);
+			if (this.#thoughtText === "healed") this.#thinkingStripper ??= new ThinkingFenceStripper();
+			const delta = this.#thinkingStripper ? this.#thinkingStripper.push(text) : text;
 			if (!delta) return;
 			block.thinking += delta;
 			this.#stream.push({ type: "thinking_delta", contentIndex: this.#contentIndex, delta, partial: this.#output });
@@ -715,7 +720,7 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 	const { googleStream, output, stream, model, options, onFirstToken } = args;
 	const blocks = output.content;
 	const blockIndex = () => blocks.length - 1;
-	const textBlocks = new GoogleTextBlocks(output, stream);
+	const textBlocks = new GoogleTextBlocks(output, stream, "healed");
 	let firstTokenSeen = false;
 	let sawFinishReason = false;
 
