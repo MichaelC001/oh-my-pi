@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed macOS window listing, `ax()`, `find()` and element clicks refusing without Screen Recording permission, which now only screenshots and display listing need (without it, other apps' window titles are blank), and missing windows behind the 48 frontmost
+
 ## [18.8.7] - 2026-10-09
 
 ### Added
