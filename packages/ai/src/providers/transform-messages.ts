@@ -7,7 +7,6 @@ import type {
 	DeveloperMessage,
 	Message,
 	Model,
-	ThinkingContent,
 	ToolCall,
 	ToolResultMessage,
 	UserMessage,
@@ -441,50 +440,6 @@ function targetReplaysPlaintextReasoning(model: Model, compat: Model["compat"]):
 		default:
 			return false;
 	}
-}
-
-/**
- * Whether a thinking block may hold a provider-written summary rather than the
- * model's trace. Blocks recorded before the parsers marked summaries are judged
- * by their stored Responses reasoning item (signature, else the message's
- * native-history payload); a Responses block whose item is gone counts as one.
- */
-export function mayBeReasoningSummary(block: ThinkingContent, message: AssistantMessage): boolean {
-	if (block.summary) return true;
-	const item = storedResponsesReasoningItem(block, message);
-	if (!item) return block.itemId !== undefined;
-	const hasSummary = Array.isArray(item.summary) && item.summary.some(part => isTextPart(part, "summary_text"));
-	const hasTrace = Array.isArray(item.content) && item.content.some(part => isTextPart(part, "reasoning_text"));
-	return hasSummary || !hasTrace;
-}
-
-function storedResponsesReasoningItem(
-	block: ThinkingContent,
-	message: AssistantMessage,
-): Record<string, unknown> | undefined {
-	if (block.thinkingSignature?.startsWith("{")) {
-		try {
-			const parsed: unknown = JSON.parse(block.thinkingSignature);
-			if (parsed !== null && typeof parsed === "object" && "type" in parsed && parsed.type === "reasoning") {
-				return parsed as Record<string, unknown>;
-			}
-		} catch {}
-	}
-	const payload = message.providerPayload;
-	if (payload?.type !== "openaiResponsesHistory" || block.itemId === undefined) return undefined;
-	return payload.items.find(item => item.type === "reasoning" && item.id === block.itemId);
-}
-
-function isTextPart(part: unknown, type: string): boolean {
-	return (
-		part !== null &&
-		typeof part === "object" &&
-		"type" in part &&
-		part.type === type &&
-		"text" in part &&
-		typeof part.text === "string" &&
-		part.text.length > 0
-	);
 }
 
 const ANTHROPIC_TOOL_CALL_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -1002,8 +957,17 @@ export function transformMessages<TApi extends Api>(
 					}
 					// Same model from another host: keep the full trace natively, minus
 					// the signature and item id bound to the host that minted them.
-					// Provider-written summaries are not the model's own reasoning.
-					if (carriesSameModelReasoning && !mayBeReasoningSummary(sanitized, assistantMsg)) {
+					// Provider-written summaries are not the model's own reasoning; a
+					// Responses block carries only once its parser confirmed the trace.
+					const responsesSourced =
+						sanitized.itemId !== undefined ||
+						assistantMsg.api === "openai-responses" ||
+						assistantMsg.api === "azure-openai-responses" ||
+						assistantMsg.api === "openai-codex-responses";
+					if (
+						carriesSameModelReasoning &&
+						(responsesSourced ? sanitized.summary === false : sanitized.summary !== true)
+					) {
 						return { type: "thinking" as const, thinking: sanitized.thinking, [kCarriedReasoning]: true };
 					}
 					// Other cross-API targets (openai-responses encrypted blobs, google

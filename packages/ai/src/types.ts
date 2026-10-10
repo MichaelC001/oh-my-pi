@@ -868,9 +868,11 @@ export interface ThinkingContent {
 	thinkingSignature?: string; // e.g., for OpenAI responses, the reasoning item ID
 	itemId?: string; // item.id from output_item.added, used to match output_item.done
 	/**
-	 * `thinking` is a provider-written summary of the model's reasoning (OpenAI
-	 * Responses `summary_text`, Gemini thought summaries), not the trace itself.
-	 * Summaries never replay natively on another host.
+	 * `true`: `thinking` is a provider-written summary of the model's reasoning
+	 * (OpenAI Responses `summary_text`, Gemini thought summaries). `false`: the
+	 * Responses parser confirmed it is the model's own trace. Unset elsewhere and
+	 * on turns recorded before parsers set it. Only confirmed traces from a
+	 * Responses source replay natively on another host.
 	 */
 	summary?: boolean;
 }

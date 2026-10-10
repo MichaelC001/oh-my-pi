@@ -52,7 +52,6 @@ import {
 } from "@oh-my-pi/pi-agent-core/compaction/message-cache";
 import { convertMessageToLlm } from "@oh-my-pi/pi-agent-core/compaction/messages";
 import type { AssistantMessage, ImageContent, Message, TextContent, UserMessage } from "@oh-my-pi/pi-ai";
-import { mayBeReasoningSummary } from "@oh-my-pi/pi-ai/providers/transform-messages";
 import { copyPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
 import { COLLAB_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-wire";
@@ -100,13 +99,11 @@ export function sanitizeAssistantForReparentedHistory(message: AssistantMessage)
 	for (const block of message.content) {
 		if (block.type === "redactedThinking" || block.type === "anthropicServerTool") continue;
 		if (block.type === "thinking") {
-			// Signatures and the native payload are replay-bound and go; whether the
-			// text is a provider summary is provenance and stays.
-			content.push({
-				type: "thinking",
-				thinking: block.thinking,
-				...(mayBeReasoningSummary(block, message) && { summary: true }),
-			});
+			// Signatures and item ids are replay-bound and go; the summary state is
+			// provenance and stays. A Responses block its parser never confirmed as
+			// the trace keeps counting as a summary once its item id is gone.
+			const summary = block.summary ?? (block.itemId !== undefined || undefined);
+			content.push({ type: "thinking", thinking: block.thinking, ...(summary !== undefined && { summary }) });
 			continue;
 		}
 		content.push(block);

@@ -84,7 +84,7 @@ describe("sanitizeAssistantForReparentedHistory", () => {
 		});
 	});
 
-	it("marks a Responses summary recorded before summaries were marked", () => {
+	it("keeps a Responses block's reasoning provenance once its item id is dropped", () => {
 		const summaryItem = { id: "rs_legacy", type: "reasoning", summary: [{ type: "summary_text", text: "summary" }] };
 		const message: AssistantMessage = {
 			role: "assistant",
@@ -112,6 +112,12 @@ describe("sanitizeAssistantForReparentedHistory", () => {
 			type: "thinking",
 			thinking: "summary",
 			summary: true,
+		});
+		message.content[0] = { type: "thinking", thinking: "trace", itemId: "rs_new", summary: false };
+		expect(sanitizeAssistantForReparentedHistory(message).content[0]).toEqual({
+			type: "thinking",
+			thinking: "trace",
+			summary: false,
 		});
 	});
 });

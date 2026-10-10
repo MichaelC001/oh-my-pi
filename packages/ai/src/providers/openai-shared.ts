@@ -2848,16 +2848,16 @@ export function finalizeReasoningThinking(
 }
 
 /**
- * Marks whether a finalized reasoning block holds a provider-written summary,
- * following `finalizeReasoningThinking`'s choice of text: the done item's
- * summary wins, then its `reasoning_text` content, then the streamed deltas,
- * which the summary handlers mark on the block as they append.
+ * Records whether a finalized reasoning block holds a provider-written summary
+ * or the model's own trace, following `finalizeReasoningThinking`'s choice of
+ * text: the done item's summary wins, then its `reasoning_text` content, then
+ * the streamed deltas, which the summary handlers mark on the block as they
+ * append.
  */
 export function settleReasoningSummary(item: ResponseReasoningItem, block: ThinkingContent): void {
 	const hasSummary = item.summary?.some(part => part.text) ?? false;
 	const hasTrace = item.content?.some(part => part.type === "reasoning_text" && part.text) ?? false;
-	if (hasSummary || (!hasTrace && block.summary)) block.summary = true;
-	else delete block.summary;
+	block.summary = hasSummary || (!hasTrace && block.summary === true);
 }
 
 function finalizeCutoffReasoningThinking(

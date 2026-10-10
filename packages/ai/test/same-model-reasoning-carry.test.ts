@@ -256,7 +256,7 @@ describe("same-model reasoning carry", () => {
 		expect(wire.content).toBe(DEMOTED);
 	});
 
-	describe("a summary recorded before summaries were marked", () => {
+	describe("Responses reasoning recorded before parsers confirmed the trace stays text", () => {
 		const source: Source = { provider: "openrouter", api: "openai-responses", model: "moonshotai/kimi-k3" };
 		const summaryItem = {
 			id: "rs_legacy",
@@ -264,7 +264,7 @@ describe("same-model reasoning carry", () => {
 			summary: [{ type: "summary_text", text: TRACE }],
 		};
 
-		it("is recognised from its stored signature", () => {
+		it("with its item in the signature", () => {
 			const prior = JSON.parse(
 				JSON.stringify(priorTurn(source, { thinkingSignature: JSON.stringify(summaryItem) })),
 			) as AssistantMessage;
@@ -275,8 +275,8 @@ describe("same-model reasoning carry", () => {
 			expect(wire.content).toBe(DEMOTED);
 		});
 
-		it("is recognised from the native-history payload once the signature was deduplicated", () => {
-			const prior = priorTurn(source);
+		it("keyed by item id on an OpenRouter turn", () => {
+			const prior = priorTurn({ ...source, api: "openrouter" });
 			prior.content[0] = { type: "thinking", thinking: TRACE, itemId: summaryItem.id };
 			prior.providerPayload = { type: "openaiResponsesHistory", items: [summaryItem] };
 
@@ -285,9 +285,9 @@ describe("same-model reasoning carry", () => {
 			expect(wire.content).toBe(DEMOTED);
 		});
 
-		it("is not carried when its Responses item is gone", () => {
+		it("with no item id, its summary only in the native-history payload", () => {
 			const prior = priorTurn(source);
-			prior.content[0] = { type: "thinking", thinking: TRACE, itemId: summaryItem.id };
+			prior.providerPayload = { type: "openaiResponsesHistory", items: [summaryItem] };
 
 			const wire = completionsAssistant(moonshotK3(), history(prior));
 
@@ -344,8 +344,8 @@ describe("same-model reasoning carry", () => {
 	});
 });
 
-describe("Responses reasoning summaries are marked at parse time", () => {
-	async function parseReasoning(events: Record<string, unknown>[]) {
+describe("Responses reasoning provenance is recorded at parse time", () => {
+	async function parseTurn(events: Record<string, unknown>[]): Promise<AssistantMessage> {
 		const output: AssistantMessage = {
 			role: "assistant",
 			content: [],
@@ -370,8 +370,10 @@ describe("Responses reasoning summaries are marked at parse time", () => {
 			new AssistantMessageEventStream(),
 			openRouterK3() as unknown as Model<"openai-responses">,
 		);
-		return output.content[0];
+		output.content.push({ type: "text", text: "Patched." });
+		return output;
 	}
+	const parseReasoning = async (events: Record<string, unknown>[]) => (await parseTurn(events)).content[0];
 	const done = (item: Record<string, unknown>) => ({
 		type: "response.output_item.done",
 		output_index: 0,
@@ -392,11 +394,10 @@ describe("Responses reasoning summaries are marked at parse time", () => {
 		expect(block).toMatchObject({ type: "thinking", thinking: TRACE, summary: true });
 	});
 
-	it("leaves reasoning_text content unmarked", async () => {
+	it("marks reasoning_text content as the confirmed trace", async () => {
 		const block = await parseReasoning([done({ summary: [], content: [{ type: "reasoning_text", text: TRACE }] })]);
 
-		expect(block).toMatchObject({ type: "thinking", thinking: TRACE });
-		expect(block).not.toHaveProperty("summary");
+		expect(block).toMatchObject({ type: "thinking", thinking: TRACE, summary: false });
 	});
 
 	it("judges a done item without text by the streamed event type", async () => {
@@ -406,8 +407,16 @@ describe("Responses reasoning summaries are marked at parse time", () => {
 			done({ summary: [] }),
 		]);
 
-		expect(trace).toMatchObject({ type: "thinking", thinking: TRACE });
-		expect(trace).not.toHaveProperty("summary");
+		expect(trace).toMatchObject({ type: "thinking", thinking: TRACE, summary: false });
 		expect(summary).toMatchObject({ type: "thinking", thinking: TRACE, summary: true });
+	});
+
+	it("carries a parsed trace whose done item omits the text to another host", async () => {
+		const prior = await parseTurn([delta("response.reasoning_text.delta", TRACE), done({ summary: [] })]);
+
+		const wire = completionsAssistant(moonshotK3(), history(prior));
+
+		expect(wire.reasoning_content).toBe(TRACE);
+		expect(wire.content).toBe("Patched.");
 	});
 });
