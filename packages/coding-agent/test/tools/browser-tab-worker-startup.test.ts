@@ -21,6 +21,7 @@ import {
 	runInTab,
 } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
+import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { chromiumAvailable, visibleBrowserAvailable } from "./chromium-probe";
 
 const CHROMIUM_AVAILABLE = await chromiumAvailable();
@@ -983,6 +984,91 @@ describe("browser tabs whose renderer crashed", () => {
 					session,
 				}).catch((error: unknown) => error);
 				expect(String(missed)).toContain("Browser tab's renderer crashed");
+				const next = await runInTab(name, { code: "return await page.title();", timeoutMs: 10_000, session });
+				expect(next.returnValue).toBe(name);
+			} finally {
+				await releaseTab(name, { kill: true });
+				if ("browser" in browser && browser.browser.connected) await releaseBrowser(browser, { kill: true });
+			}
+		},
+		45_000,
+	);
+	it.skipIf(!CHROMIUM_AVAILABLE)(
+		"closes a reattached headless tab's page when the tab is released",
+		async () => {
+			const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+			if (!("browser" in browser)) throw new Error("Expected a Puppeteer browser");
+			holdBrowser(browser);
+			const name = `crashed-released-${process.pid}`;
+			const url = `data:text/html,<title>${name}</title>`;
+			try {
+				await acquireTab(name, browser, { url, timeoutMs: 30_000 });
+				const tab = getTab(name);
+				if (tab?.backend !== "worker") throw new Error("Expected a worker tab");
+				const targetId = tab.targetId;
+				const reported = crashReport(name);
+				await crashRenderer(browser, url);
+				await reported;
+				const result = await runInTab(name, { code: "return await page.title();", timeoutMs: 10_000, session });
+				expect(result.returnValue).toBe(name);
+				await releaseTab(name, { kill: false });
+				const watcher = await browser.browser.target().createCDPSession();
+				const { targetInfos } = await watcher.send("Target.getTargets");
+				await watcher.detach();
+				expect(targetInfos.map(info => info.targetId)).not.toContain(targetId);
+			} finally {
+				await releaseTab(name, { kill: true });
+				await releaseBrowser(browser, { kill: true });
+			}
+		},
+		45_000,
+	);
+
+	it.skipIf(!CHROMIUM_AVAILABLE)(
+		"answers an abort during a crashed tab's reattach at once and keeps the tab busy until it lands",
+		async () => {
+			const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+			const name = `crashed-aborted-${process.pid}`;
+			const url = `data:text/html,<title>${name}</title>`;
+			try {
+				await acquireTab(name, browser, { url, timeoutMs: 30_000 });
+				const tab = getTab(name);
+				if (tab?.backend !== "worker") throw new Error("Expected a worker tab");
+				const reported = crashReport(name);
+				await crashRenderer(browser, url);
+				await reported;
+				const crashedWorker = tab.worker;
+				const terminate = crashedWorker.terminate.bind(crashedWorker);
+				const reattachPaused = Promise.withResolvers<void>();
+				const resumeReattach = Promise.withResolvers<void>();
+				// The reattach terminates the crashed page's worker first: hold it there, as a wedged attach would.
+				const terminateSpy = spyOn(crashedWorker, "terminate").mockImplementation(async () => {
+					await terminate();
+					reattachPaused.resolve();
+					await resumeReattach.promise;
+				});
+				try {
+					const ac = new AbortController();
+					const run = runInTab(name, {
+						code: "return await page.title();",
+						timeoutMs: 10_000,
+						session,
+						signal: ac.signal,
+					}).catch((error: unknown) => error);
+					await reattachPaused.promise;
+					ac.abort();
+					expect(await run).toBeInstanceOf(ToolAbortError);
+					const sibling = await runInTab(name, { code: "return 1;", timeoutMs: 10_000, session }).catch(
+						(error: unknown) => error,
+					);
+					expect(String(sibling)).toContain("is busy");
+				} finally {
+					resumeReattach.resolve();
+					terminateSpy.mockRestore();
+				}
+				// The reattach the aborted run left behind lands on its own and frees the tab; nothing signals it.
+				for (const deadline = Date.now() + 10_000; tab.pending.size > 0 && Date.now() < deadline;)
+					await Bun.sleep(20);
 				const next = await runInTab(name, { code: "return await page.title();", timeoutMs: 10_000, session });
 				expect(next.returnValue).toBe(name);
 			} finally {

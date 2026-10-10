@@ -124,6 +124,8 @@ export interface WorkerTabSession extends TabSessionBase<PuppeteerBrowserHandle>
 	activateForScreenshot: boolean;
 	/** The page's renderer crashed since the last run; the next run reattaches the page first. */
 	crashed?: boolean;
+	/** A recycle gave the tab a worker that attached to its page instead of creating it; that worker's close leaves the page open. */
+	reattached?: boolean;
 }
 
 export interface CmuxTabSession extends TabSessionBase<CmuxBrowserHandle> {
@@ -895,17 +897,26 @@ async function runInTabWithSnapshot(
 			}
 		}
 	}
+	// Rejected on abort, for the crashed tab's reattach below: the worker being replaced cannot answer `abort`.
+	const aborted = Promise.withResolvers<never>();
+	aborted.promise.catch(() => undefined);
 	const abort = (): void => {
 		safeSend(tab, { type: "abort", id });
 		for (const ctrl of pending.toolCalls.values()) ctrl.abort(opts.signal?.reason);
+		aborted.reject(new ToolAbortError());
 	};
 	if (opts.signal?.aborted) abort();
 	else opts.signal?.addEventListener("abort", abort, { once: true });
+	// A reattach this run stopped waiting for; the tab stays busy until it settles.
+	let reattachInFlight: Promise<boolean> | undefined;
 	try {
 		const reattachedAfterCrash = tab.crashed === true;
 		if (reattachedAfterCrash) {
+			const reattach = reattachCrashedTab(tab, name, opts.timeoutMs);
+			reattachInFlight = reattach;
 			// Killed or closed instead: that rejected this run with its reason.
-			if (!(await reattachCrashedTab(tab, name, opts.timeoutMs))) return await promise;
+			if (!(await Promise.race([reattach, aborted.promise]))) return await promise;
+			reattachInFlight = undefined;
 			// The worker ignores `abort` for a run it never started.
 			if (opts.signal?.aborted) throw new ToolAbortError();
 		}
@@ -953,10 +964,14 @@ async function runInTabWithSnapshot(
 		}
 	} finally {
 		opts.signal?.removeEventListener("abort", abort);
-		tab.pending.delete(id);
-		// Completion is use too: a run outlasting the idle timeout must
-		// not look stale to the sweep right after it finishes.
-		tab.lastActivityAt = Date.now();
+		const settle = (): void => {
+			tab.pending.delete(id);
+			// Completion is use too: a run outlasting the idle timeout must
+			// not look stale to the sweep right after it finishes.
+			tab.lastActivityAt = Date.now();
+		};
+		if (reattachInFlight) void reattachInFlight.then(settle);
+		else settle();
 	}
 }
 
@@ -1162,7 +1177,8 @@ async function releaseTabInner(tab: TabSession, name: string, opts: ReleaseTabOp
 		}
 	}
 	await tab.worker.terminate().catch(() => undefined);
-	if (forced && tab.kindTag === "headless") {
+	// A reattached worker does not close the omp-owned headless page it adopted, so close it here.
+	if ((forced || (wasAlive && tab.reattached)) && tab.kindTag === "headless") {
 		try {
 			// `false` is "not confirmed closed" (the CDP session could not be
 			// created, or `Target.getTargets` failed) — the same unconfirmed
@@ -1726,6 +1742,7 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 		tab.worker = replacement;
 		tab.info = info;
 		tab.state = "alive";
+		tab.reattached = true;
 		replacement.onMessage(msg => handleTabMessage(tab, msg));
 		return true;
 	};
