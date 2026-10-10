@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed macOS window listing, `ax()`, `find()` and element clicks refusing without Screen Recording permission, which now only screenshots and display listing need (without it, other apps' window titles are blank), and missing windows behind the 48 frontmost
+- Fixed macOS window listing, `ax()`, `find()` and element clicks refusing without Screen Recording permission, which now only screenshots and display listing need (without it, other apps' window titles are blank), and missing windows behind the 48 frontmost ([#15158](https://github.com/can1357/oh-my-pi/pull/15158) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.7] - 2026-10-09
 

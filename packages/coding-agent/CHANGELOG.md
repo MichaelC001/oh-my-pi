@@ -16,7 +16,7 @@
 
 ### Fixed
 
-- Fixed `computer.window()` not finding a window by id or app when more than 48 windows were open in front of it on macOS; `computer.windows()` still lists at most 48
+- Fixed `computer.window()` not finding a window by id or app when more than 48 windows were open in front of it on macOS; `computer.windows()` still lists at most 48 ([#15158](https://github.com/can1357/oh-my-pi/pull/15158) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed `/usage` (or clicking the status-line cost) while the usage dashboard was already open stacking a second dashboard on top; it now focuses the open one ([#15145](https://github.com/can1357/oh-my-pi/pull/15145) by [@H4vC](https://github.com/H4vC))
 - Fixed the custom-tool examples' full-documentation link opening a missing page ([#15076](https://github.com/can1357/oh-my-pi/pull/15076) by [@qingshungLI](https://github.com/qingshungLI))
 - Fixed the `/models` compaction limit preview and **Compacts at** row rounding fractional percentages (`12.5%` showed as `13%`) ([#15074](https://github.com/can1357/oh-my-pi/pull/15074) by [@H4vC](https://github.com/H4vC))
