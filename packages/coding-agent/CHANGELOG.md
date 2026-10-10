@@ -230,6 +230,7 @@
 - Fixed quadratic slowdown in `omp cleanse` on large tsc/clippy/golangci output ([#14706](https://github.com/can1357/oh-my-pi/pull/14706) by [@H4vC](https://github.com/H4vC))
 - Fixed documents served as `application/octet-stream` being downloaded twice ([#14708](https://github.com/can1357/oh-my-pi/pull/14708) by [@H4vC](https://github.com/H4vC))
 - Fixed collab TUI guests rebuilding the transcript per token ([#14715](https://github.com/can1357/oh-my-pi/pull/14715) by [@H4vC](https://github.com/H4vC))
+- Fixed advisors returning to a model that refused the reviewed content (for example `Refusal (cyber)`) every five minutes; they now stay on the fallback until a compaction, handoff, or new conversation ([#14743](https://github.com/can1357/oh-my-pi/pull/14743) by [@mvid](https://github.com/mvid))
 
 ## [18.8.3] - 2026-10-07
 

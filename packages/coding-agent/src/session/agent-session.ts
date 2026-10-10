@@ -2348,7 +2348,7 @@ export class AgentSession implements SettingsScope {
 				this.#todo.syncFromBranch();
 				this.#modelMentions.syncFromBranch();
 			},
-			resetAdvisorRuntimes: (reason?: string) => this.#advisors.resetAllRuntimes(reason),
+			resetAdvisorRuntimes: (reason, options) => this.#advisors.resetAllRuntimes(reason, options),
 			rebaseAdvisorPrefix: reason => this.#advisors.rebaseDeliveredPrefixes(reason),
 			rebaseAfterCompaction: () => this.#stats.rebaseAfterCompaction(),
 			recordAnchoredHistoryRewrite: tokensRemoved => this.#stats.recordAnchoredHistoryRewrite(tokensRemoved),
