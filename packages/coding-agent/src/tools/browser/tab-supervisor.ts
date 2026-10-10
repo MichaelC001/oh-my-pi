@@ -456,7 +456,8 @@ async function acquireTabImpl(
 				};
 			}
 		} else {
-			if (existing.browser === browser) {
+			// A failed crash reattach already holds it while a close still tears the tab down.
+			if (existing.browser === browser && !tempHold) {
 				holdBrowser(browser);
 				tempHold = true;
 			}

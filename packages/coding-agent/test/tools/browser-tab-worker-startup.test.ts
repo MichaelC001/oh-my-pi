@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 
-// Browser global read inside page.evaluate callbacks; absent from bun-types.
+// Browser globals read inside page.evaluate callbacks; absent from bun-types.
 declare const devicePixelRatio: number;
+declare const window: { open(url: string, target: string, features: string): unknown };
 
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
@@ -843,6 +844,120 @@ describe("browser tabs whose renderer crashed", () => {
 			} finally {
 				await releaseTab(name, { kill: true });
 				if ("browser" in browser && browser.browser.connected) await releaseBrowser(browser, { kill: true });
+			}
+		},
+		45_000,
+	);
+	it.skipIf(!CHROMIUM_AVAILABLE)(
+		"releases the browser hold once when an open's crash reattach fails while a close is still tearing the tab down",
+		async () => {
+			const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+			holdBrowser(browser);
+			const name = `crashed-open-close-${process.pid}`;
+			const url = `data:text/html,<title>${name}</title>`;
+			try {
+				await acquireTab(name, browser, { url, timeoutMs: 30_000 });
+				const tab = getTab(name);
+				if (tab?.backend !== "worker") throw new Error("Expected a worker tab");
+				const reported = crashReport(name);
+				await crashRenderer(browser, url);
+				await reported;
+				const holdsWithTab = browser.refCount;
+				const crashedWorker = tab.worker;
+				const terminate = crashedWorker.terminate.bind(crashedWorker);
+				const reattachPaused = Promise.withResolvers<void>();
+				const resumeReattach = Promise.withResolvers<void>();
+				const closePaused = Promise.withResolvers<void>();
+				const resumeClose = Promise.withResolvers<void>();
+				let calls = 0;
+				// The open's reattach terminates the old worker first, then the close terminates it again: pause both,
+				// so the reattach fails and the open reaches the still-registered dead tab while the close is pending.
+				const terminateSpy = spyOn(crashedWorker, "terminate").mockImplementation(async () => {
+					await terminate();
+					calls++;
+					if (calls === 1) {
+						reattachPaused.resolve();
+						await resumeReattach.promise;
+					} else if (calls === 2) {
+						closePaused.resolve();
+						await resumeClose.promise;
+					}
+				});
+				try {
+					const opened = acquireTab(name, browser, { timeoutMs: 10_000 });
+					await reattachPaused.promise;
+					const closed = releaseTab(name, { kill: false });
+					await closePaused.promise;
+					resumeReattach.resolve();
+					// No event marks the open reaching the pending close; it gets there once the failed reattach
+					// (a worker start against the closed tab) returns, well inside this bound.
+					await Bun.sleep(2_500);
+					resumeClose.resolve();
+					await closed;
+					const reopened = await opened;
+					expect(reopened.created).toBe(true);
+				} finally {
+					terminateSpy.mockRestore();
+				}
+				// The replacement holds the browser as the crashed tab did; nothing else is left over.
+				expect(browser.refCount).toBe(holdsWithTab);
+			} finally {
+				await releaseTab(name, { kill: true });
+				await releaseBrowser(browser, { kill: true });
+			}
+		},
+		45_000,
+	);
+	it.skipIf(!CHROMIUM_AVAILABLE)(
+		"reattaches to a page Puppeteer has not listed yet because its URL is still empty",
+		async () => {
+			const loadGate = Promise.withResolvers<void>();
+			const server = Bun.serve({
+				port: 0,
+				fetch: async () => {
+					await loadGate.promise;
+					return new Response("<title>late-commit</title>", { headers: { "content-type": "text/html" } });
+				},
+			});
+			const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+			if (!("browser" in browser)) throw new Error("Expected a Puppeteer browser");
+			const name = `crashed-unlisted-${process.pid}`;
+			const url = `data:text/html,<title>${name}</title>`;
+			const opener = await browser.browser.newPage();
+			try {
+				await acquireTab(name, browser, { url, timeoutMs: 30_000 });
+				const tab = getTab(name);
+				if (tab?.backend !== "worker") throw new Error("Expected a worker tab");
+				// A crashed page revived by the reattach reports an empty URL for a moment, and Puppeteer lists no
+				// page until its URL is set. A popup whose first load has not committed stays in that state on demand,
+				// so the reattach here is pointed at one.
+				const watcher = await browser.browser.target().createCDPSession();
+				await watcher.send("Target.setDiscoverTargets", { discover: true });
+				const popupCreated = Promise.withResolvers<string>();
+				watcher.on("Target.targetCreated", event => {
+					if (event.targetInfo.type === "page" && event.targetInfo.url === "")
+						popupCreated.resolve(event.targetInfo.targetId);
+				});
+				await opener.evaluate(
+					popupUrl => void window.open(popupUrl, "_blank", "noopener"),
+					`http://127.0.0.1:${server.port}/popup`,
+				);
+				const popupId = await popupCreated.promise;
+				await watcher.detach();
+				const reported = crashReport(name);
+				await crashRenderer(browser, url);
+				await reported;
+				tab.targetId = popupId;
+				const result = runInTab(name, { code: "return await page.title();", timeoutMs: 10_000, session });
+				// Commit the popup's load only after the new worker has looked the target up (it starts well inside
+				// this); nothing in the worker signals that moment to the test.
+				setTimeout(() => loadGate.resolve(), 1_500);
+				expect((await result).returnValue).toBe("late-commit");
+			} finally {
+				await releaseTab(name, { kill: true });
+				await opener.close().catch(() => undefined);
+				if (browser.browser.connected) await releaseBrowser(browser, { kill: true });
+				server.stop(true);
 			}
 		},
 		45_000,

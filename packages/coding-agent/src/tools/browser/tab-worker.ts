@@ -321,6 +321,8 @@ const HANDLE_ACTION_INVALIDATION_TIMEOUT_MS = 500;
 /** Bound on reading every iframe in one observation; a frame whose renderer is stuck in script never answers. */
 const FRAME_SNAPSHOT_TIMEOUT_MS = 5_000;
 const RENDERER_CRASHED = "Browser tab's renderer crashed";
+/** Bound on Puppeteer exposing a page Chromium still has; the supervisor's init budget caps the whole attach anyway. */
+const ATTACHED_TARGET_EXPOSE_TIMEOUT_MS = 5_000;
 
 /** Queue a wheel event without treating a delayed renderer acknowledgement as dispatch failure. */
 export async function dispatchScroll(
@@ -1580,7 +1582,30 @@ export class WorkerCore {
 			if ((await targetIdForTarget(target).catch(() => "")) !== targetId) continue;
 			return target;
 		}
+		// Puppeteer lists a page only once its URL is non-empty, and a crashed page revived by this attach reloads
+		// with an empty URL for a moment. Wait for it while Chromium still has the target; fail at once when not.
+		if (await this.#browserHasTarget(this.#browser, targetId)) {
+			const target = await this.#browser
+				.waitForTarget(async candidate => (await targetIdForTarget(candidate).catch(() => "")) === targetId, {
+					timeout: ATTACHED_TARGET_EXPOSE_TIMEOUT_MS,
+				})
+				.catch(() => undefined);
+			if (target) return target;
+		}
 		throw new ToolError(`Target ${targetId} is no longer available on the attached browser`);
+	}
+
+	async #browserHasTarget(browser: Browser, targetId: string): Promise<boolean> {
+		let session: CDPSession | undefined;
+		try {
+			session = await browser.target().createCDPSession();
+			await session.send("Target.getTargetInfo", { targetId });
+			return true;
+		} catch {
+			return false;
+		} finally {
+			await session?.detach().catch(() => undefined);
+		}
 	}
 
 	/**
