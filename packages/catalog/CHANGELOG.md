@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added OpenCode Zen's `jev-1.13` and `jev-1.13-free` judge models, routed to the System One judgment API (kind `judge`) instead of chat completions ([#14446](https://github.com/can1357/oh-my-pi/pull/14446) by [@jpds](https://github.com/jpds)).
+
 ## [18.8.4] - 2026-10-08
 
 ### Fixed
@@ -61,7 +65,6 @@
 ### Changed
 
 - Changed OpenAI Responses endpoints other than OpenAI, Azure OpenAI, and Codex (custom and local servers, proxies including `azure`/`openai-codex` providers pointed at a non-Azure/non-Codex `baseUrl`, OpenRouter) to default `supportsImageDetailOriginal` to `false`, so snapcompact frames and computer screenshots go out as `detail: "auto"` instead of failing on servers that reject `original`; set `compat.supportsImageDetailOriginal: true` to opt a host in ([#13687](https://github.com/can1357/oh-my-pi/pull/13687) by [@alphastorm](https://github.com/alphastorm)).
-- Added OpenCode Zen's `jev-1.13` and `jev-1.13-free` judge models, routed to the System One judgment API (kind `judge`) instead of chat completions.
 
 ### Fixed
 
