@@ -773,8 +773,8 @@ export class Editor implements Component, Focusable {
 	placeholder?: () => string | undefined;
 	/** Whole-message prediction for the next prompt, painted as ghost text after the cursor while
 	 *  the single-line buffer is a strict prefix of it, the cursor sits at its end, and no
-	 *  autocomplete is open. A shown prediction replaces the {@link placeholder}; Tab inserts the
-	 *  rest without submitting. Must be a single line. Re-evaluated on every render, so hosts can
+	 *  autocomplete is open. A shown prediction replaces the {@link placeholder}; Tab or Right inserts
+	 *  the rest without submitting. Must be a single line. Re-evaluated on every render, so hosts can
 	 *  derive it from live state. */
 	prediction?: () => string | undefined;
 
@@ -2220,8 +2220,8 @@ export class Editor implements Component, Focusable {
 				this.#moveCursor(1, 0); // Cursor movement (within text or history entry)
 			}
 		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorRight")) {
-			// Right walks over the ghost word completion as if it were typed: no trailing space.
-			if (this.#acceptWordCompletion({ space: false })) return;
+			// Right walks over the ghost prediction or word completion as if it were typed: no trailing space.
+			if (this.#acceptPrediction() || this.#acceptWordCompletion({ space: false })) return;
 			this.#moveCursor(0, 1);
 		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorLeft")) {
 			// Left

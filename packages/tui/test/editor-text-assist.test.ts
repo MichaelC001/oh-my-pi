@@ -321,4 +321,19 @@ describe("Editor prediction", () => {
 		diverged.handleInput("\t");
 		expect(diverged.getText()).toBe("rx");
 	});
+
+	it("accepts the prediction with Right at line end and keeps Right as cursor motion mid-line", () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.prediction = () => "run the tests";
+		for (const char of "run") editor.handleInput(char);
+
+		editor.handleInput("\x1b[D");
+		editor.handleInput("\x1b[C");
+		expect(editor.getText()).toBe("run");
+		expect(editor.getCursor()).toEqual({ line: 0, col: 3 });
+
+		editor.handleInput("\x1b[C");
+		expect(editor.getText()).toBe("run the tests");
+		expect(editor.getCursor()).toEqual({ line: 0, col: 13 });
+	});
 });

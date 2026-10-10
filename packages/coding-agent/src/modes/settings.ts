@@ -885,8 +885,37 @@ export const cfgComposerPredictions = register({
 		group: "Input",
 		label: "Composer Predictions",
 		get description() {
-			return `After a completed turn, ask the active model to predict your next message and show it as ghost text in the empty composer; ${formatKeyHint("tab")} inserts it without sending. Each prediction is an extra request that reuses the session's prompt cache`;
+			return `After a completed turn, ask the active model to predict your next message and show it as ghost text in the empty composer; ${formatKeyHint("tab")} inserts it without sending. Extra usage: every completed turn sends one more billed request over the whole conversation (counted in /stats)`;
 		},
+	},
+});
+
+export const cfgComposerPredictionThinking = register({
+	id: "composer.predictionThinking",
+	type: "enum",
+	values: ["session", "off"] as const,
+	default: "session",
+	ui: {
+		tab: "interaction",
+		group: "Input",
+		label: "Prediction Thinking",
+		description:
+			"Whether prediction requests reason like the session or skip reasoning; both cost an extra request per turn",
+		condition: "composerPredictionsEnabled",
+		options: [
+			{
+				value: "session",
+				label: "Session",
+				description:
+					"Same thinking as the session, so the request reads the prompt cache; high-effort sessions also pay reasoning tokens on every prediction",
+			},
+			{
+				value: "off",
+				label: "Off",
+				description:
+					"No reasoning tokens; on models whose cache depends on thinking settings (older Claude) each prediction re-reads the conversation uncached",
+			},
+		],
 	},
 });
 

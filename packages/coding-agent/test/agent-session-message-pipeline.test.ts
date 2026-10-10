@@ -5,6 +5,7 @@ import {
 	type AgentTool,
 	AppendOnlyContextManager,
 	type StreamFn,
+	ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import {
 	type Api,
@@ -1375,6 +1376,50 @@ describe("AgentSession message pipeline", () => {
 		await turn;
 		expect(capturedOptions).toMatchObject({ maxTokens: 32, disableReasoning: true });
 	});
+
+	it.each([
+		["adaptive thinking", "anthropic-adaptive", ThinkingLevel.Medium, false, true],
+		["budget thinking while thinking", "budget", ThinkingLevel.Medium, false, false],
+		["budget thinking while off", "budget", ThinkingLevel.Off, false, true],
+		["budget thinking with reasoning turned off for the side turn", "budget", ThinkingLevel.Medium, true, true],
+	] as const)(
+		"reports a side-turn cap on %s as request-preserving exactly when it leaves reasoning unchanged",
+		async (_label, mode, level, disableReasoning, preserves) => {
+			const captured: (SimpleStreamOptions | undefined)[] = [];
+			const model = buildModel({
+				...getBundledModel("anthropic", "claude-haiku-4-5-20251001"),
+				thinking: { mode, efforts: [Effort.Medium] },
+			});
+			const session = new AgentSession({
+				agent: new Agent({ initialState: { model, systemPrompt: ["system prompt"], messages: [], tools: [] } }),
+				sessionManager: SessionManager.inMemory(),
+				settings: Settings.isolated({ "compaction.enabled": false }),
+				modelRegistry: createModelRegistryStub() as never,
+				sideStreamFn: (_model, _context, options) => {
+					captured.push(options);
+					const stream = new AssistantMessageEventStream();
+					queueMicrotask(() => {
+						const message = createAssistantMessage("answer");
+						stream.push({ type: "text_delta", contentIndex: 0, delta: "answer", partial: message });
+						stream.push({ type: "done", reason: "stop", message });
+					});
+					return stream;
+				},
+			});
+			sessions.push(session);
+			session.setThinkingLevel(level);
+
+			expect(session.ephemeralMaxTokensPreservesRequest(disableReasoning)).toBe(preserves);
+			await session.runEphemeralTurn({ promptText: "Question?", disableReasoning });
+			await session.runEphemeralTurn({ promptText: "Question?", disableReasoning, maxTokens: 32 });
+			const [uncapped, capped] = captured;
+			const reasoningOff = disableReasoning || level === ThinkingLevel.Off;
+			expect(uncapped?.disableReasoning).toBe(reasoningOff);
+			expect(uncapped?.reasoning).toBe(reasoningOff ? undefined : Effort.Medium);
+			expect(capped?.reasoning).toBe(uncapped?.reasoning);
+			expect(capped?.disableReasoning === uncapped?.disableReasoning).toBe(preserves);
+		},
+	);
 
 	it("rejects a tool-free Bedrock side turn with historical tool blocks before inference", async () => {
 		const agent = new Agent({

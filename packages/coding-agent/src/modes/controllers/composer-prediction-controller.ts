@@ -1,9 +1,9 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import composerPredictionPrompt from "../../prompts/system/composer-prediction-user.md" with { type: "text" };
-import { type AgentSession, ephemeralMaxTokensRejection } from "../../session/agent-session";
-import { cfgComposerPredictions } from "../settings";
+import type { AgentSession } from "../../session/agent-session";
+import { cfgComposerPredictions, cfgComposerPredictionThinking } from "../settings";
 import type { InteractiveModeContext } from "../types";
 
 /** Reply the prediction prompt asks for when the model has no confident guess. */
@@ -11,8 +11,8 @@ const SKIP_REPLY = "NO_PREDICTION";
 /** Longer replies are rambling, not a message the user would type; drop them. */
 const MAX_PREDICTION_LENGTH = 500;
 /**
- * Output cap for the side turn, where the model honors one. Leaves room for a short reasoning
- * pass on effort-based models; on budget-thinking models a cap turns optional thinking off.
+ * Output cap for the side turn, sent only where it leaves the request otherwise unchanged so the
+ * prediction still reads the prompt cache. Leaves room for a short reasoning pass on effort models.
  */
 const PREDICTION_MAX_TOKENS = 1024;
 /** A prediction that has not arrived by then is no longer worth paying for or showing. */
@@ -49,7 +49,7 @@ export function parseComposerPrediction(reply: string): string | undefined {
  * Composer predictions: once a turn completes, run an ephemeral side turn on
  * the session's model and context (the same prompt prefix, so it reads the
  * prompt cache) asking for the user's likely next message, then offer it as
- * ghost text in the empty composer. Tab inserts it; nothing is sent.
+ * ghost text in the empty composer. Tab or Right inserts it; nothing is sent.
  */
 export class ComposerPredictionController {
 	readonly #ctx: PredictionContext;
@@ -76,18 +76,21 @@ export class ComposerPredictionController {
 		// A focused subagent's "user" is the parent agent, not the person at the composer.
 		if (this.#ctx.focusedAgentId !== undefined) return;
 		const session = this.#ctx.viewSession;
-		// A draft typed during the turn would hide the ghost anyway, and a compaction would rewrite
-		// the history the prediction reads: skip the billed request either way.
+		// Any draft, even whitespace, keeps the ghost hidden (it shows only over a prefix of the
+		// prediction), and a compaction would rewrite the history the prediction reads: skip the
+		// billed request either way.
 		if (!session.model || session.isStreaming || session.isCompacting || this.#ctx.editor.getText()) return;
 		const abort = new AbortController();
 		this.#abort = abort;
 		const source: PredictionSource = {
 			session,
 			lastMessage: session.messages.at(-1),
-			sessionId: session.sessionId,
+			// The journal id: after `/fresh` or with an SDK provider id, `session.sessionId` is the
+			// provider-facing id, which the usage ledger rejects.
+			sessionId: session.sessionManager.getSessionId(),
 			leafId: session.sessionManager.getLeafId(),
 		};
-		void this.#run(source, session.model, abort);
+		void this.#run(source, cfgComposerPredictionThinking.get(this.#ctx.settings) === "off", abort);
 	}
 
 	/** Abort an in-flight prediction and clear the shown one. */
@@ -99,11 +102,14 @@ export class ComposerPredictionController {
 		this.#ctx.ui.requestRender();
 	}
 
-	async #run(source: PredictionSource, model: Model, abort: AbortController): Promise<void> {
+	async #run(source: PredictionSource, disableReasoning: boolean, abort: AbortController): Promise<void> {
 		try {
 			const { replyText, assistantMessage } = await source.session.runEphemeralTurn({
 				promptText: prompt.render(composerPredictionPrompt, { skip: SKIP_REPLY }),
-				maxTokens: ephemeralMaxTokensRejection(model) ? undefined : PREDICTION_MAX_TOKENS,
+				maxTokens: source.session.ephemeralMaxTokensPreservesRequest(disableReasoning)
+					? PREDICTION_MAX_TOKENS
+					: undefined,
+				disableReasoning,
 				signal: AbortSignal.any([abort.signal, AbortSignal.timeout(this.#deadlineMs)]),
 			});
 			// Paid for even when the reply arrives too late to show.

@@ -1,12 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { Model } from "@oh-my-pi/pi-ai";
+import type { Message, Model } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	ComposerPredictionController,
 	parseComposerPrediction,
 } from "@oh-my-pi/pi-coding-agent/modes/controllers/composer-prediction-controller";
 import type { EphemeralTurnOptions, EphemeralTurnResult } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 
 describe("parseComposerPrediction", () => {
 	it("normalizes a reply to the single line the composer shows", () => {
@@ -33,35 +34,38 @@ interface PendingTurn {
 
 interface HarnessOptions {
 	enabled?: boolean;
+	thinking?: "session" | "off";
 	draft?: string;
 	compacting?: boolean;
 	focusedAgentId?: string;
-	model?: Partial<Model>;
+	/** What `ephemeralMaxTokensPreservesRequest()` reports for the session. */
+	capPreservesRequest?: boolean;
 	deadlineMs?: number;
 }
 
 const MODEL = { id: "claude-sonnet-4-5", provider: "anthropic", api: "anthropic-messages" } as Model;
 
+function userMessage(content: string, timestamp: number): Message {
+	return { role: "user", content, timestamp } as Message;
+}
+
 function harness(options: HarnessOptions = {}) {
 	const turns: PendingTurn[] = [];
-	const usage: {
-		entry: { purpose: string; usage: unknown };
-		owner: { sessionId: string; parentId: string | null };
-	}[] = [];
-	const messages: AgentMessage[] = [{ role: "user", content: "fix the bug", timestamp: 1 } as AgentMessage];
-	let leafId = "leaf-1";
+	const capQueries: boolean[] = [];
+	const sessionManager = SessionManager.inMemory();
+	const firstLeafId = sessionManager.appendMessage(userMessage("fix the bug", 1));
+	const messages: AgentMessage[] = [userMessage("fix the bug", 1)];
 	const session = {
-		model: { ...MODEL, ...options.model },
-		sessionId: "session-1",
+		model: MODEL,
+		// Provider-facing id, as after `/fresh` or with an SDK `providerSessionId`: not the journal's.
+		sessionId: "provider-session",
 		isStreaming: false,
 		isCompacting: options.compacting ?? false,
 		messages,
-		sessionManager: {
-			getLeafId: () => leafId,
-			appendModelUsage: (entry: (typeof usage)[number]["entry"], owner: (typeof usage)[number]["owner"]) => {
-				usage.push({ entry, owner });
-				return "usage-entry";
-			},
+		sessionManager,
+		ephemeralMaxTokensPreservesRequest: (disableReasoning: boolean) => {
+			capQueries.push(disableReasoning);
+			return options.capPreservesRequest ?? true;
 		},
 		runEphemeralTurn(turnOptions: EphemeralTurnOptions): Promise<EphemeralTurnResult> {
 			const { promise, resolve } = Promise.withResolvers<EphemeralTurnResult>();
@@ -71,7 +75,10 @@ function harness(options: HarnessOptions = {}) {
 	};
 	let renders = 0;
 	const ctx = {
-		settings: Settings.isolated({ "composer.predictions": options.enabled ?? true }),
+		settings: Settings.isolated({
+			"composer.predictions": options.enabled ?? true,
+			"composer.predictionThinking": options.thinking ?? "session",
+		}),
 		viewSession: session,
 		focusedAgentId: options.focusedAgentId,
 		editor: { getText: () => options.draft ?? "" },
@@ -92,12 +99,16 @@ function harness(options: HarnessOptions = {}) {
 	return {
 		controller: new ComposerPredictionController(ctx, { deadlineMs: options.deadlineMs }),
 		turns,
-		usage,
+		capQueries,
 		messages,
+		firstLeafId,
 		reply,
 		renders: () => renders,
-		moveLeaf: (id: string) => {
-			leafId = id;
+		usageEntries: () => sessionManager.getEntries().filter(entry => entry.type === "model_usage"),
+		/** A new message lands on the journal and in the live history. */
+		advance: (content: string) => {
+			sessionManager.appendMessage(userMessage(content, 2));
+			messages.push(userMessage(content, 2));
 		},
 	};
 }
@@ -118,23 +129,36 @@ describe("ComposerPredictionController", () => {
 		const blocked = [
 			harness({ enabled: false }),
 			harness({ draft: "my own message" }),
+			harness({ draft: "  " }),
 			harness({ compacting: true }),
 			harness({ focusedAgentId: "0-Explore" }),
 		];
 		for (const { controller } of blocked) controller.request();
 
-		expect(blocked.map(h => h.turns.length)).toEqual([0, 0, 0, 0]);
+		expect(blocked.map(h => h.turns.length)).toEqual([0, 0, 0, 0, 0]);
 	});
 
-	it("caps the side turn's output where the model honors a cap and omits it where it would be rejected", () => {
-		const capped = harness();
+	it("sends the output cap only when it leaves the side request otherwise unchanged", () => {
+		const capped = harness({ capPreservesRequest: true });
 		capped.controller.request();
-		const uncappable = harness({ model: { omitMaxOutputTokens: true } });
-		uncappable.controller.request();
+		const uncapped = harness({ capPreservesRequest: false });
+		uncapped.controller.request();
 
 		expect(capped.turns[0]!.options.maxTokens).toBe(1024);
-		expect(uncappable.turns).toHaveLength(1);
-		expect(uncappable.turns[0]!.options.maxTokens).toBeUndefined();
+		expect(uncapped.turns).toHaveLength(1);
+		expect(uncapped.turns[0]!.options.maxTokens).toBeUndefined();
+	});
+
+	it("turns reasoning off for the side turn, and judges the cap against that, only when Prediction Thinking is off", () => {
+		const session = harness({ thinking: "session" });
+		session.controller.request();
+		const off = harness({ thinking: "off" });
+		off.controller.request();
+
+		expect(session.turns[0]!.options.disableReasoning).toBe(false);
+		expect(session.capQueries).toEqual([false]);
+		expect(off.turns[0]!.options.disableReasoning).toBe(true);
+		expect(off.capQueries).toEqual([true]);
 	});
 
 	it("aborts a stalled prediction at the deadline", async () => {
@@ -143,25 +167,28 @@ describe("ComposerPredictionController", () => {
 		const signal = turns[0]!.options.signal!;
 		expect(signal.aborted).toBe(false);
 
-		await Bun.sleep(60);
+		const { promise, resolve } = Promise.withResolvers<void>();
+		signal.addEventListener("abort", () => resolve(), { once: true });
+		await promise;
 
-		expect(signal.aborted).toBe(true);
+		expect(signal.reason).toBeInstanceOf(DOMException);
+		expect((signal.reason as DOMException).name).toBe("TimeoutError");
 	});
 
-	it("records the request's usage on the branch it was made from, even when the reply is discarded", async () => {
-		const { controller, messages, usage, reply, moveLeaf } = harness();
+	it("journals the request's usage on the branch it was made from, even when the reply is discarded", async () => {
+		const { controller, reply, usageEntries, firstLeafId, advance } = harness();
 		controller.request();
-		moveLeaf("leaf-2");
-		messages.push({ role: "user", content: "something else", timestamp: 2 } as AgentMessage);
+		advance("something else");
 
 		await reply(0, "too late");
 
 		expect(controller.text).toBeUndefined();
-		expect(usage).toEqual([
-			{
-				entry: expect.objectContaining({ purpose: "composer-prediction", usage: { input: 10, output: 5 } }),
-				owner: { sessionId: "session-1", parentId: "leaf-1" },
-			},
+		expect(usageEntries()).toEqual([
+			expect.objectContaining({
+				purpose: "composer-prediction",
+				parentId: firstLeafId,
+				usage: { input: 10, output: 5 },
+			}),
 		]);
 	});
 
@@ -170,7 +197,7 @@ describe("ComposerPredictionController", () => {
 		controller.request();
 		await reply(0, "now run the tests");
 
-		messages.push({ role: "user", content: "something else", timestamp: 2 } as AgentMessage);
+		messages.push(userMessage("something else", 2));
 
 		expect(controller.text).toBeUndefined();
 	});
