@@ -1,11 +1,18 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
-import type { ResetCreditAccountStatus, ResetCreditTarget, UsageReport } from "@oh-my-pi/pi-ai";
+import type {
+	ResetCreditAccountStatus,
+	ResetCreditTarget,
+	SessionRestrictionLease,
+	UsageReport,
+} from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import * as envApiKey from "@oh-my-pi/pi-ai/env-api-key";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
+import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import {
@@ -128,6 +135,8 @@ describe("Claude saved-reset trigger integration", () => {
 		autoRedeem?: "unset" | "yes" | "no";
 		salvageHorizonHours?: number;
 		keepCredits?: number;
+		/** Answers the auto-redeem consent prompt; without it the session has no prompt UI. */
+		consent?: () => Promise<string | undefined>;
 	}): { session: AgentSession; coordinator: CodexAutoRedeemCoordinator; targets: ResetCreditTarget[] } {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected bundled anthropic/claude-sonnet-4-5 to exist");
@@ -195,15 +204,86 @@ describe("Claude saved-reset trigger integration", () => {
 		managers.push(sessionManager);
 		const coordinator = createCodexAutoRedeemCoordinator();
 		coordinator.resetLockPath = `${tempDir.path()}/auth.db`;
+		let extensionRunner: ExtensionRunner | undefined;
+		if (options.consent) {
+			extensionRunner = new ExtensionRunner(
+				[],
+				new ExtensionRuntime(),
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			vi.spyOn(extensionRunner, "hasUI").mockReturnValue(true);
+			vi.spyOn(extensionRunner.getUIContext(), "select").mockImplementation(options.consent);
+		}
 		const session = new AgentSession({
 			agent,
 			sessionManager,
 			settings,
 			modelRegistry,
 			codexResetCoordinator: coordinator,
+			extensionRunner,
 		});
 		sessions.push(session);
 		return { session, coordinator, targets };
+	}
+
+	/**
+	 * Stores the session's account and one outside its pool, pools the session to
+	 * its own, and lists both as blocked with a saved reset. The outside account's
+	 * weekly wall clears in `outsideWaitMs` and its reset is far from expiry, so
+	 * only a restore could spend it.
+	 */
+	async function poolToSessionAccount(
+		session: AgentSession,
+		outsideWaitMs: number,
+	): Promise<{ pooledId: number; release: () => Promise<void> }> {
+		await authStorage.credentials.set(
+			"anthropic",
+			[
+				{ accountId: ACCOUNT_ID, email: EMAIL, orgId: ORG_ID },
+				{ accountId: "claude-excluded", email: "excluded@example.com", orgId: "org-excluded" },
+			].map(identity => ({
+				type: "oauth" as const,
+				access: `access-${identity.accountId}`,
+				refresh: `refresh-${identity.accountId}`,
+				expires: Date.now() + HOUR,
+				...identity,
+			})),
+		);
+		const [pooled, outside] = authStorage.credentials.list("anthropic");
+		if (!pooled || !outside) throw new Error("expected stored accounts");
+		const outsideReport = claudeReport(1);
+		outsideReport.metadata = { accountId: "claude-excluded", email: "excluded@example.com", orgId: "org-excluded" };
+		for (const limit of outsideReport.limits) {
+			if (limit.id === "anthropic:7d" && limit.window) limit.window.resetsAt = Date.now() + outsideWaitMs;
+		}
+		const outsideStatus: ResetCreditAccountStatus = {
+			...claudeStatus(true),
+			credentialId: outside.id,
+			accountId: "claude-excluded",
+			email: "excluded@example.com",
+			orgId: "org-excluded",
+			active: false,
+			availableCount: 2,
+			report: outsideReport,
+		};
+		outsideStatus.credits = outsideStatus.credits.map(credit => ({
+			...credit,
+			expiresAt: new Date(Date.now() + 20 * 24 * HOUR).toISOString(),
+		}));
+		vi.spyOn(authStorage.resets, "list").mockImplementation(async () => [
+			{ ...claudeStatus(true), credentialId: pooled.id },
+			outsideStatus,
+		]);
+		const lease = authStorage.sessions.restrict("anthropic", session.sessionId, [`email:${EMAIL}|org:${ORG_ID}`]);
+		return {
+			pooledId: pooled.id,
+			release: async () => {
+				authStorage.sessions.unrestrict("anthropic", session.sessionId, lease);
+				await authStorage.credentials.remove("anthropic");
+			},
+		};
 	}
 
 	it("redeems the exact live Cedar grant on a blocked retry and immediately recovers", async () => {
@@ -299,54 +379,47 @@ describe("Claude saved-reset trigger integration", () => {
 			streamErrorFirst: true,
 			keepCredits: 1,
 		});
-		await authStorage.credentials.set(
-			"anthropic",
-			[
-				{ accountId: ACCOUNT_ID, email: EMAIL, orgId: ORG_ID },
-				{ accountId: "claude-excluded", email: "excluded@example.com", orgId: "org-excluded" },
-			].map(identity => ({
-				type: "oauth" as const,
-				access: `access-${identity.accountId}`,
-				refresh: `refresh-${identity.accountId}`,
-				expires: Date.now() + HOUR,
-				...identity,
-			})),
-		);
-		const [pooled, outside] = authStorage.credentials.list("anthropic");
-		if (!pooled || !outside) throw new Error("expected stored accounts");
-		const excludedReport = claudeReport(1);
-		excludedReport.metadata = { accountId: "claude-excluded", email: "excluded@example.com", orgId: "org-excluded" };
-		const excluded: ResetCreditAccountStatus = {
-			...claudeStatus(true),
-			credentialId: outside.id,
-			accountId: "claude-excluded",
-			email: "excluded@example.com",
-			orgId: "org-excluded",
-			active: false,
-			availableCount: 2,
-			report: excludedReport,
-		};
-		// Far from expiry, so only the restore could spend it.
-		excluded.credits = excluded.credits.map(credit => ({
-			...credit,
-			expiresAt: new Date(Date.now() + 20 * 24 * HOUR).toISOString(),
-		}));
-		vi.spyOn(authStorage.resets, "list").mockImplementation(async () => [
-			{ ...claudeStatus(true), credentialId: pooled.id },
-			excluded,
-		]);
-		const lease = authStorage.sessions.restrict("anthropic", session.sessionId, [`email:${EMAIL}|org:${ORG_ID}`]);
+		const pool = await poolToSessionAccount(session, 3 * 24 * HOUR);
 		mockSchedulerWaitWithClock();
 
 		try {
 			await session.prompt("stay inside the account pool");
 			await session.waitForIdle();
 		} finally {
-			authStorage.sessions.unrestrict("anthropic", session.sessionId, lease);
-			await authStorage.credentials.remove("anthropic");
+			await pool.release();
 		}
 
 		expect(targets).toEqual([]);
+		expect(session.agent.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "error" });
+	});
+
+	it("drops a planned restore whose account leaves the session's pool before it is spent", async () => {
+		let replaced: SessionRestrictionLease | undefined;
+		const { session, coordinator, targets } = buildSession({
+			report: null,
+			status: claudeStatus(true),
+			streamErrorFirst: true,
+			autoRedeem: "unset",
+			// The pool is replaced while the planned restore waits for consent.
+			consent: async () => {
+				replaced = authStorage.sessions.restrict("anthropic", session.sessionId, []);
+				return "Yes";
+			},
+		});
+		const pool = await poolToSessionAccount(session, 3 * 24 * HOUR);
+		mockSchedulerWaitWithClock();
+
+		try {
+			await session.prompt("lose the pooled account mid-recovery");
+			await session.waitForIdle();
+		} finally {
+			if (replaced) authStorage.sessions.unrestrict("anthropic", session.sessionId, replaced);
+			await pool.release();
+		}
+
+		expect(replaced).toBeDefined();
+		expect(targets).toEqual([]);
+		expect(coordinator.attemptedKeys.size).toBe(0);
 		expect(session.agent.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "error" });
 	});
 
