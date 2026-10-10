@@ -1,7 +1,8 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import composerPredictionPrompt from "../../prompts/system/composer-prediction-user.md" with { type: "text" };
-import type { AgentSession } from "../../session/agent-session";
+import { type AgentSession, ephemeralMaxTokensRejection } from "../../session/agent-session";
 import { cfgComposerPredictions } from "../settings";
 import type { InteractiveModeContext } from "../types";
 
@@ -9,6 +10,15 @@ import type { InteractiveModeContext } from "../types";
 const SKIP_REPLY = "NO_PREDICTION";
 /** Longer replies are rambling, not a message the user would type; drop them. */
 const MAX_PREDICTION_LENGTH = 500;
+/**
+ * Output cap for the side turn, where the model honors one. Leaves room for a short reasoning
+ * pass on effort-based models; on budget-thinking models a cap turns optional thinking off.
+ */
+const PREDICTION_MAX_TOKENS = 1024;
+/** A prediction that has not arrived by then is no longer worth paying for or showing. */
+const PREDICTION_DEADLINE_MS = 15_000;
+/** Usage-ledger purpose, so session totals and `/stats` include prediction requests. */
+const USAGE_PURPOSE = "composer-prediction";
 /** One pair of double quotes or backticks around the whole reply. */
 const WRAPPING_QUOTES = /^(?:"([^"]*)"|“([^“”]*)”|`([^`]*)`)$/;
 
@@ -16,7 +26,12 @@ const WRAPPING_QUOTES = /^(?:"([^"]*)"|“([^“”]*)”|`([^`]*)`)$/;
 interface PredictionSource {
 	session: AgentSession;
 	lastMessage: AgentMessage | undefined;
+	/** Session file and entry the request branched from; its usage is recorded there. */
+	sessionId: string;
+	leafId: string | null;
 }
+
+type PredictionContext = Pick<InteractiveModeContext, "settings" | "viewSession" | "focusedAgentId" | "editor" | "ui">;
 
 /**
  * Normalize a prediction reply to the single line the composer shows, or
@@ -37,12 +52,14 @@ export function parseComposerPrediction(reply: string): string | undefined {
  * ghost text in the empty composer. Tab inserts it; nothing is sent.
  */
 export class ComposerPredictionController {
-	readonly #ctx: Pick<InteractiveModeContext, "settings" | "viewSession" | "editor" | "ui">;
+	readonly #ctx: PredictionContext;
+	readonly #deadlineMs: number;
 	#abort: AbortController | undefined;
 	#prediction: { text: string; source: PredictionSource } | undefined;
 
-	constructor(ctx: Pick<InteractiveModeContext, "settings" | "viewSession" | "editor" | "ui">) {
+	constructor(ctx: PredictionContext, options: { deadlineMs?: number } = {}) {
 		this.#ctx = ctx;
+		this.#deadlineMs = options.deadlineMs ?? PREDICTION_DEADLINE_MS;
 	}
 
 	/** The prediction for the conversation as it stands now, if one is ready. */
@@ -56,12 +73,21 @@ export class ComposerPredictionController {
 	request(): void {
 		this.cancel();
 		if (!cfgComposerPredictions.get(this.#ctx.settings)) return;
+		// A focused subagent's "user" is the parent agent, not the person at the composer.
+		if (this.#ctx.focusedAgentId !== undefined) return;
 		const session = this.#ctx.viewSession;
-		// A draft typed during the turn would hide the ghost anyway: skip the billed request.
-		if (!session.model || session.isStreaming || this.#ctx.editor.getText()) return;
+		// A draft typed during the turn would hide the ghost anyway, and a compaction would rewrite
+		// the history the prediction reads: skip the billed request either way.
+		if (!session.model || session.isStreaming || session.isCompacting || this.#ctx.editor.getText()) return;
 		const abort = new AbortController();
 		this.#abort = abort;
-		void this.#run({ session, lastMessage: session.messages.at(-1) }, abort);
+		const source: PredictionSource = {
+			session,
+			lastMessage: session.messages.at(-1),
+			sessionId: session.sessionId,
+			leafId: session.sessionManager.getLeafId(),
+		};
+		void this.#run(source, session.model, abort);
 	}
 
 	/** Abort an in-flight prediction and clear the shown one. */
@@ -73,12 +99,15 @@ export class ComposerPredictionController {
 		this.#ctx.ui.requestRender();
 	}
 
-	async #run(source: PredictionSource, abort: AbortController): Promise<void> {
+	async #run(source: PredictionSource, model: Model, abort: AbortController): Promise<void> {
 		try {
-			const { replyText } = await source.session.runEphemeralTurn({
+			const { replyText, assistantMessage } = await source.session.runEphemeralTurn({
 				promptText: prompt.render(composerPredictionPrompt, { skip: SKIP_REPLY }),
-				signal: abort.signal,
+				maxTokens: ephemeralMaxTokensRejection(model) ? undefined : PREDICTION_MAX_TOKENS,
+				signal: AbortSignal.any([abort.signal, AbortSignal.timeout(this.#deadlineMs)]),
 			});
+			// Paid for even when the reply arrives too late to show.
+			this.#recordUsage(source, assistantMessage);
 			if (this.#abort !== abort || !this.#isCurrent(source)) return;
 			const text = parseComposerPrediction(replyText);
 			if (!text) return;
@@ -88,6 +117,24 @@ export class ComposerPredictionController {
 			if (!abort.signal.aborted) logger.debug("Composer prediction failed", { error: String(error) });
 		} finally {
 			if (this.#abort === abort) this.#abort = undefined;
+		}
+	}
+
+	#recordUsage(source: PredictionSource, message: AssistantMessage): void {
+		try {
+			source.session.sessionManager.appendModelUsage(
+				{
+					purpose: USAGE_PURPOSE,
+					api: message.api,
+					provider: message.provider,
+					model: message.model,
+					usage: message.usage,
+					stopReason: message.stopReason,
+				},
+				{ sessionId: source.sessionId, parentId: source.leafId },
+			);
+		} catch (error) {
+			logger.debug("Failed to persist composer prediction usage", { error: String(error) });
 		}
 	}
 
