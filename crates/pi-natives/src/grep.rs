@@ -489,6 +489,60 @@ fn window_matched_line(
 	(window, column)
 }
 
+/// Look-ahead the re-run matcher may read past a multi-line match block,
+/// as in ripgrep's printer (`grep-printer`'s `MAX_LOOK_AHEAD`).
+const MATCH_LOOK_AHEAD: usize = 128;
+
+/// Byte range in `line` (the trimmed, decoded text of `mat`) of the first match
+/// the searcher reported in `mat`. Like ripgrep's printer
+/// (`find_iter_at_in_context`), it re-runs the matcher over the searcher's
+/// buffer from the block's start, so look-behind sees the preceding text;
+/// a single-line block drops its line terminator and a multi-line one may look
+/// ahead [`MATCH_LOOK_AHEAD`] bytes.
+fn first_match_in_line<M: Matcher>(
+	searcher: &Searcher,
+	matcher: &M,
+	mat: &SinkMatch<'_>,
+	line: &str,
+) -> Option<(usize, usize)> {
+	let buffer = mat.buffer();
+	let range = mat.bytes_range_in_buffer();
+	let mut end = range.end;
+	if searcher.multi_line_with_matcher(matcher) {
+		end = buffer.len().min(range.end + MATCH_LOOK_AHEAD);
+	} else {
+		let terminator = searcher.line_terminator();
+		if terminator.is_suffix(&buffer[range.clone()]) {
+			end -= 1;
+			if terminator.is_crlf() && end > range.start && buffer[end - 1] == b'\r' {
+				end -= 1;
+			}
+		}
+	}
+	let found = matcher
+		.find_at(&buffer[..end], range.start)
+		.ok()
+		.flatten()?;
+	if found.start() >= range.end {
+		return None;
+	}
+	let block = mat.bytes();
+	let (start, stop) = (found.start() - range.start, found.end().min(range.end) - range.start);
+	// `line` is `block` decoded and trimmed: offsets carry over unless lossy
+	// decoding replaced invalid bytes, which changes the byte lengths before
+	// them.
+	let lossy = std::str::from_utf8(block).is_err();
+	let to_line = |offset: usize| -> usize {
+		let offset = if lossy {
+			String::from_utf8_lossy(&block[..offset]).len()
+		} else {
+			offset
+		};
+		line.floor_char_boundary(offset.min(line.len()))
+	};
+	Some((to_line(start), to_line(stop)))
+}
+
 fn bytes_to_trimmed_string(bytes: &[u8]) -> String {
 	match std::str::from_utf8(bytes) {
 		Ok(text) => text.trim_end().to_string(),
@@ -505,7 +559,7 @@ impl<M: Matcher> Sink for MatchCollector<'_, M> {
 
 	fn matched(
 		&mut self,
-		_searcher: &Searcher,
+		searcher: &Searcher,
 		mat: &SinkMatch<'_>,
 	) -> std::result::Result<bool, Self::Error> {
 		self.match_count += 1;
@@ -524,12 +578,7 @@ impl<M: Matcher> Sink for MatchCollector<'_, M> {
 			let raw_line = bytes_to_trimmed_string(mat.bytes());
 			let (line, truncated, column) = match self.max_columns {
 				Some(max) if raw_line.len() > max => {
-					let first_match = self
-						.matcher
-						.find(raw_line.as_bytes())
-						.ok()
-						.flatten()
-						.map(|found| (found.start(), found.end()));
+					let first_match = first_match_in_line(searcher, self.matcher, mat, &raw_line);
 					let (line, column) = window_matched_line(&raw_line, max, first_match);
 					(line, true, column)
 				},
@@ -2830,11 +2879,11 @@ mod tests {
 		write_file(path, &content);
 	}
 
-	fn search_long_line(pattern: &str, line: &str) -> super::Match {
-		let result = super::search_sync(line.as_bytes(), super::SearchOptions {
+	fn search_long_line(pattern: &str, content: impl AsRef<[u8]>, multiline: bool) -> super::Match {
+		let result = super::search_sync(content.as_ref(), super::SearchOptions {
 			pattern:        pattern.to_string(),
 			ignore_case:    None,
-			multiline:      None,
+			multiline:      Some(multiline),
 			max_count:      None,
 			offset:         None,
 			context_before: None,
@@ -2850,7 +2899,7 @@ mod tests {
 	#[test]
 	fn long_line_match_past_the_budget_shows_a_window_around_it() {
 		let line = format!("{}deadline [s120]{}", "a".repeat(12_000), "b".repeat(2_400));
-		let found = search_long_line(r"deadline \[s120\]", &line);
+		let found = search_long_line(r"deadline \[s120\]", &line, false);
 		assert_eq!(found.truncated, Some(true));
 		assert_eq!(found.column, Some(12_001));
 		assert!(found.line.len() <= 512, "window is {} bytes", found.line.len());
@@ -2862,7 +2911,7 @@ mod tests {
 	#[test]
 	fn long_line_match_near_the_end_cuts_only_the_start() {
 		let line = format!("{}needle", "a".repeat(2_000));
-		let found = search_long_line("needle", &line);
+		let found = search_long_line("needle", &line, false);
 		assert_eq!(found.column, Some(2_001));
 		assert!(found.line.len() <= 512);
 		assert!(found.line.starts_with("...a"), "{}", found.line);
@@ -2872,7 +2921,7 @@ mod tests {
 	#[test]
 	fn long_line_match_inside_the_head_keeps_the_head() {
 		let line = format!("xx needle {}", "a".repeat(2_000));
-		let found = search_long_line("needle", &line);
+		let found = search_long_line("needle", &line, false);
 		assert_eq!(found.column, Some(4));
 		assert_eq!(found.line, format!("xx needle {}...", "a".repeat(499)));
 	}
@@ -2880,11 +2929,48 @@ mod tests {
 	#[test]
 	fn long_line_window_counts_columns_in_characters_and_cuts_on_boundaries() {
 		let line = format!("{}needle{}", "é".repeat(3_000), "é".repeat(3_000));
-		let found = search_long_line("needle", &line);
+		let found = search_long_line("needle", &line, false);
 		assert_eq!(found.column, Some(3_001));
 		assert!(found.line.len() <= 512);
 		assert!(found.line.starts_with("...é") && found.line.ends_with("é..."), "{}", found.line);
 		assert!(found.line.contains("needle"));
+	}
+
+	/// The window follows the match the searcher found, in the same context:
+	/// trailing text the display trims, the line terminator, and neighbouring
+	/// lines for look-around.
+	#[test]
+	fn long_line_window_follows_the_searchers_match() {
+		let pad = "a".repeat(12_000);
+		let cases = [
+			("trailing spaces", "needle +$", format!("{pad}needle   \n"), false),
+			("line terminator", r"needle\n", format!("{pad}needle\nnext\n"), true),
+			("look-ahead", r"needle(?=\nend)", format!("{pad}needle\nend\n"), true),
+			(
+				"look-behind",
+				r"(?<=foo\na{12000})needle",
+				format!("foo\n{pad}needle{}\n", "b".repeat(100)),
+				true,
+			),
+		];
+		for (name, pattern, content, multiline) in cases {
+			let found = search_long_line(pattern, &content, multiline);
+			assert!(found.line.contains("needle"), "{name}: {}", found.line);
+			assert_eq!(found.column, Some(12_001), "{name}");
+		}
+	}
+
+	#[test]
+	fn long_line_window_maps_the_match_past_invalid_utf8() {
+		// The raw 0xFF byte decodes to U+FFFD (3 bytes): the window must follow
+		// the real `needle` match, not a replacement character in the decoded
+		// text.
+		let mut content = "a".repeat(12_000).into_bytes();
+		content.push(0xff);
+		content.extend(format!("{}needle{}", "c".repeat(2_000), "b".repeat(2_400)).into_bytes());
+		let found = search_long_line("\u{FFFD}|needle", &content, false);
+		assert!(found.line.contains("needle"), "{}", found.line);
+		assert_eq!(found.column, Some(14_002));
 	}
 
 	#[cfg(unix)]
