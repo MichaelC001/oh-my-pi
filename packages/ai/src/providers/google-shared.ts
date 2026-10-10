@@ -230,9 +230,9 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 						...(thoughtSignature && { thoughtSignature }),
 					});
 				} else if (block.type === "thinking") {
-					// Skip empty thinking blocks
-					if (!block.thinking || block.thinking.trim() === "") continue;
 					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.thinkingSignature);
+					// Skip empty thinking unless it carries the signature of a signature-only thought part
+					if ((!block.thinking || block.thinking.trim() === "") && !thoughtSignature) continue;
 					if (dropsUnsignedThinking && !thoughtSignature) continue;
 					if (isSameProviderAndModel) {
 						// The model's own thinking replays in the thought slot even unsigned: Gemini
@@ -643,11 +643,12 @@ export class GoogleTextBlocks {
 		return block;
 	}
 
-	/** Keeps the newest non-empty signature a block's parts carried. */
+	/** Keeps the newest non-empty signature a block's parts carried; an unsigned block gets no signature key. */
 	#sign(block: TextContent | ThinkingContent, signature: string | undefined): void {
 		if (!signature) return;
-		if (block.type === "thinking") block.thinkingSignature = signature;
-		else block.textSignature = signature;
+		if (block.type === "thinking")
+			block.thinkingSignature = retainThoughtSignature(block.thinkingSignature, signature);
+		else block.textSignature = retainThoughtSignature(block.textSignature, signature);
 	}
 }
 

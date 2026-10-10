@@ -115,6 +115,48 @@ describe("Google provider system prompts", () => {
 		});
 	});
 
+	it("replays a signature-only thought part after reply text as the thought part it was", async () => {
+		const frame = {
+			candidates: [
+				{
+					content: {
+						role: "model",
+						parts: [
+							{ text: "answer" },
+							{ thought: true, text: "", thoughtSignature: "QUJDRA==" },
+							{ text: " more" },
+						],
+					},
+					finishReason: "STOP",
+				},
+			],
+		};
+		const sse: FetchImpl = async () =>
+			new Response(`data: ${JSON.stringify(frame)}\n\n`, {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			});
+		const reply = await streamGoogle(
+			model,
+			{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+			{
+				apiKey: "test-key",
+				fetch: sse,
+			},
+		).result();
+		expect(reply.content).toMatchObject([
+			{ type: "text", text: "answer" },
+			{ type: "thinking", thinking: "", thinkingSignature: "QUJDRA==" },
+			{ type: "text", text: " more" },
+		]);
+
+		const payload = await captureGooglePayload({ messages: [reply] });
+		expect(payload.contents[0]).toEqual({
+			role: "model",
+			parts: [{ text: "answer" }, { thought: true, text: "", thoughtSignature: "QUJDRA==" }, { text: " more" }],
+		});
+	});
+
 	it("demotes another model's thinking to fenced text without its signatures", async () => {
 		const payload = await captureGooglePayload({
 			messages: [

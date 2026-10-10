@@ -244,6 +244,34 @@ describe("Factory Droid gemini wire — history replay", () => {
 		expect(result.content[1]).not.toHaveProperty("textSignature");
 	});
 
+	it("keeps the newest signature of a thinking block signed more than once, as the other Google routes do", async () => {
+		// Live Factory and Antigravity thought parts arrive unsigned; Gemini validates
+		// only function-call signatures, so this pins the rule rather than a wire need.
+		const { result } = await run("hi", [
+			JSON.stringify({
+				candidates: [
+					{
+						content: {
+							parts: [
+								{ thought: true, text: "first part ", thoughtSignature: "sig-1" },
+								{ thought: true, text: "second part", thoughtSignature: "sig-2" },
+								{ text: "answer" },
+							],
+						},
+					},
+				],
+			}),
+			finishChunk("STOP"),
+		]);
+		expect(result.content[0]).toMatchObject({ thinking: "first part second part", thinkingSignature: "sig-2" });
+
+		const { contents } = await run({ messages: [{ role: "user", content: "hi", timestamp: 1 }, result] });
+		expect(contents.find(entry => entry.role === "model")?.parts[0]).toEqual({
+			text: "first part second part",
+			thoughtSignature: "sig-2",
+		});
+	});
+
 	it("stores and replays signed thinking exactly as received", async () => {
 		const summary = "```thinking\nWeigh the divisors.\n```\n";
 		const { result } = await run("is 7919 prime?", [
