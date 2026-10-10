@@ -489,16 +489,14 @@ fn window_matched_line(
 	(window, column)
 }
 
-/// Look-ahead the re-run matcher may read past a multi-line match block,
-/// as in ripgrep's printer (`grep-printer`'s `MAX_LOOK_AHEAD`).
-const MATCH_LOOK_AHEAD: usize = 128;
-
 /// Byte range in `line` (the trimmed, decoded text of `mat`) of the first match
 /// the searcher reported in `mat`. Like ripgrep's printer
 /// (`find_iter_at_in_context`), it re-runs the matcher over the searcher's
-/// buffer from the block's start, so look-behind sees the preceding text;
-/// a single-line block drops its line terminator and a multi-line one may look
-/// ahead [`MATCH_LOOK_AHEAD`] bytes.
+/// buffer from the block's start, so look-behind sees the preceding text; a
+/// single-line block drops its line terminator. A multi-line block keeps the
+/// rest of the buffer for look-ahead: the printer caps that at 128 bytes, which
+/// loses a match whose look-ahead reads further, and this one leftmost search
+/// stops at the block's match anyway.
 fn first_match_in_line<M: Matcher>(
 	searcher: &Searcher,
 	matcher: &M,
@@ -509,7 +507,7 @@ fn first_match_in_line<M: Matcher>(
 	let range = mat.bytes_range_in_buffer();
 	let mut end = range.end;
 	if searcher.multi_line_with_matcher(matcher) {
-		end = buffer.len().min(range.end + MATCH_LOOK_AHEAD);
+		end = buffer.len();
 	} else {
 		let terminator = searcher.line_terminator();
 		if terminator.is_suffix(&buffer[range.clone()]) {
@@ -2946,6 +2944,12 @@ mod tests {
 			("trailing spaces", "needle +$", format!("{pad}needle   \n"), false),
 			("line terminator", r"needle\n", format!("{pad}needle\nnext\n"), true),
 			("look-ahead", r"needle(?=\nend)", format!("{pad}needle\nend\n"), true),
+			(
+				"look-ahead past 128 bytes",
+				r"needle(?=\nb{150}END)",
+				format!("{pad}needle\n{}END\n", "b".repeat(150)),
+				true,
+			),
 			(
 				"look-behind",
 				r"(?<=foo\na{12000})needle",
