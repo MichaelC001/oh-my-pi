@@ -320,6 +320,7 @@ const REQUEST_INTERCEPTION_CLEANUP_TIMEOUT_MS = 500;
 const HANDLE_ACTION_INVALIDATION_TIMEOUT_MS = 500;
 /** Bound on reading every iframe in one observation; a frame whose renderer is stuck in script never answers. */
 const FRAME_SNAPSHOT_TIMEOUT_MS = 5_000;
+const RENDERER_CRASHED = "Browser tab's renderer crashed";
 
 /** Queue a wheel event without treating a delayed renderer acknowledgement as dispatch failure. */
 export async function dispatchScroll(
@@ -1378,13 +1379,17 @@ export class WorkerCore {
 		if (event.type === "BackForwardCacheRestore") this.#clearElementCache();
 	};
 
+	/** The page's renderer crashed; the supervisor reattaches the tab with a new worker, so this one runs nothing more. */
+	#crashed = false;
 	/**
 	 * Puppeteer's page `error` event is Chromium's `Inspector.targetCrashed`: the renderer is gone, so every
 	 * later page call stalls until its timeout. The supervisor fails the run in flight at once and reattaches the
-	 * tab, so the run is cancelled here too rather than going on after its caller was told it failed.
+	 * tab, so the run is cancelled here too rather than going on after its caller was told it failed, and a run
+	 * delivered after the crash never starts.
 	 */
 	readonly #onPageCrashed = (): void => {
-		this.#active?.ac.abort(postmortem.markExpectedCleanupError(new ToolAbortError("Browser tab's renderer crashed")));
+		this.#crashed = true;
+		this.#active?.ac.abort(postmortem.markExpectedCleanupError(new ToolAbortError(RENDERER_CRASHED)));
 		this.#transport.send({ type: "crashed" });
 	};
 
@@ -1676,12 +1681,12 @@ export class WorkerCore {
 	}
 
 	async #run(msg: Extract<WorkerInbound, { type: "run" }>): Promise<void> {
-		if (this.#active) {
+		if (this.#active || this.#crashed) {
 			this.#transport.send({
 				type: "result",
 				id: msg.id,
 				ok: false,
-				error: errorPayload(new ToolError("Tab worker is busy")),
+				error: errorPayload(new ToolError(this.#crashed ? RENDERER_CRASHED : "Tab worker is busy")),
 			});
 			return;
 		}

@@ -556,10 +556,12 @@ describe("browser tabs whose renderer crashed", () => {
 		"cancels the run whose renderer crashed instead of letting it go on after its caller was told",
 		async () => {
 			let requests = 0;
+			const started = Promise.withResolvers<void>();
 			const server = Bun.serve({
 				port: 0,
-				fetch: () => {
-					requests++;
+				fetch: request => {
+					if (new URL(request.url).pathname === "/started") started.resolve();
+					else requests++;
 					return new Response("ok");
 				},
 			});
@@ -570,20 +572,21 @@ describe("browser tabs whose renderer crashed", () => {
 				await acquireTab(name, browser, { url, timeoutMs: 30_000 });
 				const tab = getTab(name);
 				if (tab?.backend !== "worker") throw new Error("Expected a worker tab");
-				// A cancelled run reports its end at once; one left running reaches the fetch a second in, then
-				// stalls on the dead page and never reports. The real-time bound covers that second case.
+				// A cancelled run reports its end at once; one left running reaches the fetch two seconds after it
+				// started, then stalls on the dead page and never reports. The real-time bound covers that second case.
 				const runEnded = Promise.withResolvers<void>();
 				const unsubscribe = tab.worker.onMessage(msg => {
 					if (msg.type === "result") runEnded.resolve();
 				});
 				const run = runInTab(name, {
-					code: `await wait(1_000); await fetch("http://127.0.0.1:${server.port}/after-crash");`,
+					code: `await fetch("http://127.0.0.1:${server.port}/started"); await wait(2_000); await fetch("http://127.0.0.1:${server.port}/after-crash");`,
 					timeoutMs: 10_000,
 					session,
 				}).catch((error: unknown) => error);
+				await started.promise;
 				await crashRenderer(browser, url);
 				expect(String(await run)).toContain("Browser tab's renderer crashed");
-				await Promise.race([runEnded.promise, Bun.sleep(2_000)]);
+				await Promise.race([runEnded.promise, Bun.sleep(3_000)]);
 				unsubscribe();
 				expect(requests).toBe(0);
 			} finally {
@@ -691,6 +694,155 @@ describe("browser tabs whose renderer crashed", () => {
 				await releaseTab(name, { kill: false });
 				await userPage.close().catch(() => undefined);
 				await releaseBrowser(launched, { kill: true });
+			}
+		},
+		45_000,
+	);
+
+	it.skipIf(!CHROMIUM_AVAILABLE)(
+		"never starts a run that reaches the worker after its renderer crashed",
+		async () => {
+			let requests = 0;
+			const server = Bun.serve({
+				port: 0,
+				fetch: () => {
+					requests++;
+					return new Response("ok");
+				},
+			});
+			const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+			const name = `crashed-queued-${process.pid}`;
+			const url = `data:text/html,<title>${name}</title>`;
+			try {
+				await acquireTab(name, browser, { url, timeoutMs: 30_000 });
+				const tab = getTab(name);
+				if (tab?.backend !== "worker") throw new Error("Expected a worker tab");
+				const worker = tab.worker;
+				const send = worker.send.bind(worker);
+				// Hold the run between the supervisor sending it and the worker starting it, and crash the renderer then.
+				let held: WorkerInbound | undefined;
+				const sendSpy = spyOn(worker, "send").mockImplementation(msg => {
+					if (msg.type === "run" && !held) held = msg;
+					else send(msg);
+				});
+				const runEnded = Promise.withResolvers<void>();
+				const unsubscribe = worker.onMessage(msg => {
+					if (msg.type === "result") runEnded.resolve();
+				});
+				try {
+					const reported = crashReport(name);
+					const run = runInTab(name, {
+						code: `await fetch("http://127.0.0.1:${server.port}/after-crash");`,
+						timeoutMs: 10_000,
+						session,
+					}).catch((error: unknown) => error);
+					await crashRenderer(browser, url);
+					await reported;
+					expect(String(await run)).toContain("Browser tab's renderer crashed");
+					if (!held) throw new Error("Expected the run to be sent");
+					send(held);
+					await Promise.race([runEnded.promise, Bun.sleep(2_000)]);
+					expect(requests).toBe(0);
+				} finally {
+					unsubscribe();
+					sendSpy.mockRestore();
+				}
+			} finally {
+				await releaseTab(name, { kill: true });
+				if ("browser" in browser && browser.browser.connected) await releaseBrowser(browser, { kill: true });
+				server.stop(true);
+			}
+		},
+		45_000,
+	);
+
+	it.skipIf(!CHROMIUM_AVAILABLE)(
+		"leaves a tab reopened under the same name alone when the closed one's reattach fails",
+		async () => {
+			const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+			holdBrowser(browser);
+			const name = `crashed-reopened-${process.pid}`;
+			const url = `data:text/html,<title>${name}</title>`;
+			try {
+				await acquireTab(name, browser, { url, timeoutMs: 30_000 });
+				const tab = getTab(name);
+				if (tab?.backend !== "worker") throw new Error("Expected a worker tab");
+				const reported = crashReport(name);
+				await crashRenderer(browser, url);
+				await reported;
+				const crashedWorker = tab.worker;
+				const terminate = crashedWorker.terminate.bind(crashedWorker);
+				let reopening = false;
+				// The reattach terminates the crashed page's worker first: close the tab (its page goes with it) and open
+				// a new one under the same name right then, so the reattach finds no page. The close terminates it again.
+				const terminateSpy = spyOn(crashedWorker, "terminate").mockImplementation(async () => {
+					await terminate();
+					if (reopening) return;
+					reopening = true;
+					await releaseTab(name, { kill: true });
+					await acquireTab(name, browser, { url: `data:text/html,<title>${name}-new</title>`, timeoutMs: 30_000 });
+				});
+				try {
+					const outcome = await runInTab(name, { code: "return 1;", timeoutMs: 10_000, session }).catch(
+						(error: unknown) => error,
+					);
+					expect(String(outcome)).toContain("was closed");
+				} finally {
+					terminateSpy.mockRestore();
+				}
+				const replacement = getTab(name);
+				expect(replacement).not.toBe(tab);
+				expect(replacement?.state).toBe("alive");
+				const next = await runInTab(name, { code: "return await page.title();", timeoutMs: 10_000, session });
+				expect(next.returnValue).toBe(`${name}-new`);
+			} finally {
+				await releaseTab(name, { kill: true });
+				await releaseBrowser(browser, { kill: true });
+			}
+		},
+		45_000,
+	);
+
+	it.skipIf(!CHROMIUM_AVAILABLE)(
+		"keeps a crashed tab busy while an open reattaches it",
+		async () => {
+			const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+			const name = `crashed-open-busy-${process.pid}`;
+			const owner = `crashed-open-busy-owner-${process.pid}`;
+			const url = `data:text/html,<title>${name}</title>`;
+			try {
+				await acquireTab(name, browser, { url, timeoutMs: 30_000, ownerSessionId: owner });
+				const tab = getTab(name);
+				if (tab?.backend !== "worker") throw new Error("Expected a worker tab");
+				const reported = crashReport(name);
+				await crashRenderer(browser, url);
+				await reported;
+				const crashedWorker = tab.worker;
+				const terminate = crashedWorker.terminate.bind(crashedWorker);
+				let sibling: Promise<unknown> | undefined;
+				let frozen: number | undefined;
+				// While the open's reattach has the old worker gone and no new one yet, a sibling call and a turn-end
+				// freeze both find the tab busy.
+				const terminateSpy = spyOn(crashedWorker, "terminate").mockImplementation(async () => {
+					await terminate();
+					sibling ??= runInTab(name, { code: "return 1;", timeoutMs: 2_000, session }).catch(
+						(error: unknown) => error,
+					);
+					frozen ??= await freezeTabsForOwner(owner);
+				});
+				try {
+					const reopened = await acquireTab(name, browser, { timeoutMs: 30_000, ownerSessionId: owner });
+					expect(reopened.created).toBe(false);
+					expect(reopened.tab).toBe(tab);
+					expect(reopened.note).toContain("This tab's renderer had crashed");
+				} finally {
+					terminateSpy.mockRestore();
+				}
+				expect(String(await sibling)).toContain("is busy");
+				expect(frozen).toBe(0);
+			} finally {
+				await releaseTab(name, { kill: true });
+				if ("browser" in browser && browser.browser.connected) await releaseBrowser(browser, { kill: true });
 			}
 		},
 		45_000,

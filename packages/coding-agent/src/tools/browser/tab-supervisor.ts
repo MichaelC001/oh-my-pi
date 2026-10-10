@@ -363,9 +363,23 @@ async function acquireTabImpl(
 	let reattachedAfterCrash = false;
 	const crashed = tabs.get(name);
 	if (crashed?.backend === "worker" && crashed.crashed && crashed.browser === browser && crashed.state === "alive") {
-		// A page that does not come back gets its tab killed, and this open makes a new one on the held browser.
+		// An empty run reattaches it holding the tab busy like any call. A page that does not come back gets
+		// its tab killed, and this open makes a new one on the held browser.
 		holdBrowser(browser);
-		reattachedAfterCrash = await reattachCrashedTab(crashed, name, opts.timeoutMs);
+		try {
+			await runInTabWithSnapshot(
+				name,
+				{ code: "", timeoutMs: opts.timeoutMs, signal: opts.signal },
+				{ cwd: getProjectDir() },
+			);
+			reattachedAfterCrash = true;
+		} catch (error) {
+			if (tabs.get(name) === crashed && crashed.state === "alive") {
+				await releaseBrowser(browser, { kill: false });
+				throw error;
+			}
+			killedTabs.delete(name);
+		}
 		if (reattachedAfterCrash) await releaseBrowser(browser, { kill: false });
 		else tempHold = true;
 	}
@@ -955,23 +969,23 @@ async function recoverWorkerTab(
 	timeoutMs: number,
 	reason: string,
 ): Promise<boolean> {
+	// The kills go by name: a tab closed meanwhile may have been reopened under it, and that one is not ours to kill.
+	const killTab = async (killReason: string): Promise<false> => {
+		if (tabs.get(name) === tab && tab.state === "alive") await forceKillTab(name, killReason);
+		return false;
+	};
 	try {
-		if (tab.worker.mode === "inline") {
-			await forceKillTab(name, reason);
-			return false;
-		}
+		if (tab.worker.mode === "inline") return await killTab(reason);
 		return await recycleTimedOutWorkerTab(tab, timeoutMs + GRACE_MS);
 	} catch (recycleError) {
 		logger.warn("Failed to recycle browser tab worker; killing tab", {
 			error: recycleError instanceof Error ? recycleError.message : String(recycleError),
 		});
-		await forceKillTab(
-			name,
+		return await killTab(
 			recycleError instanceof RendererCrashedError
 				? "Browser tab's renderer crashed and reattaching did not bring the page back; tab killed"
 				: "Browser tab worker recovery failed; tab killed",
 		);
-		return false;
 	}
 }
 
