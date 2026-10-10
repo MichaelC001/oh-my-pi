@@ -870,9 +870,10 @@ export interface ThinkingContent {
 	/**
 	 * `true`: `thinking` is a provider-written summary of the model's reasoning
 	 * (OpenAI Responses `summary_text`, Gemini thought summaries). `false`: the
-	 * Responses parser confirmed it is the model's own trace. Unset elsewhere and
-	 * on turns recorded before parsers set it. Only confirmed traces replay
-	 * natively on another host.
+	 * stream parser confirmed it is the model's own full trace (chat-completions
+	 * reasoning fields, Responses `reasoning_text`, Devin `thinking`). Unset when
+	 * provenance is unknown, including turns recorded before parsers set it.
+	 * Only confirmed traces replay natively on another host.
 	 */
 	summary?: boolean;
 }
