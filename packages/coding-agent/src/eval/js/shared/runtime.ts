@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { Writable } from "node:stream";
 import * as util from "node:util";
+import * as vm from "node:vm";
 
 // Subpath imports only: the computer worker's readiness graph includes this runtime and must not
 // load pi_natives (verified under `--no-addons`); the `@oh-my-pi/pi-utils` barrel loads it eagerly.
@@ -17,7 +18,7 @@ import { createHelpers, type HelperBundle } from "./helpers";
 import { awaitMaybePromise, indirectEval } from "./indirect-eval";
 import { LocalModuleLoader } from "./local-module-loader";
 import { JAVASCRIPT_PRELUDE_SOURCE } from "./prelude";
-import { wrapCode } from "./rewrite-imports";
+import { diagnoseCellSyntaxError, wrapCode } from "./rewrite-imports";
 import type { JsDisplayOutput, JsStatusEvent } from "./types";
 
 export interface RuntimeCallIdentity {
@@ -276,6 +277,16 @@ function describeDataType(data: unknown): string {
 	if (ArrayBuffer.isView(data)) return data.constructor.name;
 	if (typeof data === "string") return `string(${data.length})`;
 	return typeof data;
+}
+
+/** Compiles `source` as a global script without running it (matches indirect eval semantics). */
+function compiles(source: string): boolean {
+	try {
+		new vm.Script(source);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -538,7 +549,18 @@ export class JsRuntime {
 		try {
 			return await this.#als.run(context, async () => {
 				const wrapped = await wrapCode(code);
-				const value = indirectEval(wrapped.source, filename);
+				let value: unknown;
+				try {
+					value = indirectEval(wrapped.source, filename);
+				} catch (error) {
+					// The engine's own compile SyntaxError has no usable cell position; surface Babel's.
+					// Sync cells run inside indirectEval, so a SyntaxError may also be a runtime one
+					// (e.g. JSON.parse); only diagnose when the source itself fails to compile as a script.
+					if (error instanceof SyntaxError && !compiles(wrapped.source)) {
+						throw (await diagnoseCellSyntaxError(code)) ?? error;
+					}
+					throw error;
+				}
 				if (wrapped.finalExpressionReturned) {
 					const awaited = await awaitMaybePromise(value);
 					if (context.finalExpressionSet) {

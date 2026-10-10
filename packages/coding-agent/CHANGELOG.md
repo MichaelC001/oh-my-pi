@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed JS eval cells with a syntax error (such as a raw backtick inside a template literal) failing with the engine's position-less message; the error now names the cell line and column and shows a short code frame ([#14275](https://github.com/can1357/oh-my-pi/issues/14275), [#14376](https://github.com/can1357/oh-my-pi/pull/14376) by [@tahakotil](https://github.com/tahakotil)).
+
 ### Added
 
 - Added `ctx.annotations` so extensions can submit or collect `/annotate` feedback on text and diffs ([#15260](https://github.com/can1357/oh-my-pi/pull/15260) by [@Shadorain](https://github.com/Shadorain)).
