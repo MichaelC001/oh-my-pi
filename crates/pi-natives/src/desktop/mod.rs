@@ -2185,29 +2185,42 @@ mod capture_tests {
 			.expect("worker reply");
 	}
 
+	/// Waits for the hold transitions to reach `expected`, failing after a
+	/// deadline far beyond any grace the tests use.
+	fn wait_for_awake(awake: &Mutex<Vec<bool>>, expected: &[bool]) {
+		let deadline = Instant::now() + Duration::from_secs(30);
+		while awake.lock().as_slice() != expected {
+			assert!(
+				Instant::now() < deadline,
+				"hold transitions {:?}, expected {expected:?}",
+				awake.lock()
+			);
+			thread::sleep(Duration::from_millis(5));
+		}
+	}
+
 	#[test]
 	fn display_stays_awake_only_until_the_grace_after_the_last_activity() {
 		let backend = FakeWaylandBackend::new();
 		let awake = Arc::clone(&backend.awake);
 		let (tx, rx) = flume::unbounded();
-		let grace = Duration::from_millis(100);
+		let grace = Duration::from_millis(500);
 		let serving = thread::spawn(move || worker_with(backend).serve(&rx, grace));
 
 		send_and_wait(&tx, |reply| Request::Capabilities { reply });
 		assert!(awake.lock().is_empty(), "a status read must not hold the display awake");
 
+		// Prefix checks: a stalled test thread may legitimately see the release.
 		send_and_wait(&tx, |reply| Request::ListWindows { reply });
-		assert_eq!(*awake.lock(), [true], "activity holds the display awake");
-
-		thread::sleep(grace * 4);
-		assert_eq!(*awake.lock(), [true, false], "an idle session releases the hold after the grace");
+		assert!(awake.lock().starts_with(&[true]), "activity holds the display awake");
+		wait_for_awake(&awake, &[true, false]);
 
 		send_and_wait(&tx, |reply| Request::ListWindows { reply });
-		assert_eq!(*awake.lock(), [true, false, true], "new activity holds it again");
+		assert!(awake.lock().starts_with(&[true, false, true]), "new activity holds it again");
 
 		send_and_wait(&tx, |reply| Request::Close { reply });
 		serving.join().unwrap();
-		assert_eq!(*awake.lock(), [true, false, true, false], "close releases the hold at once");
+		assert_eq!(*awake.lock(), [true, false, true, false], "close releases the hold");
 	}
 
 	#[test]
