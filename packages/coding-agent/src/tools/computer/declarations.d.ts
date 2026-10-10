@@ -217,6 +217,8 @@ interface ComputerElementRef
 			| "children"
 		> {
 	readonly ref: string;
+	catch<T = never>(onRejected?: ((reason: unknown) => T | PromiseLike<T>) | null): Promise<ComputerElement | T>;
+	finally(onFinally?: (() => void) | null): Promise<ComputerElement>;
 }
 
 /** Native input helpers shared by the desktop root and window handles; `x`/`y` are pixels in the most recent full screenshot of the same target, never zoom pixels. */

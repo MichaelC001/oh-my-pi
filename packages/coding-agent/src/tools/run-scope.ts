@@ -386,20 +386,32 @@ export function bindRunFacade<T extends object>(
 					const result = Reflect.apply(value, current, args);
 					if (result && typeof result === "object") {
 						const then = Reflect.get(result, "then");
-						// A handle that is also thenable (`desktop.ref("e5")`) keeps its methods; each of
-						// its calls, `then` included, is gated the same way.
-						if (typeof then === "function" && !(result instanceof Promise)) {
-							return bindRunFacade(result, signal, rejectionOwner, onFloatingRejection);
-						}
 						if (typeof then === "function") {
-							return trackBrowserRunPromise(
-								Promise.resolve(result).then(resolved => {
-									throwIfAborted(signal);
-									return resolved;
-								}),
-								rejectionOwner,
-								onFloatingRejection,
-							);
+							let settled: Promise<unknown> | undefined;
+							const settle = (): Promise<unknown> => {
+								settled ??= trackBrowserRunPromise(
+									Promise.resolve(result).then(resolved => {
+										throwIfAborted(signal);
+										return resolved;
+									}),
+									rejectionOwner,
+									onFloatingRejection,
+								);
+								return settled;
+							};
+							if (result instanceof NativePromise) return settle();
+							// A handle that is also thenable (`desktop.ref("e5")`) keeps its gated methods,
+							// and awaiting it settles through the same tracked, abort-checked promise.
+							const handle = bindRunFacade(result, signal, rejectionOwner, onFloatingRejection);
+							return new Proxy(handle, {
+								get(target, key) {
+									if (key === "then" || key === "catch" || key === "finally") {
+										const promise = settle();
+										return Reflect.get(promise, key, promise).bind(promise);
+									}
+									return Reflect.get(target, key);
+								},
+							});
 						}
 					}
 					throwIfAborted(signal);

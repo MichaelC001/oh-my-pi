@@ -1,4 +1,5 @@
 def _make_computer():
+    import collections.abc
     import re
 
     def _encode_arg(value):
@@ -108,23 +109,43 @@ def _make_computer():
         def __repr__(self):
             return f"<computer.Element ref={self.ref!r} role={self.role!r}>"
 
-    class _ElementRef(_ElementMethods):
-        """`await ref("e5")` resolves the element; `await ref("e5").click()` calls it directly."""
+    class _ElementRef(_ElementMethods, collections.abc.Coroutine):
+        """`await ref("e5")` resolves the element; `await ref("e5").click()` calls it directly.
 
-        __slots__ = ("ref",)
+        It is also a coroutine, so `asyncio.create_task(ref("e5"))` still works; the
+        lookup coroutine is created only when the handle itself is awaited or run.
+        """
+
+        __slots__ = ("ref", "_lookup")
 
         def __init__(self, ref):
             self.ref = ref
+            self._lookup = None
 
         def __repr__(self):
             return f"<computer.ElementRef ref={self.ref!r}>"
 
-        def __await__(self):
-            return self._resolve().__await__()
+        def _coroutine(self):
+            if self._lookup is None:
+                self._lookup = self._resolve()
+            return self._lookup
 
         async def _resolve(self):
             snapshot = await _call([_step("ref", (self.ref,), {})])
             return _Element(snapshot) if isinstance(snapshot, dict) else None
+
+        def __await__(self):
+            return self._coroutine().__await__()
+
+        def send(self, value):
+            return self._coroutine().send(value)
+
+        def throw(self, *args):
+            return self._coroutine().throw(*args)
+
+        def close(self):
+            if self._lookup is not None:
+                self._lookup.close()
 
     class _Namespace:
         __slots__ = ("_root", "_namespace")

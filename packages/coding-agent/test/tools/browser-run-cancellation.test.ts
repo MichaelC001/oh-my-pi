@@ -207,6 +207,52 @@ describe("browser run cancellation", () => {
 		expect(isBrowserRunRejection(caught, owner)).toBe(true);
 	});
 
+	it("keeps async facade results on the tracked path inside browser combinator tracking", async () => {
+		const owner = {};
+		const browserFailure = new Error("async browser failure");
+		const facade = bindRunFacade(
+			{
+				async fail(): Promise<never> {
+					throw browserFailure;
+				},
+			},
+			new AbortController().signal,
+			owner,
+		);
+		let caught: unknown;
+		await withBrowserPromiseCombinatorTracking(
+			owner,
+			() => {},
+			async () => {
+				try {
+					await facade.fail();
+				} catch (error) {
+					caught = error;
+				}
+			},
+		);
+		expect(caught).toBe(browserFailure);
+		expect(isBrowserRunRejection(caught, owner)).toBe(true);
+	});
+
+	it("keeps a thenable handle's methods and rejects its await after abort", async () => {
+		const controller = new AbortController();
+		const deferred = Promise.withResolvers<string>();
+		const handle = {
+			then: (onFulfilled: (value: string) => unknown, onRejected: (reason: unknown) => unknown) =>
+				deferred.promise.then(onFulfilled, onRejected),
+			click: async () => "clicked",
+		};
+		const facade = bindRunFacade({ ref: () => handle }, controller.signal);
+		expect(await facade.ref().click()).toBe("clicked");
+		const fulfilled: unknown[] = [];
+		const awaited = facade.ref().then(value => fulfilled.push(value));
+		controller.abort(postmortem.markExpectedCleanupError(new Error("run ended")));
+		deferred.resolve("element");
+		await expect(awaited).rejects.toThrow();
+		expect(fulfilled).toEqual([]);
+	});
+
 	it("reports user rethrows from native browser-promise combinators", async () => {
 		vi.useRealTimers();
 		for (const name of ["all", "race", "allSettled", "any"] as const) {
