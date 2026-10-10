@@ -92,15 +92,23 @@ export function buildCodeReviewFeedback(
 	return review ? buildReviewPrompt(target, formatted) : formatted;
 }
 
-/** Renders a review request from one frozen target snapshot. */
-export function buildReviewPrompt(target: ResolvedReviewTarget, additionalInstructions?: string): string {
-	const skipDiff =
-		target.rawDiff.length > LARGE_DIFF_CHARACTER_LIMIT || target.snapshot.files.length > LARGE_DIFF_FILE_LIMIT;
-	if (target.kind === "patch" && skipDiff) {
+function exceedsInlineDiffLimit(target: ResolvedReviewTarget): boolean {
+	return target.rawDiff.length > LARGE_DIFF_CHARACTER_LIMIT || target.snapshot.files.length > LARGE_DIFF_FILE_LIMIT;
+}
+
+/** Throws when a supplied patch is too large to embed in a review request; other targets pass. */
+export function assertReviewablePatchSize(target: ResolvedReviewTarget): void {
+	if (target.kind === "patch" && exceedsInlineDiffLimit(target)) {
 		throw new Error(
 			`Supplied diff exceeds the review limit (${LARGE_DIFF_CHARACTER_LIMIT} characters or ${LARGE_DIFF_FILE_LIMIT} files); split it into smaller patches.`,
 		);
 	}
+}
+
+/** Renders a review request from one frozen target snapshot. */
+export function buildReviewPrompt(target: ResolvedReviewTarget, additionalInstructions?: string): string {
+	assertReviewablePatchSize(target);
+	const skipDiff = exceedsInlineDiffLimit(target);
 	const linesPerFile = skipDiff ? Math.max(5, Math.floor(100 / target.snapshot.files.length)) : 0;
 	const files = target.snapshot.files.map(file => renderReviewPromptFile(file, linesPerFile));
 	const agentCount = getRecommendedReviewAgentCount(target.snapshot);

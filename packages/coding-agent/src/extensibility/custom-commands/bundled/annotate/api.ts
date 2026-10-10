@@ -9,6 +9,7 @@ import type {
 	ExtensionAnnotationsAPI,
 	ExtensionContext,
 } from "../../../../extensibility/extensions/types";
+import type { SendUserMessageOptions } from "../../../../session/agent-session";
 import { splitTextLines } from "@oh-my-pi/pi-tui/overlays/annotation-overlay";
 import type {
 	CodeReviewAnnotation,
@@ -16,7 +17,7 @@ import type {
 	TextReviewSource,
 } from "@oh-my-pi/pi-tui/overlays/annotation-types";
 import { fetchPrReviewTarget, parseReviewPrRef } from "../review";
-import { buildCodeReviewFeedback } from "../review/prompt";
+import { assertReviewablePatchSize, buildCodeReviewFeedback } from "../review/prompt";
 import {
 	createResolvedReviewTarget,
 	getReviewTargetIssue,
@@ -29,7 +30,7 @@ import { buildTextReviewPrompt } from "./text-review";
 import { latestAssistantTextReviewSource } from "./text-source";
 
 /** The slice of an extension context the annotation API reads. */
-export type AnnotationContext = Pick<ExtensionContext, "ui" | "mode" | "hasUI" | "cwd" | "sessionManager">;
+export type AnnotationContext = Pick<ExtensionContext, "ui" | "mode" | "hasUI" | "cwd" | "sessionManager" | "isIdle">;
 
 async function resolveTextSource(ctx: AnnotationContext, source: AnnotationTextSource): Promise<TextReviewSource> {
 	const sessionId = ctx.sessionManager.getSessionId();
@@ -85,7 +86,13 @@ function matchTextNotes(source: TextReviewSource, notes: readonly AnnotationText
 				`Annotation ${index + 1}: line ${entry.line} is outside ${source.label} (lines 1-${lines.length}).`,
 			);
 		}
-		return { scope: "line", line: entry.line, quote: lines[entry.line - 1]!, note };
+		const quote = lines[entry.line - 1]!;
+		if (entry.quote !== undefined && entry.quote !== quote) {
+			throw new Error(
+				`Annotation ${index + 1}: line ${entry.line} of ${source.label} no longer matches its quote (expected ${JSON.stringify(entry.quote)}, found ${JSON.stringify(quote)}).`,
+			);
+		}
+		return { scope: "line", line: entry.line, quote, note };
 	});
 }
 
@@ -126,6 +133,11 @@ function matchDiffNotes(target: ResolvedReviewTarget, notes: readonly Annotation
 		if (!row || row.kind === "hunk" || row.kind === "no-newline") {
 			throw new Error(`${label}: ${side} line ${entry.line} of ${file.path} is not in the diff.`);
 		}
+		if (entry.rawLine !== undefined && entry.rawLine !== row.raw) {
+			throw new Error(
+				`${label}: ${side} line ${entry.line} of ${file.path} no longer matches its rawLine (expected ${JSON.stringify(entry.rawLine)}, found ${JSON.stringify(row.raw)}).`,
+			);
+		}
 		return {
 			...common,
 			scope: "line",
@@ -139,15 +151,17 @@ function matchDiffNotes(target: ResolvedReviewTarget, notes: readonly Annotation
 
 function deliver(
 	ctx: AnnotationContext,
-	sendUserMessage: (text: string) => void,
+	sendUserMessage: (text: string, options?: SendUserMessageOptions) => void,
 	text: string | undefined,
 	review: boolean,
 	requested: AnnotationDelivery = "auto",
 ): AnnotationResult["delivered"] {
 	if (text === undefined || requested === "none") return "none";
-	const channel = requested === "auto" ? (review ? "send" : "paste") : requested;
+	const tuiEditor = ctx.mode === "tui" && ctx.hasUI && ctx.ui.supportsEditor === true;
+	const channel = requested === "auto" ? (review || !tuiEditor ? "send" : "paste") : requested;
 	if (channel === "send") {
-		sendUserMessage(text);
+		// Queue behind a running turn instead of steering into it.
+		sendUserMessage(text, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
 		return "send";
 	}
 	if (!ctx.hasUI || ctx.ui.supportsEditor !== true) {
@@ -171,7 +185,7 @@ function isTextRequest<T extends { source: AnnotationSource }>(
  */
 export function createAnnotationsAPI(
 	getContext: () => AnnotationContext,
-	sendUserMessage: (text: string) => void,
+	sendUserMessage: (text: string, options?: SendUserMessageOptions) => void,
 ): ExtensionAnnotationsAPI {
 	return {
 		async submit(request) {
@@ -181,6 +195,7 @@ export function createAnnotationsAPI(
 				const annotations = matchTextNotes(source, request.notes);
 				const text = buildTextReviewPrompt(source, annotations);
 				return {
+					kind: "text",
 					text,
 					delivered: deliver(ctx, sendUserMessage, text, false, request.deliver),
 					review: false,
@@ -192,6 +207,7 @@ export function createAnnotationsAPI(
 			const review = request.review === true;
 			const text = buildCodeReviewFeedback(target, annotations, review, request.focus);
 			return {
+				kind: "diff",
 				text,
 				delivered: deliver(ctx, sendUserMessage, text, review, request.deliver),
 				review,
@@ -210,6 +226,7 @@ export function createAnnotationsAPI(
 				if (result.editedText !== undefined) source = { ...source, text: result.editedText };
 				const text = buildTextReviewPrompt(source, result.annotations);
 				return {
+					kind: "text",
 					text,
 					delivered: deliver(ctx, sendUserMessage, text, false, request.deliver),
 					review: false,
@@ -218,11 +235,14 @@ export function createAnnotationsAPI(
 				};
 			}
 			const target = await resolveDiffTarget(ctx, request.source);
+			// The overlay defaults to a review request; reject before the operator writes notes it would drop.
+			assertReviewablePatchSize(target);
 			const result = await showCodeReviewOverlay(ctx, target);
 			if (!result) return undefined;
 			const review = result.action === "review";
 			const text = buildCodeReviewFeedback(target, result.annotations, review, request.focus);
 			return {
+				kind: "diff",
 				text,
 				delivered: deliver(ctx, sendUserMessage, text, review, request.deliver),
 				review,

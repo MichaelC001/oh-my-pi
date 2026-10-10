@@ -5,6 +5,7 @@
 ### Added
 
 - Added `ctx.annotations` so extensions can submit or collect `/annotate` feedback on text and diffs ([#15260](https://github.com/can1357/oh-my-pi/pull/15260) by [@Shadorain](https://github.com/Shadorain))
+
 ## [18.8.9] - 2026-10-10
 
 ### Added

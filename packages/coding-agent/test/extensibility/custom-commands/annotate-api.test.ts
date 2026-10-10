@@ -16,6 +16,7 @@ import {
 import * as fullscreen from "@oh-my-pi/pi-coding-agent/extensibility/custom-commands/bundled/annotate/fullscreen";
 import * as review from "@oh-my-pi/pi-coding-agent/extensibility/custom-commands/bundled/review";
 import { createResolvedReviewTarget } from "@oh-my-pi/pi-coding-agent/extensibility/custom-commands/bundled/review/target";
+import type { SendUserMessageOptions } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionMessageEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
@@ -45,15 +46,18 @@ function createContext(
 		supportsEditor?: boolean;
 		branch?: SessionMessageEntry[];
 		cwd?: string;
+		idle?: boolean;
 	} = {},
 ) {
 	const pasteToEditor = vi.fn((_text: string) => undefined);
-	const sendUserMessage = vi.fn((_text: string) => undefined);
+	const sendUserMessage = vi.fn((_text: string, _options?: SendUserMessageOptions) => undefined);
 	const cwd = options.cwd ?? "/workspace";
 	const ctx = {
 		mode: options.mode ?? "tui",
 		hasUI: options.hasUI ?? true,
-		cwd,
+		// The materialized cwd is stale; the API must read the live session cwd.
+		cwd: "/stale",
+		isIdle: () => options.idle ?? true,
 		sessionManager: { getBranch: () => options.branch ?? [], getCwd: () => cwd, getSessionId: () => "session-1" },
 		ui: { supportsEditor: options.supportsEditor ?? true, pasteToEditor, notify: vi.fn() },
 	} as unknown as AnnotationContext;
@@ -195,7 +199,7 @@ ${DIFF}`;
 
 		expect(result.review).toBe(true);
 		expect(result.delivered).toBe("send");
-		expect(sendUserMessage).toHaveBeenCalledWith(result.text!);
+		expect(sendUserMessage).toHaveBeenCalledWith(result.text!, undefined);
 		expect(pasteToEditor).not.toHaveBeenCalled();
 		expect(result.text).toContain("Reviewing a patch");
 		expect(result.text).toContain("is 2 right?");
@@ -203,34 +207,68 @@ ${DIFF}`;
 		expect(result.text).toContain(DIFF.trim());
 	});
 
-	it("sends notes through the message channel without a UI and refuses to paste without an editor", async () => {
+	it("sends notes automatically without a UI and refuses an explicit paste without an editor", async () => {
 		const headless = createContext({ mode: "rpc", hasUI: false });
 		const request = { source: { kind: "text" as const, text: "a\nb" }, notes: [{ line: 1, note: "n" }] };
 
-		const sent = await headless.api.submit({ ...request, deliver: "send" });
+		const sent = await headless.api.submit(request);
 		expect(sent.delivered).toBe("send");
-		expect(headless.sendUserMessage).toHaveBeenCalledWith(sent.text!);
+		expect(headless.sendUserMessage).toHaveBeenCalledWith(sent.text!, undefined);
 
-		await expect(headless.api.submit(request)).rejects.toThrow("Cannot paste annotation feedback");
+		await expect(headless.api.submit({ ...request, deliver: "paste" })).rejects.toThrow(
+			"Cannot paste annotation feedback",
+		);
 		expect(headless.pasteToEditor).not.toHaveBeenCalled();
 	});
 
+	it("queues sent feedback as a follow-up while the agent is streaming", async () => {
+		const { api, sendUserMessage } = createContext({ idle: false });
+
+		const result = await api.submit({
+			source: { kind: "diff", diff: DIFF },
+			notes: [{ path: "src/value.ts", note: "after this turn" }],
+			review: true,
+		});
+
+		expect(result.delivered).toBe("send");
+		expect(sendUserMessage).toHaveBeenCalledWith(result.text!, { deliverAs: "followUp" });
+	});
+
+	it("rejects anchored notes whose source content drifted", async () => {
+		const { api, sendUserMessage } = createContext();
+
+		await expect(
+			api.submit({
+				source: { kind: "text", text: "alpha\nbeta" },
+				notes: [{ line: 2, quote: "gamma", note: "stale text" }],
+			}),
+		).rejects.toThrow("Annotation 1: line 2 of Text prompt no longer matches its quote");
+		await expect(
+			api.submit({
+				source: { kind: "diff", diff: DIFF },
+				notes: [
+					{ path: "src/value.ts", line: 1, rawLine: " const keep = true;", note: "anchored" },
+					{ path: "src/value.ts", line: 2, rawLine: "+const value = 3;", note: "stale diff" },
+				],
+			}),
+		).rejects.toThrow("Annotation 2: new line 2 of src/value.ts no longer matches its rawLine");
+		expect(sendUserMessage).not.toHaveBeenCalled();
+	});
+
 	it("resolves a PR reference through the central fetcher and rejects a malformed reference", async () => {
-		const fetchSpy = spyOn(review, "fetchPrReviewTarget").mockResolvedValue(
-			createResolvedReviewTarget("pr", "PR acme/project#42", DIFF, "empty"),
+		spyOn(review, "fetchPrReviewTarget").mockImplementation(async (cwd, ref) =>
+			createResolvedReviewTarget("pr", `PR ${ref.repo}#${ref.number} in ${cwd}`, DIFF, "empty"),
 		);
 		const { api } = createContext({ cwd: "/live-worktree" });
 
 		const result = await api.submit({
 			source: { kind: "pr", ref: "https://github.com/acme/project/pull/42" },
 			notes: [{ path: "src/value.ts", note: "pr note" }],
+			review: true,
 			deliver: "none",
 		});
 
-		expect(fetchSpy).toHaveBeenCalledWith(
-			"/live-worktree",
-			expect.objectContaining({ repo: "acme/project", number: 42 }),
-		);
+		expect(result.text).toContain("PR acme/project#42 in /live-worktree");
 		expect(result.text).toContain("pr note");
 		await expect(
 			api.submit({ source: { kind: "pr", ref: "not a pr" }, notes: [{ path: "x", note: "y" }] }),
@@ -250,7 +288,8 @@ describe("annotations API: open", () => {
 		const result = await api.open({ source: { kind: "text", text: "original\nkept" } });
 
 		expect(showText).toHaveBeenCalledTimes(1);
-		expect(result?.editedText).toBe("rewritten\nkept");
+		if (result?.kind !== "text") throw new Error("expected a text result");
+		expect(result.editedText).toBe("rewritten\nkept");
 		expect(result?.text).toContain("rewritten\nkept");
 		expect(result?.delivered).toBe("paste");
 		expect(pasteToEditor).toHaveBeenCalledWith(result!.text!);
@@ -278,6 +317,16 @@ describe("annotations API: open", () => {
 		expect(result?.delivered).toBe("send");
 		expect(sendUserMessage).toHaveBeenCalledTimes(1);
 		expect(result?.text).toContain("be strict");
+	});
+
+	it("rejects an oversized supplied patch before the operator can annotate it", async () => {
+		const showCode = spyOn(fullscreen, "showCodeReviewOverlay");
+		const { api } = createContext();
+
+		await expect(
+			api.open({ source: { kind: "diff", diff: DIFF + " ".repeat(50_001 - DIFF.length) } }),
+		).rejects.toThrow("exceeds the review limit");
+		expect(showCode).not.toHaveBeenCalled();
 	});
 
 	it("refuses to open the overlay outside the interactive TUI", async () => {
@@ -358,34 +407,25 @@ new file mode 100644
 		expect(sendUserMessage).not.toHaveBeenCalled();
 	});
 
-	it("rejects paste in a non-editor host even when its notification UI is available", async () => {
-		const { api, pasteToEditor, sendUserMessage } = createContext({
-			mode: "rpc",
-			hasUI: true,
-			supportsEditor: false,
-		});
+	it("rejects explicit paste in a non-editor host even when its notification UI is available", async () => {
+		const { api, pasteToEditor } = createContext({ mode: "rpc", hasUI: true, supportsEditor: false });
 		const request = { source: { kind: "text" as const, text: "line" }, notes: [{ note: "feedback" }] };
-		await expect(api.submit(request)).rejects.toThrow("Cannot paste annotation feedback");
+
 		await expect(api.submit({ ...request, deliver: "paste" })).rejects.toThrow("Cannot paste annotation feedback");
 		expect(pasteToEditor).not.toHaveBeenCalled();
-		const result = await api.submit({ ...request, deliver: "send" });
-		expect(sendUserMessage).toHaveBeenCalledWith(result.text);
 	});
 
-	it("allows a remote editor in RPC mode for automatic and explicit paste delivery", async () => {
-		const { api, pasteToEditor, sendUserMessage } = createContext({
-			mode: "rpc",
-			hasUI: true,
-			supportsEditor: true,
-		});
+	it("sends automatically in RPC mode but pastes into its remote editor on request", async () => {
+		const { api, pasteToEditor, sendUserMessage } = createContext({ mode: "rpc", hasUI: true, supportsEditor: true });
 		const request = { source: { kind: "text" as const, text: "line" }, notes: [{ note: "remote feedback" }] };
+
 		const automatic = await api.submit(request);
 		const explicit = await api.submit({ ...request, deliver: "paste" });
-		expect(automatic.delivered).toBe("paste");
+
+		expect(automatic.delivered).toBe("send");
+		expect(sendUserMessage).toHaveBeenCalledWith(automatic.text!, undefined);
 		expect(explicit.delivered).toBe("paste");
-		expect(pasteToEditor.mock.calls.map(([text]) => text)).toEqual([automatic.text, explicit.text]);
-		expect(automatic.text).toContain("remote feedback");
-		expect(sendUserMessage).not.toHaveBeenCalled();
+		expect(pasteToEditor).toHaveBeenCalledWith(explicit.text!);
 	});
 
 	it("mounts the overlay through a handler-scoped ui, not the runner's raw ui", async () => {
@@ -396,6 +436,12 @@ new file mode 100644
 			process.cwd(),
 			sessionManager,
 			new ModelRegistry(await AuthStorage.create(":memory:")),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			createAnnotationsAPI,
 		);
 		const scopedCustom = vi.fn(async () => undefined);
 		const scoped: ExtensionContext = Object.create(runner.createContext());

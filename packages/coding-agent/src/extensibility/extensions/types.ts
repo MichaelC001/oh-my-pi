@@ -506,16 +506,21 @@ export type AnnotationDiffSource =
 
 export type AnnotationSource = AnnotationTextSource | AnnotationDiffSource;
 
-/** A note on a text source: whole-source when `line` is omitted, else one 1-based source line. */
+/**
+ * A note on a text source: whole-source when `line` is omitted, else one 1-based source line.
+ * `quote` pins the expected line text; when it differs from the current line, the note rejects.
+ */
 export interface AnnotationTextNote {
 	note: string;
 	line?: number;
+	quote?: string;
 }
 
 /**
  * A note on a diff source: whole-file when `line` is omitted. `line` is a line number on
  * `side` (default `"new"`; use `"old"` for removed lines); `occurrence` picks among repeated
- * sections for the same path (default 1).
+ * sections for the same path (default 1). `rawLine` pins the expected diff row including its
+ * `+`/`-`/space prefix; when it differs from the matched row, the note rejects.
  */
 export interface AnnotationDiffNote {
 	path: string;
@@ -523,12 +528,14 @@ export interface AnnotationDiffNote {
 	line?: number;
 	side?: "old" | "new";
 	occurrence?: number;
+	rawLine?: string;
 }
 
 /**
- * Where the built feedback goes. `"auto"` matches `/annotate`: notes are pasted into the
- * composer, an LLM review request is sent. `"paste"` and `"send"` force one channel
- * (`"send"` uses `pi.sendUserMessage` semantics); `"none"` only returns the text.
+ * Where the built feedback goes. `"auto"` pastes into the composer when the interactive TUI
+ * editor is available and the text is not an LLM review request; otherwise it sends.
+ * `"paste"` and `"send"` force one channel (`"send"` uses `pi.sendUserMessage` semantics and
+ * queues as a follow-up while the agent is streaming); `"none"` only returns the text.
  */
 export type AnnotationDelivery = "auto" | "paste" | "send" | "none";
 
@@ -542,8 +549,15 @@ interface AnnotationDiffRequestOptions {
 	focus?: string;
 }
 
+/** Text sources never build an LLM review request, so the diff-only options are rejected. */
+interface AnnotationTextRequestOptions {
+	review?: never;
+	focus?: never;
+}
+
 export type AnnotationSubmitRequest =
-	| (AnnotationRequestBase & { source: AnnotationTextSource; notes: AnnotationTextNote[] })
+	| (AnnotationRequestBase &
+			AnnotationTextRequestOptions & { source: AnnotationTextSource; notes: AnnotationTextNote[] })
 	| (AnnotationRequestBase &
 			AnnotationDiffRequestOptions & {
 				source: AnnotationDiffSource;
@@ -551,21 +565,40 @@ export type AnnotationSubmitRequest =
 			});
 
 export type AnnotationOpenRequest =
-	| (AnnotationRequestBase & { source: AnnotationTextSource })
+	| (AnnotationRequestBase & AnnotationTextRequestOptions & { source: AnnotationTextSource })
 	| (AnnotationRequestBase & Pick<AnnotationDiffRequestOptions, "focus"> & { source: AnnotationDiffSource });
 
-export interface AnnotationResult {
+interface AnnotationResultBase {
 	/** Feedback exactly as `/annotate` renders it; undefined when there was nothing to report. */
 	text: string | undefined;
 	/** Channel the text went to; `"none"` when it was only returned. */
 	delivered: "paste" | "send" | "none";
-	/** Whether `text` is an LLM review request rather than pasteable notes. */
-	review: boolean;
-	/** Normalized notes: line notes carry the quoted source line or diff row. */
-	annotations: TextReviewAnnotation[] | CodeReviewAnnotation[];
-	/** Text after an external-editor edit inside the overlay (`open` on text sources only). */
+}
+
+/** Result for a text source (`text`, `file`, `last`). */
+export interface AnnotationTextResult extends AnnotationResultBase {
+	kind: "text";
+	review: false;
+	/** Normalized notes: line notes carry the quoted source line. */
+	annotations: TextReviewAnnotation[];
+	/**
+	 * Set only by `open` when the operator replaced the source through the external editor
+	 * inside the overlay; `text` and `annotations` refer to this edited text, not the original.
+	 */
 	editedText?: string;
 }
+
+/** Result for a diff source (`diff`, `uncommitted`, `pr`). */
+export interface AnnotationDiffResult extends AnnotationResultBase {
+	kind: "diff";
+	/** Whether `text` is an LLM review request rather than pasteable notes. */
+	review: boolean;
+	/** Normalized notes: line notes carry the matched diff row. */
+	annotations: CodeReviewAnnotation[];
+}
+
+/** Discriminated by `kind`, which follows the request source. */
+export type AnnotationResult = AnnotationTextResult | AnnotationDiffResult;
 
 /**
  * `/annotate` as an API. `submit` turns caller-supplied notes into the same feedback without UI;
@@ -577,6 +610,15 @@ export interface ExtensionAnnotationsAPI {
 	submit(request: AnnotationSubmitRequest): Promise<AnnotationResult>;
 	open(request: AnnotationOpenRequest): Promise<AnnotationResult | undefined>;
 }
+
+/**
+ * Builds `ctx.annotations` for one context. `getContext` is read per call so the API sees the
+ * receiving context's live cwd and UI; the host injects the implementation.
+ */
+export type ExtensionAnnotationsFactory = (
+	getContext: () => ExtensionContext,
+	sendUserMessage: (text: string, options?: SendUserMessageOptions) => void,
+) => ExtensionAnnotationsAPI;
 
 export interface ExtensionContext {
 	/** UI methods for user interaction */
