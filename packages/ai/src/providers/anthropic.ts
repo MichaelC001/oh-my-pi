@@ -2906,7 +2906,7 @@ const streamAnthropicOnce = (
 					}
 					if (carriesLegacyCompactionEdit(params)) {
 						injectedClientBetaHeaders = mergeAnthropicBetaHeader(
-							injectedClientBetaHeaders ?? mergedCallerHeaders,
+							injectedClientBetaHeaders ?? callerBetaBaseHeaders(),
 							LEGACY_COMPACTION_BETA,
 						);
 					}
