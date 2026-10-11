@@ -16,6 +16,9 @@
 
 - Fixed macOS window listing, `ax()`, `find()` and element clicks refusing without Screen Recording permission, which now only screenshots and display listing need (without it, other apps' window titles are blank), and missing windows behind the 48 frontmost ([#15158](https://github.com/can1357/oh-my-pi/pull/15158) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed macOS `menu.items()` and `menu.select()` failing with `AxFailed` on menus that hold an item whose title cannot be read, such as the Tags row in Finder's File menu and a row of Preview's Tools menu; such items are now skipped like separators ([#15223](https://github.com/can1357/oh-my-pi/pull/15223) by [@will-bogusz](https://github.com/will-bogusz))
+### Changed
+
+- Sped up macOS accessibility reads (`ax()`, `find()` and single-element reads) by fetching each element's attributes in one round trip to the app ([#15275](https://github.com/can1357/oh-my-pi/pull/15275) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.8] - 2026-10-10
 
