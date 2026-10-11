@@ -314,7 +314,12 @@ import {
 	semanticToolResult,
 } from "./checkpoint-entries";
 import type { ClientBridge } from "./client-bridge";
-import { type ClaudeResetAction, type ClaudeResetPlan, planClaudeResetRedemptions } from "./claude-auto-reset";
+import {
+	type ClaudeResetAction,
+	type ClaudeResetPlan,
+	claudeResetStatusesFromReports,
+	planClaudeResetRedemptions,
+} from "./claude-auto-reset";
 import {
 	type CodexAutoRedeemCoordinator,
 	type CodexResetAction,
@@ -13098,6 +13103,8 @@ export class AgentSession implements SettingsScope {
 	 * consent independently. Last-chance expiry checks remain active even with
 	 * the broader salvage horizon disabled. Every candidate is refreshed through
 	 * its live listing before spend; a failed listing cannot fall back to stale usage.
+	 * Claude finds its candidates in the usage reports' reset inventory first, so a
+	 * sweep with nothing to salvage lists no Claude account.
 	 */
 	#maybeScheduleResetSweep(reports: UsageReport[]): void {
 		const coordinator = this.#resetCoordinator;
@@ -13134,8 +13141,22 @@ export class AgentSession implements SettingsScope {
 			}
 			if (claudeEnabled) {
 				try {
-					const statuses = await this.listResetCredits(AbortSignal.timeout(10_000), "anthropic");
-					const plan = this.#planClaudeResets("sweep", reports, statuses, coordinator);
+					const accounts = this.#modelRegistry.authStorage.oauth.accounts("anthropic", this.sessionId);
+					const candidates = this.#planClaudeResets(
+						"sweep",
+						reports,
+						claudeResetStatusesFromReports(accounts, reports),
+						coordinator,
+					);
+					const plan =
+						candidates.actions.length > 0
+							? this.#planClaudeResets(
+									"sweep",
+									reports,
+									await this.listResetCredits(AbortSignal.timeout(10_000), "anthropic"),
+									coordinator,
+								)
+							: candidates;
 					if (
 						plan.actions.length > 0 &&
 						(!shouldPromptCodexAutoRedeem(claudeCfg.autoRedeem) ||
