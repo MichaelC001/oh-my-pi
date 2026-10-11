@@ -1810,6 +1810,7 @@ export class AgentSession implements SettingsScope {
 			streamingEditAbortTriggered: () => this.#streamingEditGuard.abortTriggered,
 			promptGeneration: () => this.#promptGeneration,
 			promptSequence: () => this.#promptSequence,
+			unexpectedStopAbortSignal: () => this.#postPromptTasksAbortController.signal,
 			sessionId: () => this.sessionId,
 			emitSessionEvent: event => this.#emitSessionEvent(event),
 			scheduleAgentContinue: options => this.#scheduleAgentContinue(options),
@@ -1831,6 +1832,7 @@ export class AgentSession implements SettingsScope {
 		this.#recovery = new TurnRecovery(recoveryHost, {
 			initialRetryFallback: config.initialRetryFallback,
 			deferFallbackChainValidation: this.#fallbackChainValidationDeferred,
+			unexpectedStopJudgeTimeoutMs: config.unexpectedStopJudgeTimeoutMs,
 		});
 		this.#detachUsageBeforeQueueDequeue = this.agent.addBeforeQueuedMessageDequeueHook(async signal => {
 			if (
