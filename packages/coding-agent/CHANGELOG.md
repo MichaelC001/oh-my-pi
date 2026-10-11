@@ -175,6 +175,7 @@
 ### Added
 
 - Added per-model auto-compaction points: the `/models` preview shows where each model compacts, and in the Roles view `k` (or the **Compaction limit** button) sets it for the selected role's or fallback's model (`90000`, `90k`, `1M`, `80%`; empty resets). Also configurable as `compaction.modelThresholds` with `provider/model-id` or `provider/*` keys ([#14952](https://github.com/can1357/oh-my-pi/pull/14952) by [@H4vC](https://github.com/H4vC))
+- `queue_update` events and the `get_state` queue snapshot now carry a `liveSteered` count: the leading `steering` entries are live steering already sent into the streaming response, which `remove_queued_message` cannot reach (refs #13798) ([#14821](https://github.com/can1357/oh-my-pi/pull/14821) by [@jchanghong023](https://github.com/jchanghong023)).
 
 ### Fixed
 
