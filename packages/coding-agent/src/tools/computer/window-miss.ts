@@ -18,13 +18,13 @@ export function describeWindowMiss(windows: readonly DesktopWindow[], app: strin
 	const apps = [...byApp.keys()].sort((left, right) => rank(left) - rank(right) || left.localeCompare(right));
 	const lines = apps.slice(0, MAX_APPS).map(name => {
 		const group = byApp.get(name)!;
-		const titled = group.filter(window => window.title.trim() !== "");
+		// Titled windows first; untitled ones still list their ids, since macOS without Screen Recording blanks other apps' titles.
+		const ordered = group.toSorted((left, right) => Number(!left.title.trim()) - Number(!right.title.trim()));
 		const limit = matched(name) ? WINDOWS_PER_MATCHED_APP : WINDOWS_PER_APP;
-		const entries = titled
+		const entries = ordered
 			.slice(0, limit)
 			.map(window => `${window.id} ${JSON.stringify(truncate(window.title, MAX_TITLE_CHARS))}`);
-		if (titled.length > limit) entries.push(`${titled.length - limit} more`);
-		if (group.length > titled.length) entries.push(`${group.length - titled.length} untitled`);
+		if (ordered.length > limit) entries.push(`${ordered.length - limit} more`);
 		return `- ${name}: ${entries.join(", ")}`;
 	});
 	const omitted = apps.slice(MAX_APPS);

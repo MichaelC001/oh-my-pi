@@ -1438,12 +1438,21 @@ describe("computer worker round trips", () => {
 			]);
 		});
 
-		it("says the app has no window and lists every app's windows, counting untitled ones", async () => {
+		it("says the app has no window and lists every app's windows, untitled ones included", async () => {
 			const lines = (await missMessage(desktopWindows, '{ app: "Calendar" }')).split("\n");
 			expect(lines).toContain('No open window belongs to an app matching "Calendar".');
-			expect(lines).toContain('- Code: 42 "Editor", 1 untitled');
+			expect(lines).toContain('- Code: 42 "Editor", 43 ""');
 			expect(lines).toContain('- Finder: 7 "Downloads"');
 			expect(lines).toContain('- TextEdit: 8 "notes.txt", 9 "draft.txt"');
+		});
+
+		it("lists untitled windows by id after titled ones, as when macOS hides other apps' titles", async () => {
+			const blank = (id: string): DesktopWindow => ({ ...windowFixture, id, app: "Notes", title: "", focused: false });
+			const message = await missMessage(
+				[windowFixture, blank("50"), blank("51"), blank("52"), { ...blank("53"), title: "Inbox" }],
+				'"404"',
+			);
+			expect(message.split("\n")).toContain('- Notes: 53 "Inbox", 50 "", 51 "", 1 more');
 		});
 
 		it("bounds the listing on a desktop with many apps and long titles", async () => {
