@@ -109,6 +109,10 @@
 - The `cfg://` settings approval prompt now honors `ask.timeout` instead of always expiring after 10 seconds; at the default it waits indefinitely, like `ask` ([#15080](https://github.com/can1357/oh-my-pi/issues/15080))
 - The `cfg://` settings approval prompt now honors `ask.timeout` instead of always expiring after 10 seconds; at the default it waits indefinitely, like `ask` ([#15085](https://github.com/can1357/oh-my-pi/pull/15085) by [@danzaio](https://github.com/danzaio), fixes [#15080](https://github.com/can1357/oh-my-pi/issues/15080))
 - Fixed resumed Cursor sessions losing earlier reasoning: session files keep the Cursor server records omp sends back byte-exact, exempt from the 500,000-character truncation, so a resume never sends a cut-off record (a turn whose own tool result was truncated is rebuilt from its content instead) ([#15154](https://github.com/can1357/oh-my-pi/pull/15154) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed `read skill://…` reporting `Unknown skill` for a skill an MCP server advertises under that URI (Figma's `skill://figma/figma-use/SKILL.md`); line selectors work and local skills keep priority ([#14977](https://github.com/can1357/oh-my-pi/pull/14977) by [@sandboiii](https://github.com/sandboiii))
+- Fixed `omp read` skipping MCP resources that appear after other entries in a list, and starting MCP servers for reads that never need them ([#14977](https://github.com/can1357/oh-my-pi/pull/14977) by [@sandboiii](https://github.com/sandboiii))
+- Fixed a stalled MCP server handshake (and its server process) outliving `omp read`, `/mcp reload`, and session end ([#14977](https://github.com/can1357/oh-my-pi/pull/14977) by [@sandboiii](https://github.com/sandboiii))
+- Fixed MCP resource reads reporting an advertised resource as missing while its server's catalog was still loading ([#14977](https://github.com/can1357/oh-my-pi/pull/14977) by [@sandboiii](https://github.com/sandboiii))
 
 ## [18.8.7] - 2026-10-09
 
