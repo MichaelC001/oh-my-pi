@@ -5,6 +5,9 @@
 ### Added
 
 - Enabled `supports-prompt-cache-key` for the `mistral` provider so openai-completions requests to `api.mistral.ai` carry the session's `prompt_cache_key`, increasing cache hits and reducing billed uncached input tokens on Mistral models ([#15079](https://github.com/can1357/oh-my-pi/pull/15079) by [@richardotomislav](https://github.com/richardotomislav))
+- Added `max-image-dimension` and `max-image-payload-bytes` compat axes so an Anthropic-compatible host whose image limits differ from the canonical API can override them instead of inheriting 8000px and 10 MB ([#10633](https://github.com/can1357/oh-my-pi/pull/10633) by [@aktanazat](https://github.com/aktanazat)).
+- Added OpenCode Zen's `jev-1.13` and `jev-1.13-free` judge models, routed to the System One judgment API (kind `judge`) instead of chat completions ([#14446](https://github.com/can1357/oh-my-pi/pull/14446) by [@jpds](https://github.com/jpds)).
+- Added the `session-header` compat axis; the `litellm` provider declares `x-litellm-session-id`, which carries the conversation session id independent of prompt caching ([#15096](https://github.com/can1357/oh-my-pi/pull/15096) by [@occ](https://github.com/occ))
 
 ### Fixed
 
@@ -20,7 +23,6 @@
 ### Fixed
 
 - Fixed Devin's discovered models not marking the account's default model, the one Devin's own CLI starts the account on (SWE-2 High on Pro, SWE-1.6 Slow on Free); when it is an effort lane of a family, the family starts at that effort. Cursor's discovered models no longer carry that marker, so Cursor keeps its existing startup selection ([#15115](https://github.com/can1357/oh-my-pi/pull/15115) by [@will-bogusz](https://github.com/will-bogusz))
-- Added the `session-header` compat axis; the `litellm` provider declares `x-litellm-session-id`, which carries the conversation session id independent of prompt caching ([#15096](https://github.com/can1357/oh-my-pi/pull/15096) by [@occ](https://github.com/occ))
 
 ## [18.8.7] - 2026-10-09
 
@@ -53,7 +55,6 @@
 
 - Fixed Claude Haiku 5.5 on Cursor showing as unpriced; it now uses Cursor's $0.10/$0.50 rate card and 5x long-context tier above 100K input tokens ([#14890](https://github.com/can1357/oh-my-pi/pull/14890) by [@eggpeat](https://github.com/eggpeat)).
 - Fixed Claude Haiku 5.5 on GitHub Copilot pricing cache reads and writes at $0 on both the standard and `-1m` long-context rows, and the `-1m` row billing the 5x long-context band a second time above 100K input tokens ([#14890](https://github.com/can1357/oh-my-pi/pull/14890) by [@eggpeat](https://github.com/eggpeat)).
-- Added OpenCode Zen's `jev-1.13` and `jev-1.13-free` judge models, routed to the System One judgment API (kind `judge`) instead of chat completions ([#14446](https://github.com/can1357/oh-my-pi/pull/14446) by [@jpds](https://github.com/jpds)).
 
 ## [18.8.4] - 2026-10-08
 
@@ -259,7 +260,6 @@
 ### Fixed
 
 - Fixed missing thinking levels, image input, and prices for Command Code models ([#13666](https://github.com/can1357/oh-my-pi/pull/13666) by [@riicodespretty](https://github.com/riicodespretty))
-- Added `max-image-dimension` and `max-image-payload-bytes` compat axes so an Anthropic-compatible host whose image limits differ from the canonical API can override them instead of inheriting 8000px and 10 MB ([#10633](https://github.com/can1357/oh-my-pi/pull/10633) by [@aktanazat](https://github.com/aktanazat)).
 
 ## [18.4.2] - 2026-09-28
 

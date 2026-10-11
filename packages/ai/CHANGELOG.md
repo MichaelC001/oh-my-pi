@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the `retainTextSignature` option from `consumeGoogleStream` and `streamGoogleGenAI`; every Google route now keeps text reply signatures ([#15152](https://github.com/can1357/oh-my-pi/pull/15152) by [@will-bogusz](https://github.com/will-bogusz))
+
 ### Added
 
 - Exported `matchesReplacementCredential` and `isSameOAuthAccount`, which tell whether storing a credential replaces an existing account row and whether two credentials belong to the same account ([#14901](https://github.com/can1357/oh-my-pi/pull/14901) by [@will-bogusz](https://github.com/will-bogusz))
@@ -12,6 +16,13 @@
 - Fixed Codex WebSocket prewarm to accept an optional service tier and send the model/tier routing hint consistently with normal requests, preserving omitted and explicit service-tier requests ([#15022](https://github.com/can1357/oh-my-pi/pull/15022) by [@xiangnan0811](https://github.com/xiangnan0811)).
 - Fixed the OAuth sign-in result page breaking or rendering injected markup when a provider error or callback value contains `</script>` or `$` replacement sequences ([#15037](https://github.com/can1357/oh-my-pi/pull/15037) by [@BAKocska](https://github.com/BAKocska)).
 - Fixed Anthropic requests failing with 400 "All tools cannot be deferred" when a conversation that had no tools gains them (`omp -p --no-tools`, then `omp -c`), or a resumed session keeps none of its earlier tools ([#15233](https://github.com/can1357/oh-my-pi/pull/15233) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed Anthropic requests failing with HTTP 400 `At least one of the image dimensions exceed max allowed size: 8000 pixels` when a tall screenshot sat in history; every image now respects the host's per-side image limit instead of only requests carrying more than 20 images ([#10633](https://github.com/can1357/oh-my-pi/pull/10633) by [@aktanazat](https://github.com/aktanazat)).
+- Fixed Anthropic requests failing with HTTP 400 `image exceeds 10 MB maximum` when a dense screenshot sat in history; oversized image payloads are now re-encoded down to the host's byte limit, at full resolution when re-encoding alone is enough ([#10633](https://github.com/can1357/oh-my-pi/pull/10633) by [@aktanazat](https://github.com/aktanazat)).
+- An Anthropic-compatible endpoint that rejects `cache_control` with a 400 no longer fails the turn. The request is replayed without prompt-cache breakpoints, the rejection is remembered for the rest of the session per endpoint and model, the prompt-cache betas are dropped alongside it, and the turn reports `prompt-cache` in `disabledFeatures`. An endpoint that takes the field but refuses `ttl`/`scope` sends the same 400, so a request that asked for either is first replayed with every breakpoint intact and those options removed; that succeeding keeps 5m caching on for the session and reports `prompt-cache-retention` instead ([#11812](https://github.com/can1357/oh-my-pi/pull/11812) by [@camjac251](https://github.com/camjac251)).
+- LiteLLM proxy logs now group requests by omp conversation instead of showing a separate session for each request ([#8836](https://github.com/can1357/oh-my-pi/issues/8836), [#15096](https://github.com/can1357/oh-my-pi/pull/15096) by [@occ](https://github.com/occ)).
+- Fixed Gemini answers echoing fenced `thinking` blocks on Google, Vertex, Antigravity and Gemini CLI: a model's own earlier thinking (Gemini, and gpt-oss on Antigravity) went back as visible text instead of as thoughts ([#15152](https://github.com/can1357/oh-my-pi/pull/15152) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed Gemini text replies losing their signature on Google, Vertex, Antigravity, Gemini CLI and Factory Droid, so the next request sends it back as Google's own clients do ([#15152](https://github.com/can1357/oh-my-pi/pull/15152) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed Cursor models losing the reasoning Cursor's server recorded for their earlier turns: a turn now keeps those records, signed and redacted reasoning included, and sends them back unchanged to the same model on the same route, also after a resume ([#15154](https://github.com/can1357/oh-my-pi/pull/15154) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.9] - 2026-10-10
 
@@ -27,20 +38,6 @@
 - Fixed truncated Factory Droid Gemini responses ending as a hard error or a half-received tool call instead of being retried ([#15103](https://github.com/can1357/oh-my-pi/pull/15103) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed Factory Droid Gemini ignoring an error the server reports mid-response, which hid its status and retried errors that cannot succeed ([#15103](https://github.com/can1357/oh-my-pi/pull/15103) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed resumed OpenAI Responses sessions (xAI, Factory Droid, OpenAI and other hosts) dropping all earlier encrypted reasoning on their first request; GitHub Copilot still rebuilds history until its first response ([#15148](https://github.com/can1357/oh-my-pi/pull/15148) by [@will-bogusz](https://github.com/will-bogusz))
-### Fixed
-
-- Fixed Cursor models losing the reasoning Cursor's server recorded for their earlier turns: a turn now keeps those records, signed and redacted reasoning included, and sends them back unchanged to the same model on the same route, also after a resume ([#15154](https://github.com/can1357/oh-my-pi/pull/15154) by [@will-bogusz](https://github.com/will-bogusz))
-### Breaking Changes
-
-- Removed the `retainTextSignature` option from `consumeGoogleStream` and `streamGoogleGenAI`; every Google route now keeps text reply signatures ([#15152](https://github.com/can1357/oh-my-pi/pull/15152) by [@will-bogusz](https://github.com/will-bogusz))
-
-### Fixed
-
-- Fixed Gemini answers echoing fenced `thinking` blocks on Google, Vertex, Antigravity and Gemini CLI: a model's own earlier thinking (Gemini, and gpt-oss on Antigravity) went back as visible text instead of as thoughts ([#15152](https://github.com/can1357/oh-my-pi/pull/15152) by [@will-bogusz](https://github.com/will-bogusz))
-- Fixed Gemini text replies losing their signature on Google, Vertex, Antigravity, Gemini CLI and Factory Droid, so the next request sends it back as Google's own clients do ([#15152](https://github.com/can1357/oh-my-pi/pull/15152) by [@will-bogusz](https://github.com/will-bogusz))
-### Fixed
-
-- LiteLLM proxy logs now group requests by omp conversation instead of showing a separate session for each request ([#8836](https://github.com/can1357/oh-my-pi/issues/8836), [#15096](https://github.com/can1357/oh-my-pi/pull/15096) by [@occ](https://github.com/occ)).
 
 ## [18.8.7] - 2026-10-09
 
@@ -270,10 +267,6 @@
 - xAI OAuth accounts with active weekly credits no longer switch away solely because an uncertain monthly counter exceeds its limit ([#13806](https://github.com/can1357/oh-my-pi/issues/13806)).
 - Cursor retries after a rejected conversation now keep the tool calls and results already completed in the turn, instead of re-sending the last message and redoing that work ([#11613](https://github.com/can1357/oh-my-pi/pull/11613) by [@will-bogusz](https://github.com/will-bogusz)).
 
-### Fixed
-
-- An Anthropic-compatible endpoint that rejects `cache_control` with a 400 no longer fails the turn. The request is replayed without prompt-cache breakpoints, the rejection is remembered for the rest of the session per endpoint and model, the prompt-cache betas are dropped alongside it, and the turn reports `prompt-cache` in `disabledFeatures`. An endpoint that takes the field but refuses `ttl`/`scope` sends the same 400, so a request that asked for either is first replayed with every breakpoint intact and those options removed; that succeeding keeps 5m caching on for the session and reports `prompt-cache-retention` instead ([#11812](https://github.com/can1357/oh-my-pi/pull/11812) by [@camjac251](https://github.com/camjac251)).
-
 ## [18.4.4] - 2026-09-29
 
 ### Added
@@ -302,11 +295,6 @@
 ### Changed
 
 - Reduced per-token CPU and allocations while streaming: the leaked-thinking scanner used for OpenAI-compatible and custom endpoints no longer allocates per character, chat-completions and Bedrock look up a delta's content block in constant time, Google, Gemini CLI, Codex, and chat-completions streams skip raw SSE line capture unless an `onSseEvent` listener is attached, and event streams drain backlogs without `Array#shift` ([#13650](https://github.com/can1357/oh-my-pi/pull/13650) by [@H4vC](https://github.com/H4vC)).
-
-### Fixed
-
-- Fixed Anthropic requests failing with HTTP 400 `At least one of the image dimensions exceed max allowed size: 8000 pixels` when a tall screenshot sat in history; every image now respects the host's per-side image limit instead of only requests carrying more than 20 images ([#10633](https://github.com/can1357/oh-my-pi/pull/10633) by [@aktanazat](https://github.com/aktanazat)).
-- Fixed Anthropic requests failing with HTTP 400 `image exceeds 10 MB maximum` when a dense screenshot sat in history; oversized image payloads are now re-encoded down to the host's byte limit, at full resolution when re-encoding alone is enough ([#10633](https://github.com/can1357/oh-my-pi/pull/10633) by [@aktanazat](https://github.com/aktanazat)).
 
 ## [18.4.2] - 2026-09-28
 
