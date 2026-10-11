@@ -14,8 +14,10 @@
  *   {@link SALVAGE_MIN_USED_FRACTION} used, so redeeming restores real quota.
  *   As a last chance, credits expiring within {@link IMMINENT_RESET_EXPIRY_MS}
  *   are attempted even with a zero/shorter horizon or zero/unknown usage.
- *   This fallback ignores non-terminal deferrals, but keeps consent, live
- *   credit eligibility, terminal-attempt dedupe, and the account cooldown.
+ *   This fallback ignores non-terminal deferrals, but keeps live credit
+ *   eligibility, terminal-attempt dedupe, and the account cooldown. It still
+ *   needs consent, except that a host with no prompt UI spends it while
+ *   auto-redeem is unset (see {@link headlessApprovedResetActions}).
  *   The `keepCredits` reserve is deliberately ignored here — reserving a
  *   credit that is about to expire preserves nothing. If the window resets
  *   naturally before the credit expires, broader salvage skips the mostly-free
@@ -75,7 +77,7 @@ export const WINDOW_EXHAUSTED_MIN_FRACTION = 0.999;
 export const MAX_PLAUSIBLE_WEEKLY_REMAINING_MS = 7 * 24 * 3_600_000 + 60 * 60_000;
 /** A 5h reset can never be more than one window length (5h) away; +1h slack for skew. */
 export const MAX_PLAUSIBLE_PRIMARY_REMAINING_MS = 5 * 3_600_000 + 60 * 60_000;
-/** Shared last-chance expiry horizon; bypasses salvage usage thresholds and non-terminal deferrals, not consent or cooldown. */
+/** Shared last-chance expiry horizon; bypasses salvage usage thresholds, non-terminal deferrals and, with no prompt UI, unset consent; never cooldown. */
 export const IMMINENT_RESET_EXPIRY_MS = 5 * 60_000;
 /** Below this usage on BOTH chat windows, non-imminent salvage restores too little to bother. */
 export const SALVAGE_MIN_USED_FRACTION = 0.25;
@@ -97,6 +99,23 @@ export function shouldEvaluateCodexAutoRedeem(mode: ResetAutoRedeemMode): boolea
 
 export function shouldPromptCodexAutoRedeem(mode: ResetAutoRedeemMode): boolean {
 	return mode === "unset";
+}
+
+/**
+ * Planned spends a host with no prompt UI may make while auto-redeem is unset:
+ * only a credit expiring within {@link IMMINENT_RESET_EXPIRY_MS} qualifies,
+ * whether a salvage or a restore spends it, since nobody can be asked before it
+ * is lost. The approved target names that credit, so redeem cannot pick a later one.
+ */
+export function headlessApprovedResetActions<T extends Pick<CodexResetAction, "expiresInMs" | "target" | "creditId">>(
+	actions: readonly T[],
+): readonly T[] {
+	const approved: T[] = [];
+	for (const action of actions) {
+		if (action.expiresInMs === undefined || action.expiresInMs > IMMINENT_RESET_EXPIRY_MS) continue;
+		approved.push(action.creditId ? { ...action, target: { ...action.target, creditId: action.creditId } } : action);
+	}
+	return approved;
 }
 
 /** What woke the planner. `sweep` may only salvage; `blocked` may also restore. */
@@ -179,8 +198,10 @@ export interface CodexResetAction {
 	salvageWindow?: "5h" | "weekly";
 	/** `expiring-credit`: used fraction of {@link CodexResetAction.salvageWindow}. */
 	salvageUsedFraction?: number;
-	/** `expiring-credit`: ms until the credit expires. */
+	/** Remaining lifetime, at planning time, of the soonest available credit (the one a redeem spends). */
 	expiresInMs?: number;
+	/** Id of the credit {@link CodexResetAction.expiresInMs} describes, when the listing reports one. */
+	creditId?: string;
 	/** True when this is the session's active account. */
 	active: boolean;
 }
@@ -199,18 +220,18 @@ export interface CodexResetPlan {
 	skipped: CodexResetSkip[];
 }
 
-/** Soonest future expiry (epoch ms) among available credits, or undefined. */
-function soonestCreditExpiryMs(
+/** Soonest future-expiring available credit, or undefined. */
+function soonestAvailableCredit(
 	credits: readonly UsageResetCreditDetail[] | undefined,
 	nowMs: number,
-): number | undefined {
-	let soonest: number | undefined;
+): { id: string | undefined; expiresAtMs: number } | undefined {
+	let soonest: { id: string | undefined; expiresAtMs: number } | undefined;
 	for (const credit of credits ?? []) {
 		if ((credit.status ?? "available") !== "available") continue;
 		if (!credit.expiresAt) continue;
 		const expiry = Date.parse(credit.expiresAt);
 		if (Number.isNaN(expiry) || expiry <= nowMs) continue;
-		if (soonest === undefined || expiry < soonest) soonest = expiry;
+		if (soonest === undefined || expiry < soonest.expiresAtMs) soonest = { id: credit.id, expiresAtMs: expiry };
 	}
 	return soonest;
 }
@@ -233,6 +254,7 @@ interface AccountSnapshot {
 	windows: CodexChatWindowSnapshot[];
 	limitReached: boolean;
 	creditExpiresAtMs: number | undefined;
+	creditId: string | undefined;
 }
 
 function classifyChatWindow(limit: UsageLimit, fallback: CodexChatWindow): CodexChatWindow {
@@ -330,6 +352,7 @@ export function planCodexResetRedemptions(input: CodexResetPlanInput): CodexRese
 		if (weekly) windows.push(snapshotChatWindow(weekly, "weekly"));
 		const baseLabel = email ?? accountId ?? accountKey;
 		const label = orgId && orgId !== baseLabel ? `${baseLabel} (${orgId})` : baseLabel;
+		const soonestCredit = soonestAvailableCredit(report.resetCredits?.credits, nowMs);
 		snapshots.push({
 			accountKey,
 			target: {
@@ -344,7 +367,8 @@ export function planCodexResetRedemptions(input: CodexResetPlanInput): CodexRese
 			availableCount: available,
 			windows,
 			limitReached: report.metadata?.limitReached === true,
-			creditExpiresAtMs: soonestCreditExpiryMs(report.resetCredits?.credits, nowMs),
+			creditExpiresAtMs: soonestCredit?.expiresAtMs,
+			creditId: soonestCredit?.id,
 		});
 	}
 
@@ -483,6 +507,7 @@ export function planCodexResetRedemptions(input: CodexResetPlanInput): CodexRese
 				remainingMs: best.remainingMs,
 				expiresInMs:
 					best.snapshot.creditExpiresAtMs === undefined ? undefined : best.snapshot.creditExpiresAtMs - nowMs,
+				creditId: best.snapshot.creditId,
 				blockedWindows: best.blockedWindows,
 				active: best.snapshot.active,
 			};
@@ -548,6 +573,7 @@ export function planCodexResetRedemptions(input: CodexResetPlanInput): CodexRese
 			salvageWindow: fullestWindow?.window,
 			salvageUsedFraction,
 			expiresInMs: expiresAtMs - nowMs,
+			creditId: snapshot.creditId,
 			active: snapshot.active,
 		});
 	}
@@ -620,7 +646,12 @@ export function overlayLiveResetCredits(
 				availableCount: status.availableCount,
 				credits: status.credits
 					.filter(credit => (credit.status ?? "available") === "available")
-					.map(credit => ({ grantedAt: credit.grantedAt, expiresAt: credit.expiresAt, status: credit.status })),
+					.map(credit => ({
+						id: credit.id,
+						grantedAt: credit.grantedAt,
+						expiresAt: credit.expiresAt,
+						status: credit.status,
+					})),
 			},
 		};
 	});
@@ -655,6 +686,7 @@ export function overlayLiveResetCredits(
 					credits: active.credits
 						.filter(credit => (credit.status ?? "available") === "available")
 						.map(credit => ({
+							id: credit.id,
 							grantedAt: credit.grantedAt,
 							expiresAt: credit.expiresAt,
 							status: credit.status,

@@ -329,6 +329,7 @@ import {
 	ATTEMPT_COOLDOWN_MS,
 	resetAccountLockKey,
 	defaultCodexAutoRedeemCoordinator,
+	headlessApprovedResetActions,
 	isTerminalRedeemOutcome,
 	overlayLiveResetCredits,
 	planCodexResetRedemptions,
@@ -486,6 +487,7 @@ import {
 	cfgTierGoogle,
 	cfgTierOpenai,
 	cfgProvidersAnthropicSlowMode,
+	type ResetAutoRedeemMode,
 } from "./settings";
 import { type AnthropicSlowModeController, anthropicSlowModeLanes, formatUsageLimitLabel } from "./anthropic-slow-mode";
 import type { UsageLimitState } from "./usage-limit";
@@ -1007,6 +1009,8 @@ export class AgentSession implements SettingsScope {
 	#modelRegistry: ModelRegistry;
 	/** Creation-time permission for switchSession to keep the current model when a target's saved model is unrestorable. */
 	readonly #allowSessionModelFallback: boolean;
+	/** Creation-time: false when the extension UI context cannot reach a human (ACP without form elicitation). */
+	readonly #interactivePrompts: boolean;
 	#usageFallbackConfirmer: UsageFallbackConfirmer | undefined;
 	#usagePreflightAbortControllers = new Set<AbortController>();
 	/** In-flight vision descriptions that gate prompt admission; abort() cancels them. */
@@ -1646,6 +1650,7 @@ export class AgentSession implements SettingsScope {
 		this.memoryEnabled = config.memoryEnabled ?? true;
 		this.#modelRegistry = config.modelRegistry;
 		this.#allowSessionModelFallback = config.allowSessionModelFallback === true;
+		this.#interactivePrompts = config.interactivePrompts !== false;
 		this.#extensionRoots =
 			config.extensionRoots ??
 			(() => ({
@@ -12636,31 +12641,41 @@ export class AgentSession implements SettingsScope {
 		return [...codex, ...claude];
 	}
 	/**
-	 * Ask before a provider's first automatic spend. Consent is persisted in
-	 * that provider's independent settings group; headless hosts only receive a
-	 * one-shot notice and never spend while the mode is unset.
+	 * Ask before a provider's first automatic spend and return the approved
+	 * actions. Consent is persisted in that provider's independent settings
+	 * group; a host that cannot prompt (no extension UI, or one whose prompts
+	 * cannot reach a human) spends only credits about to expire and gets a
+	 * one-shot notice for the rest while the mode is unset.
 	 */
 	async #confirmAutoRedeem(
 		provider: "openai-codex" | "anthropic",
 		actions: (CodexResetAction | ClaudeResetAction)[],
 		coordinator: CodexAutoRedeemCoordinator,
-	): Promise<boolean> {
-		const first = actions[0];
-		if (!first) return false;
+	): Promise<readonly (CodexResetAction | ClaudeResetAction)[]> {
+		if (actions.length === 0) return [];
 		const providerLabel = provider === "anthropic" ? "Claude" : "Codex";
 		const settingsKey = provider === "anthropic" ? "claudeResets.autoRedeem" : "codexResets.autoRedeem";
 		const source = provider === "anthropic" ? "claude-auto-reset" : "codex-auto-reset";
 		const runner = this.#extensionRunner;
-		if (!runner?.hasUI()) {
-			if (!coordinator.notifiedKeys.has(first.attemptKey)) {
-				coordinator.notifiedKeys.add(first.attemptKey);
+		if (!runner?.hasUI() || !this.#interactivePrompts) {
+			const approved = headlessApprovedResetActions(actions);
+			const waiting = actions.find(action => !approved.some(spend => spend.attemptKey === action.attemptKey));
+			if (waiting && !coordinator.notifiedKeys.has(waiting.attemptKey)) {
+				coordinator.notifiedKeys.add(waiting.attemptKey);
 				this.emitNotice(
 					"warning",
 					`Saved ${providerLabel} resets are eligible to spend, but auto-redeem is unset and no prompt UI is available. Run \`/usage reset\` or set ${settingsKey}.`,
 					source,
 				);
 			}
-			return false;
+			for (const action of approved) {
+				this.emitNotice(
+					"info",
+					`Spending a saved ${providerLabel} reset for ${action.label} before it expires in ${formatDuration(action.expiresInMs ?? 0)}; auto-redeem is unset and no prompt UI is available. Set ${settingsKey} to no to let resets expire instead.`,
+					source,
+				);
+			}
+			return approved;
 		}
 
 		const lines = actions.map(action => {
@@ -12697,7 +12712,7 @@ export class AgentSession implements SettingsScope {
 			if (choice === "Yes") {
 				if (provider === "anthropic") cfgClaudeResetsAutoRedeem.set(this.settings, "yes");
 				else cfgCodexResetsAutoRedeem.set(this.settings, "yes");
-				return true;
+				return actions;
 			}
 			if (choice === "No") {
 				if (provider === "anthropic") cfgClaudeResetsAutoRedeem.set(this.settings, "no");
@@ -12706,7 +12721,20 @@ export class AgentSession implements SettingsScope {
 		} catch (error) {
 			logger.warn(`${source} prompt failed`, { error: String(error) });
 		}
-		return false;
+		return [];
+	}
+
+	/** Spend every planned action under `yes`, and only the confirmed ones under `unset`. */
+	async #redeemConsentedResets(
+		provider: "openai-codex" | "anthropic",
+		mode: ResetAutoRedeemMode,
+		actions: (CodexResetAction | ClaudeResetAction)[],
+		coordinator: CodexAutoRedeemCoordinator,
+	): Promise<{ restoredCredentialIds: number[]; poolLimited: boolean }> {
+		const approved = shouldPromptCodexAutoRedeem(mode)
+			? await this.#confirmAutoRedeem(provider, actions, coordinator)
+			: actions;
+		return this.#executeResetActions(provider, approved, coordinator);
 	}
 
 	#planCodexResets(
@@ -12844,7 +12872,7 @@ export class AgentSession implements SettingsScope {
 	 */
 	async #executeResetActions(
 		provider: "openai-codex" | "anthropic",
-		actions: (CodexResetAction | ClaudeResetAction)[],
+		actions: readonly (CodexResetAction | ClaudeResetAction)[],
 		coordinator: CodexAutoRedeemCoordinator,
 	): Promise<{ restoredCredentialIds: number[]; poolLimited: boolean }> {
 		const authStorage = this.#modelRegistry.authStorage;
@@ -13076,13 +13104,7 @@ export class AgentSession implements SettingsScope {
 				}
 				return { restored: false, retryAfterMs, poolLimited };
 			}
-			if (
-				shouldPromptCodexAutoRedeem(cfg.autoRedeem) &&
-				!(await this.#confirmAutoRedeem(provider, plan.actions, coordinator))
-			) {
-				return { restored: false, poolLimited };
-			}
-			const executed = await this.#executeResetActions(provider, plan.actions, coordinator);
+			const executed = await this.#redeemConsentedResets(provider, cfg.autoRedeem, plan.actions, coordinator);
 			return {
 				restored: executed.restoredCredentialIds.length > 0,
 				restoredCredentialIds: executed.restoredCredentialIds,
@@ -13128,13 +13150,7 @@ export class AgentSession implements SettingsScope {
 					const effectiveReports = overlayLiveResetCredits(reports, statuses);
 					const identity = this.#modelRegistry.authStorage.oauth.identity("openai-codex", this.sessionId);
 					const plan = this.#planCodexResets("sweep", effectiveReports, identity, coordinator);
-					if (
-						plan.actions.length > 0 &&
-						(!shouldPromptCodexAutoRedeem(codexCfg.autoRedeem) ||
-							(await this.#confirmAutoRedeem("openai-codex", plan.actions, coordinator)))
-					) {
-						await this.#executeResetActions("openai-codex", plan.actions, coordinator);
-					}
+					await this.#redeemConsentedResets("openai-codex", codexCfg.autoRedeem, plan.actions, coordinator);
 				} catch (error) {
 					logger.warn("codex-auto-reset: salvage listing failed", { error: String(error) });
 				}
@@ -13157,12 +13173,8 @@ export class AgentSession implements SettingsScope {
 									coordinator,
 								)
 							: candidates;
-					if (
-						plan.actions.length > 0 &&
-						(!shouldPromptCodexAutoRedeem(claudeCfg.autoRedeem) ||
-							(await this.#confirmAutoRedeem("anthropic", plan.actions, coordinator)))
-					) {
-						await this.#executeResetActions("anthropic", plan.actions, coordinator);
+					if (plan.actions.length > 0) {
+						await this.#redeemConsentedResets("anthropic", claudeCfg.autoRedeem, plan.actions, coordinator);
 					}
 				} catch (error) {
 					logger.warn("claude-auto-reset: salvage listing failed", { error: String(error) });

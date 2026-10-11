@@ -18,12 +18,13 @@
  *   consent, live credit eligibility, terminal dedupe, and account cooldown.
  */
 import { describe, expect, it } from "bun:test";
-import type { UsageReport } from "@oh-my-pi/pi-ai";
+import type { ResetCreditTarget, UsageReport } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	ATTEMPT_COOLDOWN_MS,
 	blockedAttemptKey,
 	type CodexResetPlanInput,
+	headlessApprovedResetActions,
 	IMMINENT_RESET_EXPIRY_MS,
 	isTerminalRedeemOutcome,
 	planCodexResetRedemptions,
@@ -891,6 +892,18 @@ describe("codexResets policy plumbing", () => {
 		expect(isTerminalRedeemOutcome("nothing_to_reset")).toBe(false);
 		expect(isTerminalRedeemOutcome("http_500")).toBe(false);
 		expect(isTerminalRedeemOutcome("credit_list_failed")).toBe(false);
+	});
+
+	it("approves only resets expiring within five minutes for a headless unset host, pinned to that credit", () => {
+		const target: ResetCreditTarget = { provider: "openai-codex", credentialId: CREDENTIAL_ID };
+		const actions = [
+			{ target, creditId: "dying", expiresInMs: IMMINENT_RESET_EXPIRY_MS },
+			{ target, creditId: "later", expiresInMs: IMMINENT_RESET_EXPIRY_MS + 1 },
+			{ target, expiresInMs: undefined },
+		];
+		expect(headlessApprovedResetActions(actions)).toEqual([
+			{ ...actions[0], target: { ...target, creditId: "dying" } },
+		]);
 	});
 
 	it("migrates legacy boolean autoRedeem config to the tri-state policy", () => {
