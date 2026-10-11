@@ -456,6 +456,8 @@ export interface OpenAICompat {
 	extraBody?: Record<string, unknown>;
 	/** Request-session header that should mirror the normalized prompt-cache key. Default: unset. */
 	promptCacheSessionHeader?: "x-grok-conv-id";
+	/** Request header carrying the conversation session id, independent of prompt caching. Default: unset. */
+	sessionHeader?: "x-litellm-session-id";
 	/** Whether chat-completions payloads should include provider-specific prompt-cache markers. */
 	cacheControlFormat?: "anthropic" | undefined;
 	/**
@@ -928,6 +930,7 @@ export interface ResolvedOpenAISharedCompat {
 	emptyLengthFinishIsContextError: boolean;
 	usesOpenAIToolCallIdLimit: boolean;
 	promptCacheSessionHeader?: OpenAICompat["promptCacheSessionHeader"];
+	sessionHeader?: OpenAICompat["sessionHeader"];
 	/**
 	 * Whether this model accepts explicit OpenAI prompt-cache breakpoints.
 	 * Built catalog models always materialize this false-by-default value;
@@ -1008,6 +1011,7 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "emptyLengthFinishIsContextError"
 			| "usesOpenAIToolCallIdLimit"
 			| "promptCacheSessionHeader"
+			| "sessionHeader"
 			| "supportsPromptCacheBreakpoints"
 			| "promptCacheBreakpointTtl"
 			| "openRouterRouting"

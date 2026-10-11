@@ -38,6 +38,9 @@
 
 - Fixed Gemini answers echoing fenced `thinking` blocks on Google, Vertex, Antigravity and Gemini CLI: a model's own earlier thinking (Gemini, and gpt-oss on Antigravity) went back as visible text instead of as thoughts ([#15152](https://github.com/can1357/oh-my-pi/pull/15152) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed Gemini text replies losing their signature on Google, Vertex, Antigravity, Gemini CLI and Factory Droid, so the next request sends it back as Google's own clients do ([#15152](https://github.com/can1357/oh-my-pi/pull/15152) by [@will-bogusz](https://github.com/will-bogusz))
+### Fixed
+
+- LiteLLM proxy logs now group requests by omp conversation instead of showing a separate session for each request ([#8836](https://github.com/can1357/oh-my-pi/issues/8836), [#15096](https://github.com/can1357/oh-my-pi/pull/15096) by [@occ](https://github.com/occ)).
 
 ## [18.8.7] - 2026-10-09
 
