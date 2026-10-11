@@ -739,6 +739,32 @@ export const cfgRetryModelFallback = register({
 	},
 });
 
+export const cfgRetryFallbackOn = register({
+	id: "retry.fallbackOn",
+	type: "enum",
+	values: ["any", "usage-limit", "except-usage-limit"] as const,
+	default: "any",
+	ui: {
+		tab: "model",
+		group: "Retry & Fallback",
+		label: "Fallback Trigger",
+		description: "Which failed requests may switch to a configured fallback model",
+		options: [
+			{ value: "any", label: "Any error", description: "Every provider error may switch models" },
+			{
+				value: "usage-limit",
+				label: "Usage limits only",
+				description: "Switch only on a usage limit; retry other errors on the same model, then surface them",
+			},
+			{
+				value: "except-usage-limit",
+				label: "All but usage limits",
+				description: "Wait out or surface a usage limit; switch on other errors",
+			},
+		],
+	},
+});
+
 export const cfgRetryUsageAwareFallback = register({
 	id: "retry.usageAwareFallback",
 	type: "boolean",
@@ -846,6 +872,7 @@ export const cfgRetry = combine({
 	maxDelayMs: cfgRetryMaxDelayMs,
 	waitForUsageReset: cfgRetryWaitForUsageReset,
 	modelFallback: cfgRetryModelFallback,
+	fallbackOn: cfgRetryFallbackOn,
 	usageAwareFallback: cfgRetryUsageAwareFallback,
 	usageReservePct: cfgRetryUsageReservePct,
 	usageReservePolicy: cfgRetryUsageReservePolicy,

@@ -97,6 +97,7 @@
 - `/annotate` opens the note you are writing, a file or typed-prompt source, or (for local diff reviews) the current working-tree file in `$VISUAL` or `$EDITOR` with the external-editor key (Ctrl+G by default); a file source is saved back and its notes follow the edited text ([#15151](https://github.com/can1357/oh-my-pi/pull/15151) by [@Shadorain](https://github.com/Shadorain))
 - Added `omp usage reset`, which lists every Codex and Claude account's saved rate-limit resets by credential id (`--json` adds credit ids and expiries), and `omp usage reset <provider>/<credential id>`, which spends one without a session, from scripts and auth-broker clients too ([#15132](https://github.com/can1357/oh-my-pi/pull/15132) by [@will-bogusz](https://github.com/will-bogusz))
 - Added saved-reset expiry warnings for accounts with real usage: `omp usage` highlights Codex and Claude resets expiring within 7 days and lists those due within 24 hours with whether an interactive session will spend them and the `/usage reset` target, and the TUI warns once per conversation ([#15134](https://github.com/can1357/oh-my-pi/pull/15134) by [@will-bogusz](https://github.com/will-bogusz))
+- Added `retry.fallbackOn` so fallback chains can switch models only when the provider is out of quota (`usage-limit`) or only on other errors (`except-usage-limit`); the default `any` keeps today's behaviour ([#15125](https://github.com/can1357/oh-my-pi/pull/15125) by [@will-bogusz](https://github.com/will-bogusz))
 
 ### Changed
 
