@@ -1229,7 +1229,8 @@ export const cfgAskTimeout = register({
 		tab: "interaction",
 		group: "Notifications",
 		label: "Ask Timeout",
-		description: "Auto-select the recommended ask option after this many seconds (0 disables)",
+		description:
+			"Auto-select the recommended ask option after this many seconds (0 disables). Also bounds cfg:// approval prompts; an unanswered approval denies the write instead of auto-selecting",
 		options: [
 			{ value: "0", label: "Disabled" },
 			{ value: "15", label: "15 seconds" },
@@ -1239,6 +1240,16 @@ export const cfgAskTimeout = register({
 		],
 	},
 });
+
+/**
+ * `ask.timeout` in the milliseconds dialogs consume, or `undefined` for no
+ * deadline. Shared by the ask tool and the `cfg://` approval prompt so the
+ * setting means the same thing everywhere it is honored.
+ */
+export function askTimeoutMs(settings: Settings): number | undefined {
+	const timeoutSeconds = cfgAskTimeout.get(settings);
+	return timeoutSeconds === 0 ? undefined : timeoutSeconds * 1000;
+}
 
 export const cfgAskNotify = register({
 	id: "ask.notify",
