@@ -237,12 +237,11 @@ describe("Claude saved-reset trigger integration", () => {
 			);
 			vi.spyOn(extensionRunner, "hasUI").mockReturnValue(true);
 			vi.spyOn(extensionRunner.getUIContext(), "select").mockImplementation(options.consent);
+		} else if (options.withExtensionRunner) {
+			extensionRunner = new ExtensionRunner([], new ExtensionRuntime(), tempDir.path(), sessionManager, modelRegistry);
 		}
 		const session = new AgentSession({
 			agent,
-			extensionRunner: options.withExtensionRunner
-				? new ExtensionRunner([], new ExtensionRuntime(), tempDir.path(), sessionManager, modelRegistry)
-				: undefined,
 			sessionManager,
 			settings,
 			modelRegistry,
