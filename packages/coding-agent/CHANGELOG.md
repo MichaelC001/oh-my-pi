@@ -12,7 +12,6 @@
 
 ### Changed
 
-- `--no-ui` now also works with `--mode rpc-ui`: extensions run headless while tool UI such as the `ask` tool still reaches the host ([#13718](https://github.com/can1357/oh-my-pi/pull/13718) by [@alphastorm](https://github.com/alphastorm))
 - `computer.window(…)` misses now list the open windows by app, the requested app first, so the next call can pick an id without listing windows ([#13655](https://github.com/can1357/oh-my-pi/pull/13655) by [@will-bogusz](https://github.com/will-bogusz))
 - `omp update` on standalone binaries now downloads from Stencil's build service (build.stencil.so, overridable with `PI_BUILD_URL`) instead of GitHub releases, and fetches a small verified patch (about 6 MB instead of 200 MB) when updating from a recent version; compiled binaries also check it for the startup update notice
 - `install.sh` and `install.ps1` download the standalone binary from build.stencil.so and check its SHA-256 before installing; `--binary --ref` (`-Binary -Ref`) now takes a release tag such as `v18.8.9`. The Homebrew formula downloads from build.stencil.so too
