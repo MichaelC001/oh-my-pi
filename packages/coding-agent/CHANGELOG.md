@@ -7,6 +7,8 @@
 - Added `ctx.annotations` so extensions can submit or collect `/annotate` feedback on text and diffs ([#15260](https://github.com/can1357/oh-my-pi/pull/15260) by [@Shadorain](https://github.com/Shadorain)).
 - Added **Extra Context Files** to `/settings` → **Context** so custom instruction filenames can be configured without editing YAML ([#15252](https://github.com/can1357/oh-my-pi/pull/15252) by [@Shadorain](https://github.com/Shadorain)).
 - Added composer predictions (`composer.predictions`, off by default): after a turn completes, omp asks the session's model for your likely next message and shows it as ghost text in the empty composer; Tab or Right inserts it, typing anything else dismisses it. Each prediction is an extra billed request after every completed turn, as the setting's description says; it runs as cheaply as the model allows without losing the prompt cache (lowest effort on Claude models that take per-message effort changes, the session's thinking elsewhere), and its usage counts toward session totals and `/stats` ([#15137](https://github.com/can1357/oh-my-pi/pull/15137) by [@wolfiesch](https://github.com/wolfiesch))
+- Expose native job status and child agent identity alongside the job ID in structured `async-result` metadata for extensions, without changing rendering or cancellation delivery policy.
+- Added the `retry.waitForUsageReset` setting: when a provider reports usage-limit exhaustion with a reset time (5-hour or weekly quota windows on any provider), the session sleeps until the reset instead of failing fast past `retry.maxDelayMs`.
 
 ### Fixed
 
