@@ -1,4 +1,5 @@
 import { combine, effect, register, type Setting } from "../config/registry";
+import type { Settings } from "../config/settings";
 import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-tui/app-keybindings";
 import { cfgReadToolResultPreview } from "../tools/settings";
 import { MAGIC_KEYWORDS, type MagicKeywordId } from "./magic-keywords";

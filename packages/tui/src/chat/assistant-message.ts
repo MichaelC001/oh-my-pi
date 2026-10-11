@@ -2,7 +2,12 @@ import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-a
 import { type Component, Container } from "../tui";
 import { Image, type ImageBudget } from "../components/image";
 import { ImageProtocol, TERMINAL } from "../terminal-capabilities";
-import { type DefaultTextStyle, Markdown, type MarkdownTheme, rewriteMarkdownLinkDestinations } from "../components/markdown";
+import {
+	type DefaultTextStyle,
+	Markdown,
+	type MarkdownTheme,
+	rewriteMarkdownLinkDestinations,
+} from "../components/markdown";
 import { Spacer } from "../components/spacer";
 import { Text } from "../components/text";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
@@ -1289,14 +1294,7 @@ export class AssistantMessageComponent extends Container {
 	/** Markdown for a text or thinking block; live children and stable-row renders share it so stable rows prefix the block render. */
 	#createMarkdown(kind: StablePartKind, text: string): Markdown {
 		return kind === "text"
-			? new Markdown(
-					text,
-					1,
-					0,
-					this.#getProseTheme(),
-					this.#getProseTextStyle(),
-					0,
-				)
+			? new Markdown(text, 1, 0, this.#getProseTheme(), this.#getProseTextStyle(), 0)
 			: new Markdown(text, 1, 0, getMarkdownTheme(), {
 					color: (value: string) => theme.fg("thinkingText", value),
 					italic: true,

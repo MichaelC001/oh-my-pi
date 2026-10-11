@@ -6747,7 +6747,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Settle dismissed when the caller's turn aborts (a collab guest
 		// interrupting the agent) or when the mode stops, whichever first.
 		const signal =
-			callerSignal === undefined ? this.#dialogLifetime.signal : AbortSignal.any([callerSignal, this.#dialogLifetime.signal]);
+			callerSignal === undefined
+				? this.#dialogLifetime.signal
+				: AbortSignal.any([callerSignal, this.#dialogLifetime.signal]);
 		const choice = await this.#extensionUiController.showCollabAwareSelector(
 			`${headline}\n${request.previous} → ${request.value}${warning}`,
 			[CFG_APPROVE_SESSION, CFG_APPROVE_ONCE, CFG_DENY],
