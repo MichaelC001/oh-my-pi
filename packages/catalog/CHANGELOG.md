@@ -25,6 +25,11 @@
 
 - Fixed Devin's discovered models not marking the account's default model, the one Devin's own CLI starts the account on (SWE-2 High on Pro, SWE-1.6 Slow on Free); when it is an effort lane of a family, the family starts at that effort. Cursor's discovered models no longer carry that marker, so Cursor keeps its existing startup selection ([#15115](https://github.com/can1357/oh-my-pi/pull/15115) by [@will-bogusz](https://github.com/will-bogusz))
 - Added the `portable-reasoning` rule: a model family declares that its reasoning may move natively between hosts serving the same model (same class, family and revision), and a host can opt out. Declared for Kimi K3, DeepSeek V4, GLM 5+ and MiniMax M3; Cursor's K3 turns opt out ([#15123](https://github.com/can1357/oh-my-pi/pull/15123) by [@will-bogusz](https://github.com/will-bogusz)).
+- Added Factory Droid Claude Haiku 5.5 and Mistral Large 4 ([#15116](https://github.com/can1357/oh-my-pi/pull/15116) by [@will-bogusz](https://github.com/will-bogusz))
+
+### Changed
+
+- Changed Factory Droid to match droid 0.237: thinking Off for Claude and GPT, Azure stale-thinking recovery, EU regions for Opus, Fable and Gemini Flash, GPT-6.1 Sol routes, ungated GPT-6 Luna and DeepSeek V4.1 Flash ([#15116](https://github.com/can1357/oh-my-pi/pull/15116) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.7] - 2026-10-09
 

@@ -763,7 +763,8 @@ export interface AnthropicCompat {
 	/**
 	 * Drop the enabled `thinking` config and replayed thinking blocks when the
 	 * conversation is not thinking-led (a proxy contract for non-interleaved
-	 * budget models). Default: false.
+	 * budget models), and replay history without thinking blocks on every turn
+	 * that sends `thinking: { type: "disabled" }`. Default: false.
 	 */
 	stripThinkingHistory?: boolean;
 	/**
@@ -773,10 +774,15 @@ export interface AnthropicCompat {
 	effortBeta?: boolean;
 	/**
 	 * Wire form of a disabled-thinking turn: omit the field, send
-	 * `{ type: "disabled" }`, or keep adaptive thinking. Unset keeps the
-	 * direct-provider behavior.
+	 * `{ type: "disabled" }`, keep adaptive thinking, or send
+	 * `{ type: "between_tools" }`. Unset keeps the direct-provider behavior.
 	 */
-	disabledThinking?: "omit" | "disabled" | "adaptive";
+	disabledThinking?: "omit" | "disabled" | "adaptive" | "between-tools";
+	/**
+	 * `output_config.effort` pinned on a `between_tools` turn. Unset leaves
+	 * the turn's effort untouched.
+	 */
+	betweenToolsEffort?: "low" | "medium" | "high";
 	/** The model is a fast-mode SKU: send `speed: "fast"` with the fast-mode beta. Default: false. */
 	fastMode?: boolean;
 }
@@ -1136,6 +1142,7 @@ export type ResolvedAnthropicCompat = Required<
 		| "bedrockMessagesApi"
 		| "effortBeta"
 		| "disabledThinking"
+		| "betweenToolsEffort"
 		| "stripThinkingHistory"
 		| "fastMode"
 		| "maxImageDimension"
@@ -1146,7 +1153,9 @@ export type ResolvedAnthropicCompat = Required<
 	effortBeta?: AnthropicCompat["effortBeta"];
 	/** Disabled-thinking wire form; undefined keeps the direct-provider behavior. */
 	disabledThinking?: AnthropicCompat["disabledThinking"];
-	/** Strip thinking history on non-thinking-led turns; undefined behaves as false. */
+	/** Effort pinned on `between_tools` turns; undefined leaves effort untouched. */
+	betweenToolsEffort?: AnthropicCompat["betweenToolsEffort"];
+	/** Strip thinking history on non-thinking-led and disabled-thinking turns; undefined behaves as false. */
 	stripThinkingHistory?: AnthropicCompat["stripThinkingHistory"];
 	/** Fast-mode SKU; undefined behaves as false. */
 	fastMode?: AnthropicCompat["fastMode"];
