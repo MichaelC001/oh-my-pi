@@ -123,6 +123,7 @@
 - Fixed resumed xAI, Factory Droid and OpenAI sessions forgetting earlier reasoning on their first request, while a retry after a stale Responses item error still rebuilds history ([#15148](https://github.com/can1357/oh-my-pi/pull/15148) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed the startup default ignoring the model a provider's discovery names as the account's default: with no model chosen, Devin Pro now starts on SWE-2 at High instead of SWE-1.6 ([#15115](https://github.com/can1357/oh-my-pi/pull/15115) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed a usage-limited session with an account pool (such as a task agent under `task.agentAccountPools`) spending a saved reset to restore an account outside its pool, which it cannot use; resets about to expire are still salvaged on every account ([#15135](https://github.com/can1357/oh-my-pi/pull/15135) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed snapcompact archives being sized from the context window, which could leave the context over a low compaction trigger right after compacting; archives now take half the room left under the trigger ([#14345](https://github.com/can1357/oh-my-pi/pull/14345) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.7] - 2026-10-09
 
