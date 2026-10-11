@@ -44,6 +44,9 @@
 
 - `omp update` on standalone binaries now downloads from Stencil's build service (build.stencil.so, overridable with `PI_BUILD_URL`) instead of GitHub releases, and fetches a small verified patch (about 6 MB instead of 200 MB) when updating from a recent version; compiled binaries also check it for the startup update notice
 - `install.sh` and `install.ps1` download the standalone binary from build.stencil.so and check its SHA-256 before installing; `--binary --ref` (`-Binary -Ref`) now takes a release tag such as `v18.8.9`. The Homebrew formula downloads from build.stencil.so too
+### Fixed
+
+- Fixed `grep` showing only the first 512 bytes of a long matching line, so a match further in never appeared; it now shows the part around the match, with `...` on cut sides and the match's `[col N]` ([#15278](https://github.com/can1357/oh-my-pi/pull/15278) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.9] - 2026-10-10
 
