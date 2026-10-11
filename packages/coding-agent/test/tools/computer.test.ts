@@ -1447,7 +1447,13 @@ describe("computer worker round trips", () => {
 		});
 
 		it("lists untitled windows by id after titled ones, as when macOS hides other apps' titles", async () => {
-			const blank = (id: string): DesktopWindow => ({ ...windowFixture, id, app: "Notes", title: "", focused: false });
+			const blank = (id: string): DesktopWindow => ({
+				...windowFixture,
+				id,
+				app: "Notes",
+				title: "",
+				focused: false,
+			});
 			const message = await missMessage(
 				[windowFixture, blank("50"), blank("51"), blank("52"), { ...blank("53"), title: "Inbox" }],
 				'"404"',
