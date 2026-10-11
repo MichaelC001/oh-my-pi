@@ -388,6 +388,7 @@ function isAtomicPersistenceNode(obj: object, key?: string): boolean {
 		}
 		if (
 			typed.type === "anthropicCompaction" ||
+			typed.type === "cursorHistory" ||
 			(key === "anthropicCompaction" && "content" in typed && typeof typed.content === "string")
 		)
 			return true;
