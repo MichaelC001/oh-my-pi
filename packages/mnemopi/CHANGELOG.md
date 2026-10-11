@@ -11,6 +11,7 @@
 ### Fixed
 
 - Fixed long retained transcripts exhausting local memory extraction models by limiting each extraction input to 8192 characters while keeping the opening context and newest turns ([#14956](https://github.com/can1357/oh-my-pi/issues/14956)).
+- Loop-watchdog stalls caused by Mnemopi retention, recall, fact write-back, embedding persistence, bank open, stats and consolidation are now logged under a `mnemopi.*` phase instead of `unknown` ([#15001](https://github.com/can1357/oh-my-pi/pull/15001) by [@jaredlyon](https://github.com/jaredlyon)).
 
 ## [18.8.7] - 2026-10-09
 

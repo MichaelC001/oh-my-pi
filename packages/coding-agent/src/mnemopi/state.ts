@@ -4,7 +4,7 @@ import type * as MnemopiNs from "@oh-my-pi/pi-mnemopi";
 import type { Mnemopi, RecallResult } from "@oh-my-pi/pi-mnemopi";
 import type * as MnemopiCoreNs from "@oh-my-pi/pi-mnemopi/core";
 import type { LocalModelInitializer } from "@oh-my-pi/pi-mnemopi/core";
-import { logger, prompt, toError } from "@oh-my-pi/pi-utils";
+import { logger, prompt, toError, withLoopPhase } from "@oh-my-pi/pi-utils";
 import {
 	composeRecallQuery,
 	prepareEmbeddableRetentionTranscript,
@@ -369,63 +369,67 @@ export class MnemopiSessionState {
 		id: string,
 		options: MnemopiMemoryEditOptions = {},
 	): MnemopiMemoryEditResult {
-		const targets = dedupeScopedTargets([
-			this.scoped.retain,
-			...this.scoped.recall,
-			...(this.scoped.global ? [this.scoped.global] : []),
-		]);
-		let ineligible: MnemopiMemoryEditResult | undefined;
-		for (const target of targets) {
-			const row = target.memory.get(id) as MnemopiStoredMemoryRow | null;
-			if (!row) continue;
-			const store: MnemopiMemoryStore =
-				row.memory_store === "episodic" || row.memory_store === "fact" ? row.memory_store : "working";
-			const resultContext: Pick<MnemopiMemoryEditResult, "bank" | "store"> = { bank: target.bank, store };
-			if (store === "fact") {
-				// Facts are read-only: no memory_edit op mutates the facts
-				// table, so report that precisely instead of `not_found`
-				// (the id DID resolve — issue #4725).
-				ineligible ??= { status: "not_editable", ...resultContext };
-				continue;
-			}
-			if ((op === "update" || op === "forget") && store !== "working") {
-				ineligible ??= { status: "not_found", ...resultContext };
-				continue;
-			}
-			if (op === "update") {
-				// `update` writes replacement content straight to the row, bypassing
-				// `rememberInScope`, so it needs the same redaction.
-				const content = options.content === undefined ? null : redactMemorySecrets(options.content);
-				if (target.memory.update(id, content, options.importance ?? null)) {
-					return { status: "updated", ...resultContext };
+		return withLoopPhase("mnemopi.edit", () => {
+			const targets = dedupeScopedTargets([
+				this.scoped.retain,
+				...this.scoped.recall,
+				...(this.scoped.global ? [this.scoped.global] : []),
+			]);
+			let ineligible: MnemopiMemoryEditResult | undefined;
+			for (const target of targets) {
+				const row = target.memory.get(id) as MnemopiStoredMemoryRow | null;
+				if (!row) continue;
+				const store: MnemopiMemoryStore =
+					row.memory_store === "episodic" || row.memory_store === "fact" ? row.memory_store : "working";
+				const resultContext: Pick<MnemopiMemoryEditResult, "bank" | "store"> = { bank: target.bank, store };
+				if (store === "fact") {
+					// Facts are read-only: no memory_edit op mutates the facts
+					// table, so report that precisely instead of `not_found`
+					// (the id DID resolve — issue #4725).
+					ineligible ??= { status: "not_editable", ...resultContext };
+					continue;
+				}
+				if ((op === "update" || op === "forget") && store !== "working") {
+					ineligible ??= { status: "not_found", ...resultContext };
+					continue;
+				}
+				if (op === "update") {
+					// `update` writes replacement content straight to the row, bypassing
+					// `rememberInScope`, so it needs the same redaction.
+					const content = options.content === undefined ? null : redactMemorySecrets(options.content);
+					if (target.memory.update(id, content, options.importance ?? null)) {
+						return { status: "updated", ...resultContext };
+					}
+					ineligible ??= { status: "not_found", ...resultContext };
+					continue;
+				}
+				if (op === "forget") {
+					if (target.memory.forget(id)) return { status: "deleted", ...resultContext };
+					ineligible ??= { status: "not_found", ...resultContext };
+					continue;
+				}
+				if (target.memory.beam.invalidate(id, options.replacementId ?? null)) {
+					return { status: "invalidated", ...resultContext };
 				}
 				ineligible ??= { status: "not_found", ...resultContext };
-				continue;
 			}
-			if (op === "forget") {
-				if (target.memory.forget(id)) return { status: "deleted", ...resultContext };
-				ineligible ??= { status: "not_found", ...resultContext };
-				continue;
-			}
-			if (target.memory.beam.invalidate(id, options.replacementId ?? null)) {
-				return { status: "invalidated", ...resultContext };
-			}
-			ineligible ??= { status: "not_found", ...resultContext };
-		}
-		return ineligible ?? { status: "not_found" };
+			return ineligible ?? { status: "not_found" };
+		});
 	}
 
 	formatScopedRecallWithIds(results: readonly RecallResult[]): string {
-		if (results.length === 0) return "";
-		const lines = results.map(result => {
-			const id = result.id ? ` (id: ${result.id})` : " (id unavailable)";
-			const source = result.source ? ` [${result.source}]` : "";
-			const date = result.timestamp ? ` (${result.timestamp.slice(0, 10)})` : "";
-			const score = result.score ?? result.importance;
-			const confidence = typeof score === "number" ? ` c:${score.toFixed(1)}` : "";
-			return `- ${result.content}${id}${source}${date}${confidence}`;
+		return withLoopPhase("mnemopi.recall", () => {
+			if (results.length === 0) return "";
+			const lines = results.map(result => {
+				const id = result.id ? ` (id: ${result.id})` : " (id unavailable)";
+				const source = result.source ? ` [${result.source}]` : "";
+				const date = result.timestamp ? ` (${result.timestamp.slice(0, 10)})` : "";
+				const score = result.score ?? result.importance;
+				const confidence = typeof score === "number" ? ` c:${score.toFixed(1)}` : "";
+				return `- ${result.content}${id}${source}${date}${confidence}`;
+			});
+			return lines.join("\n\n");
 		});
-		return lines.join("\n\n");
 	}
 
 	async collectScopedRecallResults(query: string): Promise<RecallResult[]> {
@@ -450,9 +454,11 @@ export class MnemopiSessionState {
 						channelId: target.bank,
 					});
 					targetSucceeded = true;
-					for (const result of results) {
-						mergeRecallResult(merged, byId, byContent, result);
-					}
+					withLoopPhase("mnemopi.recall", () => {
+						for (const result of results) {
+							mergeRecallResult(merged, byId, byContent, result);
+						}
+					});
 				}
 			} catch (error) {
 				const failure = toError(error);
@@ -464,17 +470,19 @@ export class MnemopiSessionState {
 			}
 			if (targetSucceeded) successfulTargets++;
 		}
-		if (successfulTargets === 0 && failures.length > 0) {
-			if (failures.length === 1) throw failures[0].error;
-			const details = failures.map(({ bank, error }) => `${bank}: ${error.message}`).join("; ");
-			throw new AggregateError(
-				failures.map(({ error }) => error),
-				`Mnemopi recall failed for all scoped targets (${details})`,
-			);
-		}
-		merged.sort(compareRecallResults);
-		if (merged.length > this.config.recallLimit) merged.length = this.config.recallLimit;
-		return merged;
+		return withLoopPhase("mnemopi.recall", () => {
+			if (successfulTargets === 0 && failures.length > 0) {
+				if (failures.length === 1) throw failures[0].error;
+				const details = failures.map(({ bank, error }) => `${bank}: ${error.message}`).join("; ");
+				throw new AggregateError(
+					failures.map(({ error }) => error),
+					`Mnemopi recall failed for all scoped targets (${details})`,
+				);
+			}
+			merged.sort(compareRecallResults);
+			if (merged.length > this.config.recallLimit) merged.length = this.config.recallLimit;
+			return merged;
+		});
 	}
 
 	recallResultsScoped(query: string): Promise<RecallResult[]> {
@@ -485,8 +493,10 @@ export class MnemopiSessionState {
 		results: readonly RecallResult[],
 		format: "bullet" | "json" = "bullet",
 	): string | undefined {
-		if (results.length === 0) return undefined;
-		return this.memory.beam.formatContext(results, format);
+		return withLoopPhase("mnemopi.recall", () => {
+			if (results.length === 0) return undefined;
+			return this.memory.beam.formatContext(results, format);
+		});
 	}
 
 	formatContextScoped(results: readonly RecallResult[], format: "bullet" | "json" = "bullet"): string {
@@ -515,8 +525,10 @@ export class MnemopiSessionState {
 		options: MnemopiRememberOptions = {},
 		target: MnemopiScopedMemory = this.scoped.retain,
 	): string {
-		const [scrubbed, scrubbedOptions] = redactRememberWrite(memory, options);
-		return target.memory.remember(scrubbed, scrubbedOptions);
+		return withLoopPhase("mnemopi.retain", () => {
+			const [scrubbed, scrubbedOptions] = redactRememberWrite(memory, options);
+			return target.memory.remember(scrubbed, scrubbedOptions);
+		});
 	}
 
 	async recallForContext(query: string, signal?: AbortSignal): Promise<string | undefined> {
@@ -634,10 +646,12 @@ export class MnemopiSessionState {
 				commit: () => this.#commitRecall(generation, persisted.text, undefined),
 			};
 		}
-		const history = extractMessages(this.session.sessionManager);
-		const queryMessages = [...history, { role: "user" as const, content: latestPrompt }];
-		const query = composeRecallQuery(latestPrompt, queryMessages, this.config.recallContextTurns);
-		const truncated = truncateRecallQuery(query, latestPrompt, this.config.recallMaxQueryChars);
+		const truncated = withLoopPhase("mnemopi.recall", () => {
+			const history = extractMessages(this.session.sessionManager);
+			const queryMessages = [...history, { role: "user" as const, content: latestPrompt }];
+			const query = composeRecallQuery(latestPrompt, queryMessages, this.config.recallContextTurns);
+			return truncateRecallQuery(query, latestPrompt, this.config.recallMaxQueryChars);
+		});
 		const recall = await this.#recallBlock(truncated, signal);
 		const record = recall && this.#deliveredRecall(recall, budget);
 		// The staged block and the transcript carry it as delivered; the session caches the
@@ -661,35 +675,43 @@ export class MnemopiSessionState {
 	}
 
 	async recallForCompaction(messages: AgentMessage[]): Promise<string | undefined> {
-		const flat = flattenAgentMessages(messages);
+		const flat = withLoopPhase("mnemopi.recall", () => flattenAgentMessages(messages));
 		const lastUser = flat.findLast(message => message.role === "user");
 		if (!lastUser) return undefined;
-		const query = composeRecallQuery(lastUser.content, flat, this.config.recallContextTurns);
+		const query = withLoopPhase("mnemopi.recall", () =>
+			composeRecallQuery(lastUser.content, flat, this.config.recallContextTurns),
+		);
 		const truncated = truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
 		return await this.recallForContext(truncated);
 	}
 
 	async maybeRetainOnAgentEnd(_messages: AgentMessage[]): Promise<void> {
 		if (!this.config.autoRetain || this.aliasOf) return;
-		this.#restoreRetainedTurnCursor();
-		// Cheap gate first: most agent_end events are not retain turns, so skip text extraction.
-		const userTurns = countUserTurns(this.session.sessionManager);
+		const userTurns = withLoopPhase("mnemopi.retain", () => {
+			this.#restoreRetainedTurnCursor();
+			// Cheap gate first: most agent_end events are not retain turns, so skip text extraction.
+			return countUserTurns(this.session.sessionManager);
+		});
 		if (userTurns - this.lastRetainedTurn < this.config.retainEveryNTurns) return;
-		const flat = extractMessages(this.session.sessionManager);
-		await this.retainMessages(
-			sliceUnretainedMessages(flat, this.lastRetainedTurn),
-			`${this.sessionId}-${Date.now()}`,
-			{ retainedThroughUserTurn: userTurns },
-		);
+		const messages = withLoopPhase("mnemopi.retain", () => {
+			const flat = extractMessages(this.session.sessionManager);
+			return sliceUnretainedMessages(flat, this.lastRetainedTurn);
+		});
+		await this.retainMessages(messages, `${this.sessionId}-${Date.now()}`, {
+			retainedThroughUserTurn: userTurns,
+		});
 		this.lastRetainedTurn = userTurns;
 	}
 
 	async forceRetainCurrentSession(options: { extract?: boolean } = {}): Promise<void> {
 		if (this.aliasOf) return;
-		const flat = extractMessages(this.session.sessionManager);
-		this.#restoreRetainedTurnCursor();
-		const userTurns = flat.filter(message => message.role === "user").length;
-		await this.retainMessages(sliceUnretainedMessages(flat, this.lastRetainedTurn), this.sessionId, {
+		const flat = withLoopPhase("mnemopi.retain", () => extractMessages(this.session.sessionManager));
+		const userTurns = withLoopPhase("mnemopi.retain", () => {
+			this.#restoreRetainedTurnCursor();
+			return flat.filter(message => message.role === "user").length;
+		});
+		const messages = withLoopPhase("mnemopi.retain", () => sliceUnretainedMessages(flat, this.lastRetainedTurn));
+		await this.retainMessages(messages, this.sessionId, {
 			...options,
 			retainedThroughUserTurn: userTurns,
 		});
@@ -701,30 +723,34 @@ export class MnemopiSessionState {
 		sourceId: string,
 		options: { extract?: boolean; retainedThroughUserTurn?: number } = {},
 	): Promise<void> {
-		const { transcript, messageCount } = prepareRetentionTranscript(messages, true);
-		if (!transcript) return;
-		const { transcript: extractText } = prepareUserRetentionTranscript(messages);
-		const { transcript: embedText } = prepareEmbeddableRetentionTranscript(messages);
-		const shouldExtract = options.extract !== false && extractText !== null;
-		this.rememberInScope(transcript, {
-			source: "coding-agent-transcript",
-			importance: 0.65,
-			metadata: {
-				session_id: this.sessionId,
-				source_id: sourceId,
-				message_count: messageCount,
-				...(options.retainedThroughUserTurn === undefined
-					? {}
-					: { retained_through_user_turn: options.retainedThroughUserTurn }),
-				cwd: this.session.sessionManager.getCwd(),
-			},
-			scope: "bank",
-			extract: shouldExtract,
-			extractEntities: shouldExtract,
-			extractText: shouldExtract ? extractText : null,
-			embedText,
-			veracity: "unknown",
-			memoryType: "episode",
+		// Label this body's transcript formatting and synchronous remember() work;
+		// callers label their preceding cursor and history extraction.
+		return withLoopPhase("mnemopi.retain", () => {
+			const { transcript, messageCount } = prepareRetentionTranscript(messages, true);
+			if (!transcript) return;
+			const { transcript: extractText } = prepareUserRetentionTranscript(messages);
+			const { transcript: embedText } = prepareEmbeddableRetentionTranscript(messages);
+			const shouldExtract = options.extract !== false && extractText !== null;
+			this.rememberInScope(transcript, {
+				source: "coding-agent-transcript",
+				importance: 0.65,
+				metadata: {
+					session_id: this.sessionId,
+					source_id: sourceId,
+					message_count: messageCount,
+					...(options.retainedThroughUserTurn === undefined
+						? {}
+						: { retained_through_user_turn: options.retainedThroughUserTurn }),
+					cwd: this.session.sessionManager.getCwd(),
+				},
+				scope: "bank",
+				extract: shouldExtract,
+				extractEntities: shouldExtract,
+				extractText: shouldExtract ? extractText : null,
+				embedText,
+				veracity: "unknown",
+				memoryType: "episode",
+			});
 		});
 	}
 
@@ -782,10 +808,12 @@ export class MnemopiSessionState {
 		let context = persisted?.text;
 		let record: PersistedRecall | undefined;
 		if (persisted === undefined) {
-			const messages = extractMessages(this.session.sessionManager);
+			const messages = withLoopPhase("mnemopi.recall", () => extractMessages(this.session.sessionManager));
 			const lastUser = messages.findLast(message => message.role === "user");
 			if (!lastUser) return;
-			const query = composeRecallQuery(lastUser.content, messages, this.config.recallContextTurns);
+			const query = withLoopPhase("mnemopi.recall", () =>
+				composeRecallQuery(lastUser.content, messages, this.config.recallContextTurns),
+			);
 			const truncated = truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
 			try {
 				const recall = await this.#recallBlock(truncated);
@@ -917,8 +945,10 @@ export class MnemopiSessionState {
 		// them. consolidate() flushes every owned bank, so bound each one — not just
 		// the retain bank — or a locked shared bank (per-project-tagged) still stalls
 		// teardown for Mnemopi's default 5s busy timeout (#7351 review).
-		const busyTimeoutMs = Math.max(1, Math.floor(timeoutMs));
-		for (const memory of this.scoped.owned) memory.beam.db.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
+		withLoopPhase("mnemopi.close", () => {
+			const busyTimeoutMs = Math.max(1, Math.floor(timeoutMs));
+			for (const memory of this.scoped.owned) memory.beam.db.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
+		});
 	}
 
 	async dispose(options: { consolidate?: boolean; timeoutMs?: number; retain?: boolean } = {}): Promise<void> {
@@ -1011,7 +1041,9 @@ function resolveScopedBanks(config: MnemopiBackendConfig): {
 }
 
 export function getMnemopiScopedDbPaths(config: MnemopiBackendConfig): readonly string[] {
-	return getMnemopiScopedBanks(config).map(bank => resolveBankDbPath(config, bank));
+	return withLoopPhase("mnemopi.open", () =>
+		getMnemopiScopedBanks(config).map(bank => resolveBankDbPath(config, bank)),
+	);
 }
 
 export function getMnemopiScopedBanks(config: MnemopiBackendConfig): readonly string[] {

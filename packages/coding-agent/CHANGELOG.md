@@ -114,6 +114,7 @@
 - Fixed `omp read` skipping MCP resources that appear after other entries in a list, and starting MCP servers for reads that never need them ([#14977](https://github.com/can1357/oh-my-pi/pull/14977) by [@sandboiii](https://github.com/sandboiii))
 - Fixed a stalled MCP server handshake (and its server process) outliving `omp read`, `/mcp reload`, and session end ([#14977](https://github.com/can1357/oh-my-pi/pull/14977) by [@sandboiii](https://github.com/sandboiii))
 - Fixed MCP resource reads reporting an advertised resource as missing while its server's catalog was still loading ([#14977](https://github.com/can1357/oh-my-pi/pull/14977) by [@sandboiii](https://github.com/sandboiii))
+- Loop-watchdog stalls during Mnemopi auto-retention, recall injection, memory tools and `memory://` reads are now logged under a `mnemopi.*` phase instead of `unknown` ([#15001](https://github.com/can1357/oh-my-pi/pull/15001) by [@jaredlyon](https://github.com/jaredlyon)).
 
 ## [18.8.7] - 2026-10-09
 

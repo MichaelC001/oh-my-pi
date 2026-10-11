@@ -25,6 +25,9 @@
 ### Fixed
 
 - Fixed `formatDuration` printing `60.0s` for durations just under a minute; they now read `1m` ([#15121](https://github.com/can1357/oh-my-pi/pull/15121) by [@H4vC](https://github.com/H4vC))
+### Added
+
+- Added `withLoopPhase(label, fn)`, which runs `fn` under a loop phase and pops it in `finally`; for an async `fn` only its synchronous prefix is labeled ([#15001](https://github.com/can1357/oh-my-pi/pull/15001) by [@jaredlyon](https://github.com/jaredlyon)).
 
 ## [18.8.7] - 2026-10-09
 
