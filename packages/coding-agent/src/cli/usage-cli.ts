@@ -13,6 +13,7 @@ import {
 	type AuthStorage,
 	type DisabledCredentialSummary,
 	type OAuthAccountIdentity,
+	type OAuthAccountSummary,
 	type ResetCreditRedeemOutcome,
 	isWithinUsageReserve,
 	resolveCredentialIdentityKey,
@@ -34,7 +35,14 @@ import { resolveAuthBrokerConfig } from "../session/auth-broker-config";
 import { resetAccountLockKey } from "../session/codex-auto-reset";
 import { checkCodexBalance, type ResetMarker, resetLockPath, withResetFence } from "../session/reset-fence";
 import { collapseSharedUsageReports, summarizeUsageResetCredits } from "@oh-my-pi/pi-tui/overlays/usage-display";
-import { formatCodexUsageReportLabel } from "../slash-commands/helpers/active-oauth-account";
+import { reportMatchesStatus } from "../session/claude-auto-reset";
+import {
+	classifyResetExpiry,
+	type ResetExpiryWarning,
+	type ResetSpendVerdict,
+	resetSpendVerdict,
+} from "../session/reset-expiry";
+import { formatCodexUsageReportLabel, usageReportIdentity } from "../slash-commands/helpers/active-oauth-account";
 import { errorMessage } from "../slash-commands/helpers/parse";
 import {
 	describeRedeemOutcome,
@@ -80,6 +88,13 @@ export interface UsagePolicyDiagnosticsOptions {
 	globalReservePct: number;
 	/** Delegates selector matching to AuthStorage's authoritative policy matcher. */
 	getAccountPolicy: (provider: string, identity: OAuthAccountIdentity) => AuthAccountPolicy | undefined;
+}
+
+export interface UsageResetExpiryOptions {
+	/** Settings that decide whether an expiring saved reset is spent automatically. */
+	settings: Settings;
+	/** Stored OAuth accounts, as `/usage reset <provider>/<credential id>` addresses them. */
+	accounts: (provider: string) => readonly OAuthAccountSummary[];
 }
 
 /**
@@ -320,6 +335,25 @@ function formatQualifiedIdentity(
 	return `${chalk.bold(identity)}${chalk.dim(rendered.slice(identity.length))}`;
 }
 
+/** Account identity as the breakdown shows it: bold label, then the dim organization and plan. */
+function formatReportIdentity(
+	report: UsageReport,
+	peers: readonly UsageReport[],
+	index: number,
+	redaction?: Map<string, string>,
+): string {
+	const label = reportAccountLabel(report, index);
+	if (report.provider === "openai-codex") return formatQualifiedIdentity(report, peers, label, redaction);
+	let identity = chalk.bold(redaction?.get(label) ?? label);
+	const metaOrgName = report.metadata?.orgName;
+	const metaOrgId = report.metadata?.orgId;
+	const org = typeof metaOrgName === "string" && metaOrgName ? metaOrgName : metaOrgId;
+	if (typeof org === "string" && org && org !== label) identity += chalk.dim(` · ${redaction?.get(org) ?? org}`);
+	const plan = report.metadata?.planType;
+	if (typeof plan === "string" && plan.trim()) identity += chalk.dim(` · plan: ${plan.trim()}`);
+	return identity;
+}
+
 function formatAccountHeader(
 	report: UsageReport,
 	peers: readonly UsageReport[],
@@ -328,19 +362,7 @@ function formatAccountHeader(
 	redaction?: Map<string, string>,
 ): string {
 	const status = aggregateStatus(report.limits);
-	const icon = STATUS_COLOR[status]("●");
-	const label = reportAccountLabel(report, index);
-	let header = `${icon} ${chalk.bold(redaction?.get(label) ?? label)}`;
-	if (report.provider === "openai-codex") {
-		header = `${icon} ${formatQualifiedIdentity(report, peers, label, redaction)}`;
-	} else {
-		const metaOrgName = report.metadata?.orgName;
-		const metaOrgId = report.metadata?.orgId;
-		const org = typeof metaOrgName === "string" && metaOrgName ? metaOrgName : metaOrgId;
-		if (typeof org === "string" && org && org !== label) header += chalk.dim(` · ${redaction?.get(org) ?? org}`);
-		const plan = report.metadata?.planType;
-		if (typeof plan === "string" && plan.trim()) header += chalk.dim(` · plan: ${plan.trim()}`);
-	}
+	let header = `${STATUS_COLOR[status]("●")} ${formatReportIdentity(report, peers, index, redaction)}`;
 	if (report.metadata?.daybreak === true) header += chalk.cyan(" · daybreak");
 	const resets = summarizeUsageResetCredits(report.resetCredits, nowMs);
 	if (resets && resets.bankedCount > 0) {
@@ -348,7 +370,14 @@ function formatAccountHeader(
 		if (resets.redeemableCount !== resets.bankedCount) {
 			header += chalk.dim(` · ${resets.redeemableCount} usable now`);
 		}
-		if (resets.soonestExpiry) {
+		const expiring = classifyResetExpiry(report, nowMs);
+		if (expiring) {
+			const text = ` · ▲ ${formatExpiringResets(expiring, nowMs)}`;
+			header +=
+				expiring.tier === "imminent"
+					? chalk.red(text)
+					: chalk.yellow(`${text} (${new Date(expiring.expiresAtMs).toISOString().slice(0, 10)})`);
+		} else if (resets.soonestExpiry) {
 			const expiryMs = Date.parse(resets.soonestExpiry);
 			if (expiryMs > nowMs) {
 				header += chalk.dim(
@@ -606,28 +635,6 @@ function disabledIdentityLabel(summary: DisabledCredentialSummary, redaction?: M
 	return `${masked} · ${redaction?.get(org) ?? org}`;
 }
 
-function metadataIdentity(report: UsageReport): OAuthAccountIdentity {
-	const metadata = report.metadata ?? {};
-	const read = (key: keyof OAuthAccountIdentity): string | undefined => {
-		const value = metadata[key];
-		return typeof value === "string" && value.length > 0 ? value : undefined;
-	};
-	const firstScoped = (key: "accountId" | "projectId" | "orgId"): string | undefined => {
-		for (const limit of report.limits) {
-			const value = limit.scope[key];
-			if (value) return value;
-		}
-		return undefined;
-	};
-	return {
-		email: read("email"),
-		accountId: read("accountId") ?? firstScoped("accountId"),
-		projectId: read("projectId") ?? firstScoped("projectId"),
-		orgId: read("orgId") ?? firstScoped("orgId"),
-		orgName: read("orgName"),
-	};
-}
-
 function accountOAuthIdentity(account: UsageAccountIdentity): OAuthAccountIdentity {
 	return {
 		email: account.email,
@@ -651,7 +658,7 @@ function policyEnabledProviders(
 		}
 	}
 	for (const report of reports) {
-		if (options.getAccountPolicy(report.provider, metadataIdentity(report))) providers.add(report.provider);
+		if (options.getAccountPolicy(report.provider, usageReportIdentity(report))) providers.add(report.provider);
 	}
 	return providers;
 }
@@ -688,6 +695,66 @@ function formatPolicyLine(
 	return `policy: priority ${priority} · reserve ${reserveLabel} · ${state} · ${(remainingFraction * 100).toFixed(1)}% left`;
 }
 
+/** `1 expires in 6h`, or `2 expire, soonest in 6h`. */
+function formatExpiringResets(warning: ResetExpiryWarning, nowMs: number): string {
+	const due = formatDuration(warning.expiresAtMs - nowMs);
+	return warning.count === 1 ? `1 expires in ${due}` : `${warning.count} expire, soonest in ${due}`;
+}
+
+function formatResetSpendVerdict(verdict: ResetSpendVerdict): string {
+	const outcome =
+		verdict.kind === "auto"
+			? "an open interactive omp session spends it by its last 5 min if eligible then"
+			: verdict.kind === "ask"
+				? "an open interactive omp session asks before spending it"
+				: "not spent automatically";
+	return `→ ${outcome}  (${verdict.setting}: ${verdict.mode})${verdict.eligibleNow ? "" : " · not eligible now"}`;
+}
+
+/**
+ * Saved resets expiring within 24 hours on accounts worth restoring: what the
+ * provider's `autoRedeem` setting does with each one, whether it is eligible
+ * now, and the `/usage reset` target that spends it now when the provider allows.
+ */
+function formatResetExpiryBanner(
+	expiring: readonly { report: UsageReport; warning: ResetExpiryWarning }[],
+	reportsByProvider: ReadonlyMap<string, UsageReport[]>,
+	nowMs: number,
+	redaction: Map<string, string> | undefined,
+	options: UsageResetExpiryOptions,
+): string[] {
+	const verdicts = expiring.map(({ report, warning }) => resetSpendVerdict(report, warning, options.settings, nowMs));
+	const count = expiring.reduce((sum, { warning }) => sum + warning.count, 0);
+	const lost = verdicts.every(verdict => verdict.kind === "off");
+	const lines = [
+		chalk.red.bold(
+			`▲ ${count} saved reset${count === 1 ? " expires" : "s expire"} within 24h${lost ? " and will be lost" : ""}`,
+		),
+	];
+	expiring.forEach(({ report, warning }, index) => {
+		const peers = reportsByProvider.get(report.provider) ?? [report];
+		const identity = formatReportIdentity(report, peers, peers.indexOf(report), redaction);
+		const expiry = new Date(warning.expiresAtMs);
+		const expiresAt = `${expiry.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${expiry.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}`;
+		const used = `${limitTitle(warning.limit)} ${Math.round(warning.usedFraction * 100)}% used`;
+		lines.push(
+			`  ${formatResetProviderName(warning.provider)} · ${identity} · ${formatExpiringResets(warning, nowMs)} (${expiresAt}) · ${used}`,
+		);
+		lines.push(`    ${chalk.dim(formatResetSpendVerdict(verdicts[index]!))}`);
+		if (!warning.usableNow) return;
+		// Codex usage reports carry no credential id; the stored account with the same identity has it.
+		const stored = options
+			.accounts(warning.provider)
+			.filter(account => reportMatchesStatus(report, { ...account, provider: warning.provider }));
+		const command =
+			stored.length === 1 ? `/usage reset ${warning.provider}/${stored[0]!.credentialId}` : "/usage reset";
+		lines.push(
+			`    ${verdicts[index]!.kind === "off" ? "spend it" : "or now"}:  ${chalk.cyan(command)} ${chalk.dim("in omp")}`,
+		);
+	});
+	return lines;
+}
+
 /**
  * Render the full text breakdown: per provider, per account, every limit
  * with a bar, amounts, and reset times; unattributed credentials trail
@@ -700,6 +767,7 @@ export function formatUsageBreakdown(
 	redaction?: Map<string, string>,
 	disabled: DisabledCredentialSummary[] = [],
 	policyOptions?: UsagePolicyDiagnosticsOptions,
+	resetOptions?: UsageResetExpiryOptions,
 ): string {
 	const displayReports = collapseSharedUsageReports(reports);
 	const reportsByProvider = new Map<string, UsageReport[]>();
@@ -732,6 +800,13 @@ export function formatUsageBreakdown(
 	const latestFetchedAt = Math.max(0, ...displayReports.map(report => report.fetchedAt ?? 0));
 	const headerSuffix = latestFetchedAt ? chalk.dim(` · fetched ${formatDuration(nowMs - latestFetchedAt)} ago`) : "";
 	lines.push(`${chalk.bold("Usage")}${headerSuffix}`);
+	const expiring = displayReports.flatMap(report => {
+		const warning = classifyResetExpiry(report, nowMs);
+		return warning?.tier === "imminent" ? [{ report, warning }] : [];
+	});
+	if (resetOptions && expiring.length > 0) {
+		lines.push("", ...formatResetExpiryBanner(expiring, reportsByProvider, nowMs, redaction, resetOptions));
+	}
 
 	for (const provider of providers) {
 		const providerReports = reportsByProvider.get(provider) ?? [];
@@ -759,7 +834,7 @@ export function formatUsageBreakdown(
 			lines.push(`  ${formatAccountHeader(report, providerReports, index, nowMs, redaction)}`);
 			if (policyOptions && policyProviders.has(provider)) {
 				lines.push(
-					`      ${chalk.dim(formatPolicyLine(provider, metadataIdentity(report), report.limits, policyOptions))}`,
+					`      ${chalk.dim(formatPolicyLine(provider, usageReportIdentity(report), report.limits, policyOptions))}`,
 				);
 			}
 			if (report.limits.length === 0) {
@@ -1605,8 +1680,12 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			return;
 		}
 
+		const resetOptions: UsageResetExpiryOptions = {
+			settings,
+			accounts: provider => authStorage.oauth.accounts(provider),
+		};
 		process.stdout.write(
-			`${formatUsageBreakdown(filteredReports, accounts, Date.now(), redaction, disabled, policyOptions)}\n`,
+			`${formatUsageBreakdown(filteredReports, accounts, Date.now(), redaction, disabled, policyOptions, resetOptions)}\n`,
 		);
 	} catch (error) {
 		// Broker-backed reads (`clients`, `--history`) fail on an unreachable or
