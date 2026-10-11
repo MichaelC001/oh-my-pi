@@ -42,6 +42,10 @@
 - Fixed computer-use `win.ref("e5").click()` and other element calls chained on `ref()` throwing a TypeError; `await win.ref("e5")` still resolves the element, and element `click` now documents `count`, `button` and `modifiers` ([#15274](https://github.com/can1357/oh-my-pi/pull/15274) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed Eval `read("artifact://N")` in JavaScript and Python returning the read tool's line-capped view instead of the artifact's text; `offset`/`limit` now select its lines as for a file ([#15279](https://github.com/can1357/oh-my-pi/pull/15279) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed `read`, `eval` and `bash` notices for lines cut at the column cap pointing back at the same capped view; they now name the `:raw:<line>-<line>` read that returns a cut line whole ([#15279](https://github.com/can1357/oh-my-pi/pull/15279) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed coordinate clicks being dropped after a password form submit in OMP-launched Chromium by disabling password leak dialogs in OMP-owned profiles ([#14862](https://github.com/can1357/oh-my-pi/pull/14862) by [@alnaggar-dev](https://github.com/alnaggar-dev))
+
+- Fixed `ask` questions in Tern covering the end of the transcript with a sheet that blocked scrolling, hiding the explanation the question was about; the question now sits in the composer's place, framed like the composer, below a transcript you can read and scroll while deciding ([#14812](https://github.com/can1357/oh-my-pi/pull/14812) by [@H4vC](https://github.com/H4vC))
+
 ### Changed
 
 - `omp update` on standalone binaries now downloads from Stencil's build service (build.stencil.so, overridable with `PI_BUILD_URL`) instead of GitHub releases, and fetches a small verified patch (about 6 MB instead of 200 MB) when updating from a recent version; compiled binaries also check it for the startup update notice
