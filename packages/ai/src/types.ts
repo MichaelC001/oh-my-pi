@@ -605,6 +605,21 @@ export interface StreamOptions {
 	 */
 	providerSessionState?: Map<string, ProviderSessionState>;
 	/**
+	 * Session a side request branches from, so it can read the parent's cached
+	 * prefix. Providers that keep per-conversation request controls (OpenAI
+	 * `configuration_update` effort baselines) plan the request against a copy
+	 * of that session's controls, never changing the parent's state; the Codex
+	 * backend also routes it with the parent's cache affinity (session headers).
+	 */
+	parentSessionId?: string;
+	/**
+	 * Run at the model's lowest effort where the transport carries the change as
+	 * a per-message control that keeps the cached prefix (Anthropic per-message
+	 * effort, OpenAI `configuration_update`). Elsewhere the requested effort
+	 * applies unchanged: changing request-level reasoning forfeits the cache.
+	 */
+	minimizeEffort?: boolean;
+	/**
 	 * Source of user steering a provider may deliver into the response it is
 	 * streaming (OpenAI Responses `response.steer` over the Codex WebSocket).
 	 * Providers without mid-response input ignore it; unclaimed steering stays

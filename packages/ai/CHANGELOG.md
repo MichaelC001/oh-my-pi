@@ -9,6 +9,7 @@
 ### Added
 
 - Exported `matchesReplacementCredential` and `isSameOAuthAccount`, which tell whether storing a credential replaces an existing account row and whether two credentials belong to the same account ([#14901](https://github.com/can1357/oh-my-pi/pull/14901) by [@will-bogusz](https://github.com/will-bogusz))
+- Added the `parentSessionId` and `minimizeEffort` stream options: a side request branched from a conversation reuses its prompt cache, and can run at the model's lowest effort where a per-message control carries the change (Anthropic per-message effort, OpenAI `configuration_update`) without losing that cache
 
 ### Fixed
 
@@ -23,6 +24,9 @@
 - Fixed Gemini answers echoing fenced `thinking` blocks on Google, Vertex, Antigravity and Gemini CLI: a model's own earlier thinking (Gemini, and gpt-oss on Antigravity) went back as visible text instead of as thoughts ([#15152](https://github.com/can1357/oh-my-pi/pull/15152) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed Gemini text replies losing their signature on Google, Vertex, Antigravity, Gemini CLI and Factory Droid, so the next request sends it back as Google's own clients do ([#15152](https://github.com/can1357/oh-my-pi/pull/15152) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed Cursor models losing the reasoning Cursor's server recorded for their earlier turns: a turn now keeps those records, signed and redacted reasoning included, and sends them back unchanged to the same model on the same route, also after a resume ([#15154](https://github.com/can1357/oh-my-pi/pull/15154) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed side requests on GPT-6 Responses and Codex models missing the conversation's prompt cache after a reasoning-effort change: they now keep its request-level effort and replay its `configuration_update` items
+- Fixed Codex side requests never reading the conversation's prompt cache: they now send its session headers, which the backend routes cache affinity by, while keeping their own request identity
+- Fixed GPT-6 models in `pro` reasoning mode receiving `configuration_update` items, which that mode rejects; their effort changes stay on the request-level effort
 
 ## [18.8.9] - 2026-10-10
 
