@@ -60,7 +60,6 @@ async function createHarness(factory: ExtensionFactory) {
 		followUp: vi.fn(async (_text: string, _images?: ImageContent[]) => {}),
 		promptCustomMessage: vi.fn(async () => true),
 		abort: vi.fn(async () => {}),
-		maybeStartTitleGeneration: vi.fn(),
 	};
 	const ctx = {
 		editor,
@@ -88,6 +87,7 @@ async function createHarness(factory: ExtensionFactory) {
 		hasActiveBtw: () => false,
 		hasActiveOmfg: () => false,
 		hasActiveCleanse: () => false,
+		dismissCommandReport: () => false,
 		updateEditorBorderColor: vi.fn(),
 		updatePendingMessagesDisplay: vi.fn(),
 		flushPendingBashComponents: vi.fn(),
@@ -98,6 +98,7 @@ async function createHarness(factory: ExtensionFactory) {
 		shutdown: vi.fn(async () => {}),
 		clearEditor: () => editor.clearDraft(),
 		withLocalSubmission: async <T>(_text: string, submit: () => Promise<T>) => submit(),
+		isGuidedGoalInterviewActive: () => false,
 	} as unknown as InteractiveModeContext;
 	const helpers = new UiHelpers(ctx);
 	ctx.queueCompactionMessage = (text, mode, images, options) =>
