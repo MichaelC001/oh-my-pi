@@ -9,11 +9,13 @@ import type {
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import * as envApiKey from "@oh-my-pi/pi-ai/env-api-key";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { runUsageCommand } from "@oh-my-pi/pi-coding-agent/cli/usage-cli";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
+import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import {
@@ -21,7 +23,7 @@ import {
 	createCodexAutoRedeemCoordinator,
 } from "@oh-my-pi/pi-coding-agent/session/codex-auto-reset";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { __resetDirsFromEnvForTests, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import { mockSchedulerWaitWithClock } from "./helpers/mock-scheduler-clock";
 
 import { cfgClaudeResetsAutoRedeem } from "@oh-my-pi/pi-coding-agent/session/settings";
@@ -714,6 +716,50 @@ describe("Claude saved-reset trigger integration", () => {
 		// No retry of the still-blocked pooled account on the outside account's reset marker.
 		expect(pooled.modelCalls()).toBe(1);
 		expect(pooled.session.agent.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "error" });
+	});
+
+	it("adopts a reset `omp usage reset` just spent instead of spending again", async () => {
+		const originalEnv = {
+			PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+			OMP_PROFILE: process.env.OMP_PROFILE,
+			PI_PROFILE: process.env.PI_PROFILE,
+		};
+		setAgentDir(tempDir.path());
+		try {
+			const status = claudeStatus(true);
+			const { session, coordinator, targets } = buildSession({ report: null, status, streamErrorFirst: true });
+			// The production lock root beside agent.db, which the CLI shares.
+			coordinator.resetLockPath = undefined;
+			vi.spyOn(Settings, "loadReadOnly").mockResolvedValue(Settings.isolated());
+			vi.spyOn(sdkModule, "discoverAuthStorage").mockResolvedValue(authStorage);
+			// The CLI closes the store it discovered; this one outlives the test.
+			vi.spyOn(authStorage, "close").mockImplementation(() => {});
+			let stdout = "";
+			vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
+				stdout += String(chunk);
+				return true;
+			});
+			await runUsageCommand({ action: "reset", target: `claude/${CREDENTIAL_ID}`, noExtensions: true });
+			expect(stdout).toContain("Reset applied");
+			expect(targets).toHaveLength(1);
+
+			status.availableCount = 0;
+			status.redeemableCount = 0;
+			status.eligible = false;
+			const revalidate = vi.spyOn(authStorage.credentials, "revalidate");
+			await session.prompt("recover a request issued before the CLI reset");
+			await session.waitForIdle();
+
+			expect(targets).toHaveLength(1);
+			expect(revalidate).toHaveBeenCalled();
+			expect(session.agent.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "stop" });
+		} finally {
+			for (const [key, value] of Object.entries(originalEnv)) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+			__resetDirsFromEnvForTests();
+		}
 	});
 
 	it("salvages an expiring early-use Cedar grant from the usage heartbeat exactly once, listing only to confirm it", async () => {

@@ -94,7 +94,6 @@ import {
 	escapeXmlText,
 	formatDuration,
 	getAgentDbPath,
-	isEnoent,
 	isBunTestRuntime,
 	isInteractiveHost,
 	isRecord,
@@ -401,6 +400,7 @@ import {
 	queueChipText,
 	toRestoredQueuedMessage,
 } from "./queued-messages";
+import { checkCodexBalance, readResetMarker, resetLockPath, withResetFence } from "./reset-fence";
 import type { ServingModel } from "./retry-fallback-chains";
 import {
 	type AdvisorCatchupOptions,
@@ -12807,22 +12807,6 @@ export class AgentSession implements SettingsScope {
 		return plan;
 	}
 
-	#resetLockPath(lockKey: string, coordinator: CodexAutoRedeemCoordinator): string {
-		return `${coordinator.resetLockPath ?? getAgentDbPath()}.reset-${Bun.hash(lockKey).toString(16)}`;
-	}
-
-	async #readResetMarker(lockPath: string): Promise<{ state: string; atMs: number }> {
-		let text: string;
-		try {
-			text = await Bun.file(lockPath).text();
-		} catch (error) {
-			if (!isEnoent(error)) throw error;
-			text = "";
-		}
-		const [state, timestamp] = text.split(":");
-		return { state, atMs: Number(timestamp) };
-	}
-
 	#adoptResetMarker(lockKey: string, marker: { state: string; atMs: number }): boolean {
 		if (
 			marker.state !== "reset" ||
@@ -12848,11 +12832,11 @@ export class AgentSession implements SettingsScope {
 			}
 			const lockKey = resetAccountLockKey(status);
 			if (!lockKey) continue;
-			const lockPath = this.#resetLockPath(lockKey, coordinator);
+			const lockPath = resetLockPath(lockKey, coordinator.resetLockPath);
 			await fs.promises.mkdir(path.dirname(lockPath), { recursive: true });
 			const adopted = await withFileLock(
 				lockPath,
-				async () => this.#adoptResetMarker(lockKey, await this.#readResetMarker(lockPath)),
+				async () => this.#adoptResetMarker(lockKey, await readResetMarker(lockPath)),
 				{ retries: 300, retryDelayMs: 100 },
 			);
 			if (adopted) {
@@ -12909,55 +12893,34 @@ export class AgentSession implements SettingsScope {
 				} else {
 					// The coordinator is process-local. Fence concurrent processes and
 					// remember a recent attempt so a late 429 cannot spend again.
-					const lockPath = this.#resetLockPath(lockKey, coordinator);
-					await fs.promises.mkdir(path.dirname(lockPath), { recursive: true });
-					outcome = await withFileLock(
-						lockPath,
-						async () => {
-							const marker = await this.#readResetMarker(lockPath);
-							if (Date.now() - marker.atMs < ATTEMPT_COOLDOWN_MS) {
-								sharedReset = this.#adoptResetMarker(lockKey, marker);
-								if (sharedReset) await authStorage.credentials.revalidate();
-								return undefined;
-							}
+					outcome = await withResetFence<ResetCreditRedeemOutcome | undefined>(
+						resetLockPath(lockKey, coordinator.resetLockPath),
+						async marker => {
+							sharedReset = this.#adoptResetMarker(lockKey, marker);
+							if (sharedReset) await authStorage.credentials.revalidate();
+							return undefined;
+						},
+						async markedRedeem => {
 							// Claude's redeem revalidates its exact offer. Codex needs its
 							// balance rechecked after acquiring the cross-process fence.
 							if (provider === "openai-codex") {
 								const statuses = await this.listResetCredits(AbortSignal.timeout(10_000), provider);
-								const live = statuses.find(
-									status => status.credentialId === action.target.credentialId && !status.error,
-								);
-								if (!live) {
-									return {
-										ok: false,
-										code: "credit_list_failed",
-										provider,
-									} satisfies ResetCreditRedeemOutcome;
-								}
-								if (action.availableCount !== undefined && live.availableCount < action.availableCount) {
-									return undefined;
-								}
-								if (live.availableCount < 1) {
-									return { ok: false, code: "no_credit", provider } satisfies ResetCreditRedeemOutcome;
-								}
+								const balance = checkCodexBalance(statuses, action.target.credentialId, action.availableCount);
+								if (balance === "spent") return undefined;
+								if (balance) return { ok: false, code: balance, provider } satisfies ResetCreditRedeemOutcome;
 							}
-							const attemptedAt = Date.now();
-							await Bun.write(lockPath, `pending:${attemptedAt}`);
-							leftPool = outsidePool(action);
-							if (leftPool) {
-								await Bun.write(lockPath, "");
-								return undefined;
-							}
-							const result = await authStorage.resets.redeem(redeemOptions);
-							if (result.code === "reset") {
-								await Bun.write(lockPath, `reset:${attemptedAt}`);
-								this.#adoptedResetMarkers.set(lockKey, attemptedAt);
-							} else if (result.code === "no_credit" || result.code === "nothing_to_reset") {
-								await Bun.write(lockPath, "");
-							}
+							const { outcome: result, attemptedAt } = await markedRedeem(async () => {
+								// Checked after the pending marker is written, with no await before
+								// the redeem. A restore the pool no longer allows is never sent:
+								// report a no-op so the fence clears its marker, and drop it below.
+								leftPool = outsidePool(action);
+								if (leftPool) return { ok: false, code: "nothing_to_reset", provider };
+								return authStorage.resets.redeem(redeemOptions);
+							});
+							if (leftPool) return undefined;
+							if (result.code === "reset") this.#adoptedResetMarkers.set(lockKey, attemptedAt);
 							return result;
 						},
-						{ retries: 300, retryDelayMs: 100 },
 					);
 				}
 			} catch (error) {

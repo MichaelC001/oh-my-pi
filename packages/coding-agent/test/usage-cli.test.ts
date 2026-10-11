@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import type { UsageReport } from "@oh-my-pi/pi-ai";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { AuthStorage, type OAuthCredential, SqliteAuthCredentialStore, type UsageReport } from "@oh-my-pi/pi-ai";
+import { AuthBrokerClient, RemoteAuthCredentialStore, startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
+import { __resetDirsFromEnvForTests, setAgentDir, TempDir, withFileLock } from "@oh-my-pi/pi-utils";
 import {
 	buildRedactionMap,
 	collectHistoryIdentityStrings,
@@ -14,6 +16,8 @@ import {
 } from "@oh-my-pi/pi-coding-agent/cli/usage-cli";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
+import { resetAccountLockKey } from "@oh-my-pi/pi-coding-agent/session/codex-auto-reset";
+import { resetLockPath } from "@oh-my-pi/pi-coding-agent/session/reset-fence";
 import {
 	collectUnreportedAccounts,
 	type UsageAccountIdentity,
@@ -1320,6 +1324,529 @@ describe("omp usage accounts", () => {
 		} finally {
 			vi.restoreAllMocks();
 			authStorage.close();
+		}
+	});
+});
+
+describe("omp usage reset", () => {
+	interface ResetRequest {
+		method: string;
+		path: string;
+		bearer: string | null;
+		body?: Record<string, unknown>;
+	}
+	const soon = new Date(Date.now() + 2 * 24 * HOUR).toISOString();
+	const late = new Date(Date.now() + 20 * 24 * HOUR).toISOString();
+	const oauth = (access: string, identity: Partial<OAuthCredential>): OAuthCredential => ({
+		type: "oauth",
+		access,
+		refresh: `refresh-${access}`,
+		expires: Date.now() + HOUR,
+		...identity,
+	});
+
+	let requests: ResetRequest[];
+	/** Codex consume answer; an Error stands in for a dropped connection, `stall` for one that never answers. */
+	let codexConsume: { status: number; body: unknown } | Error | "stall";
+	/** Codex listing faults by bearer: `unavailable` fails upstream, `stall` never answers. */
+	let codexListFaults: Record<string, "unavailable" | "stall">;
+	/** Title Anthropic gives the Claude grant. */
+	let claudeGrantLabel: string;
+	let authStorage: AuthStorage;
+	let stdout: string;
+	let stderr: string;
+	/** Settles once the command has listed the Codex accounts. */
+	let listed: PromiseWithResolvers<void>;
+	let tempDir: TempDir;
+	const originalEnv = {
+		PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+		OMP_PROFILE: process.env.OMP_PROFILE,
+		PI_PROFILE: process.env.PI_PROFILE,
+	};
+
+	/** A response that never arrives; it rejects once the request's signal aborts. */
+	const stall = (init?: RequestInit): Promise<Response> => {
+		const stalled = Promise.withResolvers<Response>();
+		init?.signal?.addEventListener("abort", () => stalled.reject(init.signal?.reason));
+		return stalled.promise;
+	};
+
+	/** Codex and Claude reset endpoints: `codex-team` banks two credits, `codex-spare` none, Claude one grant. */
+	const handleReset = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+		const url = new URL(String(input));
+		const method = init?.method ?? "GET";
+		const bearer = new Headers(init?.headers).get("authorization");
+		const body = typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
+		requests.push({ method, path: url.pathname, bearer, ...(body ? { body } : {}) });
+		if (url.pathname.endsWith("/wham/rate-limit-reset-credits/consume")) {
+			if (codexConsume instanceof Error) throw codexConsume;
+			if (codexConsume === "stall") return stall(init);
+			return Response.json(codexConsume.body, { status: codexConsume.status });
+		}
+		if (url.pathname.endsWith("/wham/rate-limit-reset-credits")) {
+			listed.resolve();
+			const fault = bearer ? codexListFaults[bearer] : undefined;
+			if (fault === "unavailable") return new Response("upstream unavailable", { status: 503 });
+			if (fault === "stall") return stall(init);
+			const credits =
+				bearer === "Bearer codex-team" || bearer === "Bearer broker-codex"
+					? [
+							{ id: "credit-late", status: "available", expires_at: late },
+							{
+								id: "credit-soon",
+								status: "available",
+								expires_at: soon,
+								description: "Banked for dev@example.test",
+							},
+						]
+					: [];
+			return Response.json({ credits, available_count: credits.length });
+		}
+		if (url.pathname.endsWith("/reset_rate_limits")) {
+			return Response.json({ result: "reset", resets_left: 0, cleared: ["five_hour"] });
+		}
+		if (url.pathname.endsWith("/api/oauth/usage")) {
+			return Response.json({
+				five_hour: { utilization: 100, resets_at: new Date(Date.now() + 2 * HOUR).toISOString() },
+				seven_day: { utilization: 40, resets_at: new Date(Date.now() + 72 * HOUR).toISOString() },
+				cedar_ember: {
+					eligible: true,
+					at_limit: true,
+					exhausted: ["five_hour"],
+					next_grant_id: "saved-reset",
+					grants: [
+						{
+							id: "saved-reset",
+							label: claudeGrantLabel,
+							resets_total: 1,
+							resets_left: 1,
+							starts_at: new Date(Date.now() - HOUR).toISOString(),
+							ends_at: soon,
+							clears: ["five_hour"],
+							paused: false,
+							usable_now: true,
+							use_requires_limit: true,
+							percent_used: { five_hour: 100 },
+							blocking: [],
+						},
+					],
+				},
+			});
+		}
+		return new Response("not found", { status: 404 });
+	};
+	const usageFetch = Object.assign(handleReset, { preconnect: fetch.preconnect });
+
+	const consumes = () => requests.filter(request => request.method === "POST");
+
+	beforeEach(async () => {
+		requests = [];
+		listed = Promise.withResolvers<void>();
+		tempDir = TempDir.createSync("@omp-usage-reset-");
+		setAgentDir(tempDir.path());
+		codexConsume = { status: 200, body: { code: "reset" } };
+		codexListFaults = {};
+		claudeGrantLabel = "Reset for dev@example.test (Acme Corp)";
+		authStorage = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")), { usageFetch });
+		await authStorage.credentials.set("openai-codex", [
+			oauth("codex-team", { email: "dev@example.test", accountId: "acct-team" }),
+			oauth("codex-spare", { email: "spare@example.test", accountId: "acct-spare" }),
+		]);
+		await authStorage.credentials.set(
+			"anthropic",
+			oauth("claude-max", { email: "dev@example.test", orgId: "org-claude", orgName: "Acme Corp" }),
+		);
+		vi.spyOn(Settings, "loadReadOnly").mockResolvedValue(Settings.isolated());
+		vi.spyOn(sdkModule, "discoverAuthStorage").mockResolvedValue(authStorage);
+		stdout = "";
+		stderr = "";
+		vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
+			stdout += String(chunk);
+			return true;
+		});
+		vi.spyOn(process.stderr, "write").mockImplementation(chunk => {
+			stderr += String(chunk);
+			return true;
+		});
+		process.exitCode = 0;
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		process.exitCode = 0;
+		for (const [key, value] of Object.entries(originalEnv)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		__resetDirsFromEnvForTests();
+		tempDir.removeSync();
+	});
+
+	function codexTeamLockPath(): string {
+		const lockKey = resetAccountLockKey({ provider: "openai-codex", accountId: "acct-team" });
+		if (!lockKey) throw new Error("expected a reset lock key");
+		return resetLockPath(lockKey);
+	}
+
+	function credentialIds() {
+		const [team, spare] = authStorage.oauth.accounts("openai-codex").map(account => account.credentialId);
+		const [claude] = authStorage.oauth.accounts("anthropic").map(account => account.credentialId);
+		return { team, spare, claude };
+	}
+
+	it("lists every stored Codex and Claude account by credential id and spends nothing", async () => {
+		const { team, spare, claude } = credentialIds();
+		await runUsageCommand({ action: "reset", noExtensions: true });
+
+		const text = stripVTControlCharacters(stdout);
+		expect(text).toContain(`[Codex · openai-codex/${team}]: 2 saved, 2 usable now, expires ${soon}`);
+		expect(text).toContain(`spare@example.test [Codex · openai-codex/${spare}]: 0 saved, 0 usable now`);
+		expect(text).toContain(`dev@example.test · Acme Corp [Claude · anthropic/${claude}]: 1 saved, 1 usable now`);
+		expect(text).toContain("omp usage reset <provider>/<credential id>");
+		expect(consumes()).toEqual([]);
+		expect(process.exitCode).toBe(0);
+	});
+
+	it("prints credential ids, credit ids and expiries as JSON", async () => {
+		const { team, spare, claude } = credentialIds();
+		await runUsageCommand({ action: "reset", json: true, noExtensions: true });
+
+		const { accounts } = JSON.parse(stdout) as {
+			accounts: Array<{
+				provider: string;
+				credentialId: number;
+				redeemableCount: number;
+				nextCreditId?: string;
+				soonestExpiry?: string;
+				credits: Array<{ id: string; expiresAt?: string }>;
+			}>;
+		};
+		expect(
+			accounts.map(account => [
+				account.provider,
+				account.credentialId,
+				account.redeemableCount,
+				account.nextCreditId,
+				account.soonestExpiry,
+				account.credits.map(credit => [credit.id, credit.expiresAt]),
+			]),
+		).toEqual([
+			[
+				"openai-codex",
+				team,
+				2,
+				undefined,
+				soon,
+				[
+					["credit-late", late],
+					["credit-soon", soon],
+				],
+			],
+			["openai-codex", spare, 0, undefined, undefined, []],
+			["anthropic", claude, 1, "saved-reset", soon, [["saved-reset", soon]]],
+		]);
+		expect(consumes()).toEqual([]);
+	});
+
+	it("lists only the --provider alias's accounts", async () => {
+		const { claude } = credentialIds();
+		await runUsageCommand({ action: "reset", provider: "claude", json: true, noExtensions: true });
+
+		const { accounts } = JSON.parse(stdout) as { accounts: Array<{ provider: string; credentialId: number }> };
+		expect(accounts.map(account => [account.provider, account.credentialId])).toEqual([["anthropic", claude]]);
+		expect(requests.some(request => request.path.includes("/wham/"))).toBe(false);
+	});
+
+	const identities = ["dev@example.test", "spare@example.test", "acct-team", "org-claude", "Acme Corp"];
+
+	it.each([
+		["text", false],
+		["JSON", true],
+	])("masks account identities in the --redact %s listing and keeps credential ids", async (_format, json) => {
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", json, redact: true, noExtensions: true });
+
+		for (const identity of identities) expect(stdout).not.toContain(identity);
+		expect(stripVTControlCharacters(stdout)).toContain(json ? `"credentialId": ${team}` : `openai-codex/${team}`);
+	});
+
+	it("spends on the stored account, not the masked label, under --redact", async () => {
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${team}`, redact: true, noExtensions: true });
+
+		for (const identity of identities) expect(stdout).not.toContain(identity);
+		expect(stripVTControlCharacters(stdout)).toContain("Reset applied for de* (Codex)");
+		expect(consumes().map(request => [request.bearer, request.body?.account_id])).toEqual([
+			["Bearer codex-team", "acct-team"],
+		]);
+	});
+
+	it("masks identities inside a failed spend's reason under --redact", async () => {
+		codexConsume = new Error("socket to dev@example.test closed");
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${team}`, redact: true, noExtensions: true });
+
+		for (const identity of identities) expect(stderr).not.toContain(identity);
+		expect(stripVTControlCharacters(stderr)).toContain("couldn't confirm whether the reset applied");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it.each([
+		[
+			"another letter case",
+			{ email: "Dev@Example.test", orgName: "acme corp" },
+			"Reset for dev@example.test (Acme Corp)",
+			"Reset for De* (ac*)",
+		],
+		["non-ASCII letters", { email: "dev@example.test", orgName: "İstanbul" }, "Reset for İstanbul", "Reset for İs*"],
+		[
+			"the lowercase form of non-ASCII letters",
+			{ email: "dev@example.test", orgName: "İstanbul" },
+			"Reset for i\u0307stanbul",
+			"Reset for İs*",
+		],
+	])("masks an identity written in %s inside provider text under --redact", async (_case, identity, label, title) => {
+		claudeGrantLabel = label;
+		await authStorage.credentials.set("anthropic", oauth("claude-case", { ...identity, orgId: "org-case" }));
+		await runUsageCommand({ action: "reset", provider: "claude", json: true, redact: true, noExtensions: true });
+
+		const { accounts } = JSON.parse(stdout) as { accounts: Array<{ credits: Array<{ title?: string }> }> };
+		expect(accounts.map(account => account.credits.map(credit => credit.title))).toEqual([[title]]);
+	});
+
+	/** Organizations named like the `codex` alias (inside `openai-codex`) and like the Claude grant id. */
+	async function storeIdentitiesMatchingIds(): Promise<void> {
+		await authStorage.credentials.set("openai-codex", [
+			oauth("codex-team", { email: "dev@example.test", accountId: "acct-team", orgName: "codex" }),
+		]);
+		await authStorage.credentials.set(
+			"anthropic",
+			oauth("claude-max", { email: "dev@example.test", orgId: "org-overlap", orgName: "saved-reset" }),
+		);
+	}
+
+	it("spends under --redact when an account's identity matches a provider id", async () => {
+		await storeIdentitiesMatchingIds();
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${team}`, redact: true, noExtensions: true });
+
+		expect(stripVTControlCharacters(stdout)).toContain("Reset applied for de* · co* (Codex)");
+		expect(consumes().map(request => [request.bearer, request.body?.account_id])).toEqual([
+			["Bearer codex-team", "acct-team"],
+		]);
+		expect(process.exitCode).toBe(0);
+	});
+
+	it("keeps spend targets canonical in a --redact text listing when identities match them", async () => {
+		await storeIdentitiesMatchingIds();
+		const { team, claude } = credentialIds();
+		await runUsageCommand({ action: "reset", redact: true, noExtensions: true });
+
+		const text = stripVTControlCharacters(stdout);
+		expect(text).toContain(`de* · co* [Codex · openai-codex/${team}]`);
+		expect(text).toContain(`de* · sa* [Claude · anthropic/${claude}]`);
+	});
+
+	it("keeps provider, credit and grant ids canonical in a --redact JSON listing when identities match them", async () => {
+		await storeIdentitiesMatchingIds();
+		const { team, claude } = credentialIds();
+		await runUsageCommand({ action: "reset", json: true, redact: true, noExtensions: true });
+
+		const { accounts } = JSON.parse(stdout) as {
+			accounts: Array<{
+				provider: string;
+				credentialId: number;
+				orgName?: string;
+				nextCreditId?: string;
+				credits: Array<{ id: string; expiresAt?: string }>;
+			}>;
+		};
+		expect(
+			accounts.map(account => [
+				account.provider,
+				account.credentialId,
+				account.orgName,
+				account.nextCreditId,
+				account.credits.map(credit => [credit.id, credit.expiresAt]),
+			]),
+		).toEqual([
+			[
+				"openai-codex",
+				team,
+				"co*",
+				undefined,
+				[
+					["credit-late", late],
+					["credit-soon", soon],
+				],
+			],
+			["anthropic", claude, "sa*", "saved-reset", [["saved-reset", soon]]],
+		]);
+	});
+
+	it("refuses to spend on an account whose login cannot be fenced", async () => {
+		await authStorage.credentials.set("anthropic", oauth("claude-anon", { orgId: "org-anon" }));
+		const { claude } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `claude/${claude}`, noExtensions: true });
+
+		expect(consumes()).toEqual([]);
+		expect(stripVTControlCharacters(stderr)).toContain("no account id or email to fence the spend");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("waits for a session holding the account's reset lock and spends nothing after its reset", async () => {
+		const { team } = credentialIds();
+		const lockPath = codexTeamLockPath();
+		let run: Promise<void> | undefined;
+		await withFileLock(lockPath, async () => {
+			run = runUsageCommand({ action: "reset", target: `codex/${team}`, noExtensions: true });
+			await listed.promise;
+			await Bun.write(lockPath, `reset:${Date.now()}`);
+		});
+		await run;
+
+		expect(consumes()).toEqual([]);
+		expect(stripVTControlCharacters(stderr)).toContain("another omp process spent a saved reset on this account");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("spends the named Codex account's soonest-expiring credit", async () => {
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${team}`, noExtensions: true });
+
+		expect(stripVTControlCharacters(stdout)).toContain("Reset applied for dev@example.test (Codex)");
+		expect(consumes().map(request => [request.path, request.bearer, request.body?.credit_id])).toEqual([
+			["/backend-api/wham/rate-limit-reset-credits/consume", "Bearer codex-team", "credit-soon"],
+		]);
+		expect(process.exitCode).toBe(0);
+	});
+
+	it("spends the listed Claude grant through the claude alias", async () => {
+		const { claude } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `claude/${claude}`, noExtensions: true });
+
+		expect(stripVTControlCharacters(stdout)).toContain("Reset applied for dev@example.test · Acme Corp (Claude)");
+		expect(consumes().map(request => [request.path, request.bearer, request.body?.grant_id])).toEqual([
+			["/api/organizations/org-claude/reset_rate_limits", "Bearer claude-max", "saved-reset"],
+		]);
+		expect(process.exitCode).toBe(0);
+	});
+
+	it.each([
+		["codex/active", "no account is active"],
+		["gemini/1", 'Unknown reset provider "gemini"'],
+		["codex/999", 'No stored account matches "codex/999"'],
+		["codex", "Choose an account with `omp usage reset <provider>/<credential id>`"],
+	])("refuses %s without spending", async (target, message) => {
+		await runUsageCommand({ action: "reset", target, noExtensions: true });
+
+		expect(stripVTControlCharacters(stderr)).toContain(message);
+		expect(stdout).toBe("");
+		expect(consumes()).toEqual([]);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("refuses an account with no usable reset without spending", async () => {
+		const { spare } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${spare}`, noExtensions: true });
+
+		expect(stripVTControlCharacters(stderr)).toContain(
+			"spare@example.test [Codex]: no saved resets usable right now",
+		);
+		expect(consumes()).toEqual([]);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("names a failed listing instead of reporting no usable resets", async () => {
+		codexListFaults = { "Bearer codex-spare": "unavailable" };
+		const { spare } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${spare}`, noExtensions: true });
+
+		expect(stripVTControlCharacters(stderr)).toContain(
+			"spare@example.test [Codex]: saved resets unavailable (Failed to load saved resets)",
+		);
+		expect(consumes()).toEqual([]);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("stops waiting on a Codex listing that never answers", async () => {
+		codexListFaults = { "Bearer codex-team": "stall" };
+		const timeout = AbortSignal.timeout.bind(AbortSignal);
+		vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => timeout(Math.min(ms, 50)));
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${team}`, noExtensions: true });
+
+		expect(stripVTControlCharacters(stderr)).toContain("saved resets unavailable (Failed to load saved resets)");
+		expect(consumes()).toEqual([]);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it.each([
+		["the credit was already redeemed", { status: 200, body: { code: "already_redeemed" } }, "already redeemed"],
+		["nothing is constrained", { status: 200, body: { code: "nothing_to_reset" } }, "nothing to reset right now"],
+		["the provider errors", { status: 500, body: {} }, "reset was not confirmed (http_500)"],
+		["the connection drops", new Error("socket hang up"), "couldn't confirm whether the reset applied"],
+	])("exits nonzero when %s", async (_name, answer, message) => {
+		codexConsume = answer;
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${team}`, noExtensions: true });
+
+		expect(stripVTControlCharacters(stderr)).toContain(message);
+		expect(stdout).toBe("");
+		expect(consumes()).toHaveLength(1);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("stops waiting on a consume that never answers and reports the spend unconfirmed", async () => {
+		codexConsume = "stall";
+		const timeout = AbortSignal.timeout.bind(AbortSignal);
+		vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => timeout(Math.min(ms, 50)));
+		const { team } = credentialIds();
+		await runUsageCommand({ action: "reset", target: `codex/${team}`, noExtensions: true });
+
+		expect(stripVTControlCharacters(stderr)).toContain("couldn't confirm whether the reset applied");
+		expect(consumes()).toHaveLength(1);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("spends on an auth-broker client with the broker's token from this process", async () => {
+		const brokerStore = new SqliteAuthCredentialStore(new Database(":memory:"));
+		const brokerStorage = new AuthStorage(brokerStore);
+		await brokerStorage.credentials.set(
+			"openai-codex",
+			oauth("broker-codex", { email: "fleet@example.test", accountId: "acct-fleet" }),
+		);
+		const handle = startAuthBroker({
+			storage: brokerStorage,
+			bind: "127.0.0.1:0",
+			bearerTokens: ["reset-bearer"],
+			disableRefresher: true,
+		});
+		const client = new AuthBrokerClient({ url: handle.url, token: "reset-bearer" });
+		const initial = await client.fetchSnapshot();
+		if (initial.status !== 200) throw new Error("expected a broker snapshot");
+		const remote = new RemoteAuthCredentialStore({
+			client,
+			initialSnapshot: initial.snapshot,
+			streamSnapshots: false,
+		});
+		const clientStorage = new AuthStorage(remote, { usageFetch });
+		try {
+			await clientStorage.credentials.reload();
+			vi.spyOn(sdkModule, "discoverAuthStorage").mockResolvedValue(clientStorage);
+			const [account] = clientStorage.oauth.accounts("openai-codex");
+			await runUsageCommand({ action: "reset", target: `codex/${account?.credentialId}`, noExtensions: true });
+
+			expect(stripVTControlCharacters(stdout)).toContain("Reset applied for fleet@example.test (Codex)");
+			expect(consumes().map(request => [request.bearer, request.body?.credit_id])).toEqual([
+				["Bearer broker-codex", "credit-soon"],
+			]);
+		} finally {
+			clientStorage.close();
+			remote.close();
+			await handle.close();
+			brokerStorage.close();
+			brokerStore.close();
 		}
 	});
 });
