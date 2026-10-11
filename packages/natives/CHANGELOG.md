@@ -30,6 +30,7 @@
 
 - Fixed macOS computer use reporting `AxFailed` instead of `StaleRef` for a ref whose element the app had removed ([#15156](https://github.com/can1357/oh-my-pi/pull/15156) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed macOS `el.press()` and `el.perform()` reporting `AxFailed` when the app did not answer in time, such as a press that opens a modal dialog; they now report `AxUnconfirmed` ([#15156](https://github.com/can1357/oh-my-pi/pull/15156) by [@will-bogusz](https://github.com/will-bogusz))
+- macOS desktop sessions keep the display awake while in use (released five minutes after the last call or on close); capabilities report `screenLocked`/`displayAsleep`, `screenState` reads both without waiting on queued work, captures carry `screenLocked`, and failures name the state ([#15188](https://github.com/can1357/oh-my-pi/pull/15188) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.7] - 2026-10-09
 
