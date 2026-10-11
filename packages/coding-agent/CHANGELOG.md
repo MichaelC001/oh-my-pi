@@ -108,6 +108,7 @@
 - Fixed the startup default ignoring the model a provider's discovery names as the account's default: with no model chosen, Devin Pro now starts on SWE-2 at High instead of SWE-1.6 ([#15115](https://github.com/can1357/oh-my-pi/pull/15115) by [@will-bogusz](https://github.com/will-bogusz))
 - The `cfg://` settings approval prompt now honors `ask.timeout` instead of always expiring after 10 seconds; at the default it waits indefinitely, like `ask` ([#15080](https://github.com/can1357/oh-my-pi/issues/15080))
 - The `cfg://` settings approval prompt now honors `ask.timeout` instead of always expiring after 10 seconds; at the default it waits indefinitely, like `ask` ([#15085](https://github.com/can1357/oh-my-pi/pull/15085) by [@danzaio](https://github.com/danzaio), fixes [#15080](https://github.com/can1357/oh-my-pi/issues/15080))
+- Fixed resumed Cursor sessions losing earlier reasoning: session files keep the Cursor server records omp sends back byte-exact, exempt from the 500,000-character truncation, so a resume never sends a cut-off record (a turn whose own tool result was truncated is rebuilt from its content instead) ([#15154](https://github.com/can1357/oh-my-pi/pull/15154) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.7] - 2026-10-09
 
