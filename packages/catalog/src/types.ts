@@ -541,8 +541,8 @@ export interface OpenAICompat {
 	/**
 	 * Whether the Responses endpoint accepts `configuration_update` input items
 	 * that change `reasoning.effort` mid-conversation while the request-level
-	 * effort stays pinned for prompt caching (GPT-6 Astra). Default:
-	 * rule-detected (`true` for `gpt-6-astra` on any host, `false` otherwise).
+	 * effort stays pinned for prompt caching (GPT-6 family). Default:
+	 * rule-detected (`true` for GPT-6 models on any host, `false` otherwise).
 	 * Set `false` for custom `openai-responses` / `openai-codex-responses`
 	 * endpoints that reject the item type with HTTP 400; effort changes are then
 	 * sent as the top-level `reasoning.effort`.
@@ -1069,8 +1069,8 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 	/**
 	 * Whether a `configuration_update` input item may change `reasoning.effort`
 	 * mid-conversation while the request-level effort stays byte-stable for
-	 * prompt caching. Rule-owned: GPT-6 Astra only; every other model rejects
-	 * the item type with 400.
+	 * prompt caching. Rule-owned: the GPT-6 family; earlier models do not
+	 * support the item type.
 	 */
 	supportsConfigurationUpdate: boolean;
 	/**
