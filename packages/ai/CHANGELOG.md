@@ -270,6 +270,10 @@
 - xAI OAuth accounts with active weekly credits no longer switch away solely because an uncertain monthly counter exceeds its limit ([#13806](https://github.com/can1357/oh-my-pi/issues/13806)).
 - Cursor retries after a rejected conversation now keep the tool calls and results already completed in the turn, instead of re-sending the last message and redoing that work ([#11613](https://github.com/can1357/oh-my-pi/pull/11613) by [@will-bogusz](https://github.com/will-bogusz)).
 
+### Fixed
+
+- An Anthropic-compatible endpoint that rejects `cache_control` with a 400 no longer fails the turn. The request is replayed without prompt-cache breakpoints, the rejection is remembered for the rest of the session per endpoint and model, the prompt-cache betas are dropped alongside it, and the turn reports `prompt-cache` in `disabledFeatures`. An endpoint that takes the field but refuses `ttl`/`scope` sends the same 400, so a request that asked for either is first replayed with every breakpoint intact and those options removed; that succeeding keeps 5m caching on for the session and reports `prompt-cache-retention` instead ([#11812](https://github.com/can1357/oh-my-pi/pull/11812) by [@camjac251](https://github.com/camjac251)).
+
 ## [18.4.4] - 2026-09-29
 
 ### Added
