@@ -291,6 +291,9 @@
 - Corrected tool behavior and configuration documentation for `read`, background `bash`, Python evaluation, replace editing, goal removal, and `advisor.immuneTurns`.
 - Fixed custom glob backends from hanging indefinitely; scans now respect the tool deadline and report incomplete results when necessary.
 - Fixed `--resume <path>` from silently creating a new session for a missing path; it now reports the missing path, consistent with `--fork <path>` and `--resume <id>`.
+### Fixed
+
+- Fixed the first prompt of an interactive or `--mode rpc-ui` session (including `--resume`) missing the provider prompt cache when MCP servers were still connecting: it now waits up to 1.5 s for MCP startup, so servers that connect within that time are already in its system prompt ([#14780](https://github.com/can1357/oh-my-pi/pull/14780) by [@andrebrait](https://github.com/andrebrait))
 
 ## [18.8.0] - 2026-10-07
 
