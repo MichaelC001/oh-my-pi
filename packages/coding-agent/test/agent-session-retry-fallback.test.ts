@@ -4127,6 +4127,60 @@ describe("AgentSession retry fallback", () => {
 		expect(lastReply(session)).toEqual([{ type: "text", text: "answered request 6" }]);
 	});
 
+	it("visits each model once in a refusal walk when the session runs at a thinking level", async () => {
+		// The walk records the current selector, which carries the thinking level (`…:high`), while
+		// chain entries name bare models. Both must reduce to the same model, or the walk asks the
+		// model that just refused a second time.
+		const modelA = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const modelB = getBundledModel("openai", "gpt-4o-mini");
+		if (!modelA || !modelB) {
+			throw new Error("Expected bundled test models to exist");
+		}
+		const selectorA = `${modelA.provider}/${modelA.id}`;
+		const selectorB = `${modelB.provider}/${modelB.id}`;
+
+		const requestedModels: string[] = [];
+		const mock = createMockModel();
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: { model: modelA, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: (model, context, options) => {
+				requestedModels.push(`${model.provider}/${model.id}`);
+				if (requestedModels.length > 3) {
+					throw new Error(`Unexpected request ${requestedModels.length}: ${model.provider}/${model.id}`);
+				}
+				mock.push({
+					content: [],
+					stopReason: "error",
+					stopDetails: { type: "refusal", category: "cyber", explanation: "Declined." },
+					errorMessage: "Refusal (cyber): Declined.",
+				});
+				return mock.stream(model, context, options);
+			},
+		});
+
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 0,
+			"retry.fallbackChains": { [selectorA]: [selectorB], [selectorB]: [selectorA] },
+		});
+		settings.setModelRole("default", selectorA);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+			thinkingLevel: Effort.High,
+		});
+
+		await session.prompt("Both chains point at each other at a thinking level");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([selectorA, selectorB]);
+	});
+
 	it("starts a fresh refusal walk on the next turn after an abort cut the previous one short", async () => {
 		// An abort during the fallback's request ends the turn without closing the retry saga, and a
 		// turn an extension starts skips prompt()'s per-prompt reset, so neither a new saga nor a new

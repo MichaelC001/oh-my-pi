@@ -56,6 +56,7 @@ import {
 	type ActiveRetryFallbackState,
 	calculateRetryBackoffDelayMs,
 	findRetryFallbackCandidates,
+	formatRetryFallbackBaseSelector,
 	formatRetryFallbackSelector,
 	getRetryFallbackChains,
 	getRetryFallbackRevertPolicy,
@@ -814,6 +815,15 @@ export class TurnRecovery {
 	/** Parses provider retry and rate-limit reset hints into a delay. */
 	parseRetryAfterMsFromError(errorMessage: string): number | undefined {
 		return this.#parseRetryAfterMsFromError(errorMessage);
+	}
+
+	/**
+	 * The model a refusal walk records: `provider/id` without the thinking level, so the current
+	 * selector (`…:high`) and the bare chain entries naming the same model match.
+	 */
+	#refusalWalkKey(selector: string): string {
+		const parsed = parseRetryFallbackSelector(selector, this.#host.modelRegistry);
+		return parsed ? formatRetryFallbackBaseSelector(parsed) : selector;
 	}
 
 	/** Resolve the pending retry promise; the saga is over, and so is its refusal walk. */
@@ -2193,7 +2203,7 @@ export class TurnRecovery {
 				// A refusal walk visits any one model at most once per turn. Without this a
 				// pair of chains naming each other alternates: each hop is a model the walk
 				// has already been refused on, and the budget no longer stops it.
-				if (options?.refusalWalk && this.#refusalWalkTried.has(selector.raw)) continue;
+				if (options?.refusalWalk && this.#refusalWalkTried.has(formatRetryFallbackBaseSelector(selector))) continue;
 				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
 				if (!candidate) continue;
@@ -2731,7 +2741,8 @@ export class TurnRecovery {
 			// to spend an attempt. The walk is bounded here instead — a refusal visits any
 			// one model at most once per turn, so A -> B -> A terminates whatever the
 			// chains say.
-			const refusalWalkRepeats = classifierRefusal && this.#refusalWalkTried.has(currentSelector);
+			const refusalWalkKey = this.#refusalWalkKey(currentSelector);
+			const refusalWalkRepeats = classifierRefusal && this.#refusalWalkTried.has(refusalWalkKey);
 			if (
 				allowModelFallback &&
 				retrySettings.modelFallback &&
@@ -2742,7 +2753,7 @@ export class TurnRecovery {
 				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted)
 			) {
 				if (classifierRefusal) {
-					this.#refusalWalkTried.add(currentSelector);
+					this.#refusalWalkTried.add(refusalWalkKey);
 				} else {
 					// A usage-limit wait already knows when this provider can serve
 					// the session again (report reset, merged credential block,
