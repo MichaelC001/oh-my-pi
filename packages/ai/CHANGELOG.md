@@ -47,6 +47,9 @@
 ### Added
 
 - Added `AuthStorage.sessions.permits(provider, sessionId, credentialId)`, which tells whether a stored account may serve a session restricted to an account pool ([#15135](https://github.com/can1357/oh-my-pi/pull/15135) by [@will-bogusz](https://github.com/will-bogusz))
+### Fixed
+
+- Fixed omp failing to start, select an account, or log in when an `auth.accountPolicies` entry names a disabled, logged-out, or broker-hidden account; that policy, like a mistyped selector, is now skipped with a log warning ([#14233](https://github.com/can1357/oh-my-pi/pull/14233) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.7] - 2026-10-09
 
