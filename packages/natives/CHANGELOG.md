@@ -9,6 +9,9 @@
 ### Added
 
 - Added `applyBinaryPatch(oldPath, patchPath, outPath)`, which applies an HDiffPatch single-stream delta patch (zstd or uncompressed) to a file
+### Fixed
+
+- Fixed macOS `menu.items()` and `menu.select()` failing with `AxFailed` on menus that hold an item whose title cannot be read, such as the Tags row in Finder's File menu and a row of Preview's Tools menu; such items are now skipped like separators ([#15223](https://github.com/can1357/oh-my-pi/pull/15223) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.8.8] - 2026-10-10
 
