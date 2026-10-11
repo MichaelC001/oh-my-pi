@@ -166,6 +166,9 @@
 - Fixed raw token markers appearing instead of Nerd Font icons in Anthropic idle recaps, `/btw` and `/omfg` replies, and streaming previews.
 - Fixed sessions moved with `/wt` disappearing from resume lists; sessions in Git worktrees now remain discoverable and can be resumed or relocated if their worktree was removed.
 - Fixed live config reload ignoring edits made during startup or right after a config symlink was retargeted, until the next unrelated edit.
+### Fixed
+
+- A classifier refusal now keeps walking `retry.fallbackChains` when the retry budget is already spent, instead of ending the turn on the model it started on with the rest of the chain untried ([#14905](https://github.com/can1357/oh-my-pi/pull/14905) by [@sjawhar](https://github.com/sjawhar)).
 
 ## [18.8.5] - 2026-10-08
 

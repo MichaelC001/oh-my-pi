@@ -319,6 +319,12 @@ export class TurnRecovery {
 	readonly #host: TurnRecoveryHost;
 	#retryAbortController: AbortController | undefined;
 	#retryAttempt = 0;
+	/**
+	 * Selectors a classifier refusal has already moved off in the current retry saga; see the walk
+	 * bound below. Cleared in `resolveRetry()`, which every end of a saga goes through (an answer,
+	 * the exhausted budget, a cancelled wait, an abort), so no turn inherits another turn's walk.
+	 */
+	readonly #refusalWalkTried = new Set<string>();
 	#requestBodyReadTimeoutRecoveryPromptSequence: number | undefined;
 	#retryPromise: Promise<void> | undefined;
 	#retryResolve: (() => void) | undefined;
@@ -790,8 +796,9 @@ export class TurnRecovery {
 		return this.#parseRetryAfterMsFromError(errorMessage);
 	}
 
-	/** Resolve the pending retry promise */
+	/** Resolve the pending retry promise; the saga is over, and so is its refusal walk. */
 	resolveRetry(): void {
+		this.#refusalWalkTried.clear();
 		if (this.#retryResolve) {
 			this.#retryResolve();
 			this.#retryResolve = undefined;
@@ -2136,6 +2143,8 @@ export class TurnRecovery {
 			pinFallback?: boolean;
 			preserveFailedTurn?: boolean;
 			wrapAround?: boolean;
+			/** This hop is a classifier-refusal walk, which visits each model at most once per turn. */
+			refusalWalk?: boolean;
 		},
 	): Promise<boolean> {
 		const ceiling = this.#host.thinkingLevelCeiling();
@@ -2152,6 +2161,10 @@ export class TurnRecovery {
 		for (const role of this.retryFallbackChainKeys(currentSelector)) {
 			for (const selector of this.findRetryFallbackCandidates(role, currentSelector, undefined, options)) {
 				if (this.isRetryFallbackSelectorSuppressed(selector)) continue;
+				// A refusal walk visits any one model at most once per turn. Without this a
+				// pair of chains naming each other alternates: each hop is a model the walk
+				// has already been refused on, and the budget no longer stops it.
+				if (options?.refusalWalk && this.#refusalWalkTried.has(selector.raw)) continue;
 				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
 				if (!candidate) continue;
@@ -2678,18 +2691,30 @@ export class TurnRecovery {
 			(!this.#hasReplayUnsafeOutput(message) || this.#unexecutedToolCallsReplaySafe(message));
 
 		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
-			// A refusal chain stops at the retry budget: the exhausted-attempt
-			// last resort is for provider failures, not classifier decisions.
+			// The retry budget bounds same-model retries against a failing provider. A
+			// classifier refusal is not that: retrying the same model reproduces it, and
+			// the next model in the chain is one request away and often answers. Stopping
+			// the walk at the budget ends the turn with models left untried.
+			//
+			// The budget was also what terminated the walk: `retryFallbackChainKeys`
+			// consults the current model's own chain as well as the pinned one, so chains
+			// that name each other alternate rather than loop in place, and every hop used
+			// to spend an attempt. The walk is bounded here instead — a refusal visits any
+			// one model at most once per turn, so A -> B -> A terminates whatever the
+			// chains say.
+			const refusalWalkRepeats = classifierRefusal && this.#refusalWalkTried.has(currentSelector);
 			if (
 				allowModelFallback &&
 				retrySettings.modelFallback &&
 				!thinkingLoop &&
 				!sameModelSteerReplay &&
 				!waitForSiblingCredential &&
-				!(retryBudgetExhausted && classifierRefusal) &&
+				!refusalWalkRepeats &&
 				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted)
 			) {
-				if (!classifierRefusal) {
+				if (classifierRefusal) {
+					this.#refusalWalkTried.add(currentSelector);
+				} else {
 					// A usage-limit wait already knows when this provider can serve
 					// the session again (report reset, merged credential block,
 					// sibling unblock); cooling down for less sends the revert back
@@ -2701,6 +2726,7 @@ export class TurnRecovery {
 				switchedModel = await this.#tryRetryModelFallback(currentSelector, message, {
 					excludeProvider: longUsageLimitFallback ? currentModel.provider : undefined,
 					pinFallback: classifierRefusal,
+					refusalWalk: classifierRefusal,
 					preserveFailedTurn,
 					wrapAround: longUsageLimitFallback,
 				});
