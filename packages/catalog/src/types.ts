@@ -738,6 +738,24 @@ export interface AnthropicCompat {
 	injectClaudeCodeInstruction?: boolean;
 	/** Strip image inputs before encoding (text-only serving of a multimodal id). */
 	stripImageInput?: boolean;
+	/**
+	 * Largest width or height a single image block may carry. The canonical
+	 * Anthropic API rejects anything larger with `At least one of the image
+	 * dimensions exceed max allowed size: 8000 pixels`, and the rejection
+	 * poisons every retry and model fallback because the block stays in
+	 * context, so the request builder downscales to this value first. Hosts
+	 * with a different image contract override it. Default: 8000.
+	 */
+	maxImageDimension?: number;
+	/**
+	 * Largest base64 payload a single image block may carry, in bytes. The
+	 * canonical Anthropic API measures the encoded string, not the decoded
+	 * bytes (`image exceeds 10 MB maximum: 14012300 bytes > 10485760 bytes`),
+	 * and an image inside {@link maxImageDimension} can still cross it, so
+	 * payload size is clamped on its own. Hosts with a different image
+	 * contract override it. Default: 10485760.
+	 */
+	maxImagePayloadBytes?: number;
 	/** Thinking-loop watchdog guard family applied to streamed reasoning. */
 	thinkingLoopGuard?: "gemini" | "deepseek" | "xai";
 	/**
@@ -1116,6 +1134,8 @@ export type ResolvedAnthropicCompat = Required<
 		| "disabledThinking"
 		| "stripThinkingHistory"
 		| "fastMode"
+		| "maxImageDimension"
+		| "maxImagePayloadBytes"
 	>
 > & {
 	/** Effort-beta override; undefined keeps the transport's legacy heuristic. */
@@ -1126,6 +1146,17 @@ export type ResolvedAnthropicCompat = Required<
 	stripThinkingHistory?: AnthropicCompat["stripThinkingHistory"];
 	/** Fast-mode SKU; undefined behaves as false. */
 	fastMode?: AnthropicCompat["fastMode"];
+	/**
+	 * Largest width or height a single image block may carry. Undefined defers
+	 * to the canonical Anthropic API limit applied by the request builder.
+	 */
+	maxImageDimension?: number;
+	/**
+	 * Largest base64 image payload a single block may carry, in bytes.
+	 * Undefined defers to the canonical Anthropic API limit applied by the
+	 * request builder.
+	 */
+	maxImagePayloadBytes?: number;
 	/** Thinking-loop watchdog guard family applied to streamed reasoning. */
 	thinkingLoopGuard?: AnthropicCompat["thinkingLoopGuard"];
 	/**
